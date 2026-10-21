@@ -137,7 +137,7 @@ See [GAME-RECOGNITION-UPDATE.md](GAME-RECOGNITION-UPDATE.md) for the executable 
 The Electron renderer has no Node access, uses context isolation and a limited preload API, and cannot navigate to arbitrary pages. Launch links are scheme allowlisted. Local artwork is validated, size-limited and kept under the app's artwork directory. File and game process launch arguments never pass through a command shell. Scanning does not read game credentials or authenticate to launchers.
 
 
-## v1.0.2: Artwork and game activity improvements
+## v0.9.1: Artwork and game activity improvements
 
 Downloads is no longer scanned automatically. Select individual game executables with Add Game. Existing imported library entries remain untouched.
 

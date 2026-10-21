@@ -65,6 +65,33 @@ async function localSteamCover(appId,{roots=steamRoots(),readFile=fs.readFile,re
   return null;
 }
 
+// Steam stores small game icons independently of portrait library artwork.
+// They are useful when a game executable cannot be located or has no PE icon.
+async function localSteamIcon(appId,{roots=steamRoots(),stat=fs.stat,readdir=fs.readdir}={}){
+  if(!validId(appId))return '';
+  for(const root of roots.slice(0,12)){
+    const base=path.join(root,'appcache','librarycache');
+    const candidates=[
+      path.join(base,`${appId}_icon.jpg`),
+      path.join(base,`${appId}_icon.png`),
+      path.join(base,String(appId),'icon.jpg'),
+      path.join(base,String(appId),'library_icon.jpg'),
+      path.join(base,String(appId),'library_icon.png')
+    ];
+    let children=[];
+    try{children=await readdir(path.join(base,String(appId)),{withFileTypes:true})}catch{}
+    for(const item of children.slice(0,120))
+      if(item.isDirectory()&&/^[a-f0-9]{40}$/i.test(item.name)){
+        candidates.push(path.join(base,String(appId),item.name,'library_icon.jpg'));
+        candidates.push(path.join(base,String(appId),item.name,'library_icon.png'));
+      }
+    for(const file of candidates){
+      try{const meta=await stat(file);if(meta.isFile()&&meta.size>=16&&meta.size<=2*1024*1024)return file;}catch{}
+    }
+  }
+  return '';
+}
+
 async function findSteamCover(appId,{fetchImpl=globalThis.fetch,roots=steamRoots(),local=localSteamCover}={}){
   if(!validId(appId))return null;
   const fromCache=await local(appId,{roots});if(fromCache&&isPortraitArtwork(fromCache))return fromCache;
@@ -77,4 +104,4 @@ async function findSteamCover(appId,{fetchImpl=globalThis.fetch,roots=steamRoots
   }
   return null;
 }
-module.exports={officialAssetUrls,steamMetadataUrls,localSteamCover,findSteamCover};
+module.exports={officialAssetUrls,steamMetadataUrls,localSteamCover,localSteamIcon,findSteamCover};

@@ -5,7 +5,8 @@ const fs=require('node:fs/promises');
 const os=require('node:os');
 const path=require('node:path');
 const {officialAssetUrls,steamMetadataUrls,localSteamCover,findSteamCover}=require('../src/core/steam-cover.cjs');
-const jpeg=Buffer.from([255,216,255,0,14,34,9]);
+const jpeg=Buffer.from([255,216,255,192,0,11,8,3,132,2,88,1,1,17,0,255,217]);
+const landscape=Buffer.from([255,216,255,192,0,11,8,1,97,2,104,1,1,17,0,255,217]);
 const hash='a'.repeat(40);
 const meta={appid:8765,assets:{asset_url_format:'steam/apps/8765/${FILENAME}?t=123',library_capsule_2x:`${hash}/library_600x900_2x.jpg`}};
 const json=body=>new Response(JSON.stringify(body),{headers:{'content-type':'application/json'}});
@@ -24,9 +25,10 @@ test('remote Steam asset metadata cannot inject URL',()=>{
 });
 test('old artwork falls back to legacy paths',async()=>{
  const requests=[];
- const mock=async url=>{requests.push(url);return url.includes('GetItems')?json({response:{store_items:[]}}):url.endsWith('header.jpg')?image():new Response('missing',{status:404})};
+ const mock=async url=>{requests.push(url);return url.includes('GetItems')?json({response:{store_items:[]}}):url.endsWith('library_600x900.jpg')?image():new Response('missing',{status:404})};
  assert.deepEqual(await findSteamCover('123',{fetchImpl:mock,local:async()=>null}),jpeg);
  assert.ok(requests.some(url=>url.endsWith('library_600x900.jpg')));
+ assert.equal(requests.some(url=>url.endsWith('header.jpg')),false,'wide banners must never become library covers');
 });
 test('Steam cached library cover supports offline hashed directories',async()=>{
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'orbit-steam-cover-'));
@@ -50,4 +52,24 @@ test('Delisted Rocket League uses an available published portrait fallback',asyn
   return url.includes('cc030d5cf1de6d485d41685bf2aac8ae4ca8ab8e/library_capsule_2x.jpg')?image():new Response('missing',{status:404});
  }});
  assert.deepEqual(cover,jpeg);assert.ok(requests.at(-1).includes('library_capsule_2x.jpg'));
+});
+
+test('Steam cover lookup skips wide artwork even when metadata advertises it',async()=>{
+ const urls=[];
+ const result=await findSteamCover('8765',{local:async()=>null,fetchImpl:async url=>{
+  urls.push(url);
+  if(url.includes('GetItems'))return json({response:{store_items:[{appid:8765,assets:{asset_url_format:'steam/apps/8765/${FILENAME}',library_capsule:'header.jpg',header:'header.jpg'}}]}});
+  if(url.endsWith('library_600x900_2x.jpg'))return new Response(landscape,{headers:{'content-type':'image/jpeg'}});
+  if(url.endsWith('library_600x900.jpg'))return image();
+  return new Response('missing',{status:404});
+ }});
+ assert.deepEqual(result,jpeg);
+ assert.ok(!urls.includes('https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/8765/header.jpg'));
+});
+test('never promotes wide-only Steam banners into portrait library covers',async()=>{
+ const result=await findSteamCover('98765',{local:async()=>landscape,fetchImpl:async url=>{
+  if(url.includes('GetItems'))return json({response:{store_items:[]}});
+  return new Response(landscape,{headers:{'content-type':'image/jpeg'}});
+ }});
+ assert.equal(result,null);
 });

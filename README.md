@@ -152,3 +152,11 @@ Library cards accept portrait (roughly 2:3) cover art; Steam's wide headers and 
 For games imported before this fix, open **Settings → Library discovery → Repair library covers**. This tries to replace missing or landscape images with true portrait covers while preserving existing valid portrait artwork. The operation may replace a manually selected landscape image; original files are not deleted. Some games do not have public portrait images available from Steam; those titles can still use the game icon or a portrait image you select manually under Edit Game.
 
 The app is still a **0.x pre-release**. Installer compilation and unit tests do not establish that every launcher integration has been tested interactively on Windows.
+
+## v0.9.3: Game icons for missing covers
+
+**Settings → Library discovery → Repair library covers** now attempts both portrait artwork retrieval and game-icon recovery. Orbit can identify likely executables inside a Steam or Epic installation folder and extract the Windows executable icon. When no game executable is found, Steam's locally cached library icon is a secondary fallback. Artwork repairs retain the existing Steam/Epic launcher URI, leave installed game files unchanged, and do not overwrite an existing icon or a valid portrait cover. Manual `.exe` importing still works as before.
+
+Orbit searches only existing game installation folders, with depth and entry-count limits and exclusions for installers, crash reporters and anti-cheat tools; it does not scan Downloads. Icon extraction also works with online artwork downloads disabled. The Settings repair action reports separate numbers of covers and icons recovered.
+
+**Limitations:** Not all Steam games offer a retrievable portrait cover, and Windows may return a generic icon for executables without an embedded resource. Native results on particular games need real Windows verification. No third-party artwork account or API key is required for this fallback.

@@ -11,6 +11,7 @@ const {launchGame:executeGame,deferredExit}=require('./core/launch.cjs');
 const {findSteamCover}=require('./core/steam-cover.cjs');
 const {isPortraitArtwork}=require('./core/cover-shape.cjs');
 const {inspectGameFile}=require('./core/game-file.cjs');
+const {findGameExecutable}=require('./core/game-executable.cjs');
 const {findExactSteamApp}=require('./core/steam-search.cjs');
 const {WindowsActivityTracker}=require('./core/windows-activity.cjs');
 const {catalogMatch}=require('./core/game-identity.cjs');
@@ -92,23 +93,49 @@ async function coverNeedsPortrait(game){
     return !isPortraitArtwork(await fsp.readFile(file));
   }catch{return true;} // Image deleted on disk: restore it when possible.
 }
+async function cacheGameIcon(game){
+  if(game.icon||(!game.executable&&!game.install_path))return false;
+  // Storefront imports contain installation folders but often lack an EXE.
+  // Inspect the existing files without changing the Steam/Epic launch URI.
+  const executable=await findGameExecutable(game);
+  if(!executable)return false;
+  const icon=await extractNativeIcon(executable);
+  if(!icon)return false;
+  const current=db.get(game.id);
+  if(!current||current.icon||current.executable!==game.executable||current.install_path!==game.install_path)return false;
+  db.update(game.id,{icon});
+  broadcast({type:'gamesChanged',reason:'artwork'});
+  return true;
+}
 async function repairMissingSteamCovers({limit=100,replaceLandscape=false}={}){
-  if(!db.getSettings().useSteamArtwork)return {found:0,attempted:0,disabled:true};
+  const online=db.getSettings().useSteamArtwork;
   const candidates=[];
   for(const game of db.list()){
     if(candidates.length>=limit)break;
-    if(!game.cover||(replaceLandscape&&await coverNeedsPortrait(game)))candidates.push(game);
+    const needCover=online&&(!game.cover||(replaceLandscape&&await coverNeedsPortrait(game)));
+    const needIcon=!game.icon&&!!(game.executable||game.install_path);
+    if(needCover||needIcon)candidates.push({game,needCover,needIcon});
   }
-  let found=0;
+  let found=0,icons=0;
   for(let i=0;i<candidates.length;i+=3){
-    const results=await Promise.allSettled(candidates.slice(i,i+3).map(async game=>{
-      await cachedSteamCover(game,{replaceLandscape});
-      const current=db.get(game.id);
-      return !!current?.cover && current.cover!==game.cover;
+    const results=await Promise.allSettled(candidates.slice(i,i+3).map(async ({game,needCover,needIcon})=>{
+      let updatedCover=false,updatedIcon=false;
+      if(needCover){
+        try{await cachedSteamCover(game,{replaceLandscape})}catch{}
+        const current=db.get(game.id);
+        updatedCover=!!current?.cover&&current.cover!==game.cover;
+      }
+      if(needIcon){
+        try{updatedIcon=await cacheGameIcon(game)}catch{}
+      }
+      return {updatedCover,updatedIcon};
     }));
-    found+=results.filter(r=>r.status==='fulfilled'&&r.value).length;
+    for(const result of results)if(result.status==='fulfilled'){
+      if(result.value.updatedCover)found++;
+      if(result.value.updatedIcon)icons++;
+    }
   }
-  return {found,attempted:candidates.length,disabled:false};
+  return {found,icons,attempted:candidates.length,disabled:false,onlineEnabled:online};
 }
 async function cachedSteamCover(game,{replaceLandscape=false}={}){
   if(!db.getSettings().useSteamArtwork || (game.cover&&!replaceLandscape))return;
@@ -122,6 +149,10 @@ async function cachedSteamCover(game,{replaceLandscape=false}={}){
     db.update(game.id,{cover:filename});
     broadcast({type:'gamesChanged',reason:'artwork'});
   }
+}
+
+async function enrichGameArtwork(game){
+  await Promise.allSettled([cachedSteamCover(game),cacheGameIcon(game)]);
 }
 
 async function discover(){
@@ -146,7 +177,7 @@ function handlers(){
   bind('listGames',()=>db.list());
   bind('runningGames',()=>activityTracker?.runningIds()||[]);
   bind('getGame',id=>{if(!okId(id))throw Error('Invalid game identifier.');return db.get(id)});
-  bind('addGame',data=>{const result=db.upsert(data);broadcast({type:'gamesChanged'});if(result.added)cachedSteamCover(result.game);return result});
+  bind('addGame',data=>{const result=db.upsert(data);broadcast({type:'gamesChanged'});if(result.added)enrichGameArtwork(result.game).catch(()=>{});return result});
   bind('updateGame',(id,patch)=>{if(!okId(id))throw Error('Invalid game identifier.');const result=db.update(id,patch);broadcast({type:'gamesChanged'});return result});
   bind('removeGame',id=>{if(!okId(id))throw Error('Invalid game identifier.');const found=db.remove(id);broadcast({type:'gamesChanged'});return found});
   bind('favoriteGame',id=>{if(!okId(id))throw Error('Invalid game identifier.');const result=db.toggleFavorite(id);broadcast({type:'gamesChanged'});return result});
@@ -174,15 +205,15 @@ function handlers(){
   bind('importGames',async games=>{
     if(!Array.isArray(games)||games.length>10000)throw Error('Invalid import batch.');
     let imported=0,skipped=0;const artwork=[];const errors=[];
-    const fetchArtwork=db.getSettings().useSteamArtwork;
+    // Local icons are useful even when Steam downloads are turned off.
     for(let i=0;i<games.length;i+=50){
       const batch=db.upsertBatch(games.slice(i,i+50));
       imported+=batch.imported;skipped+=batch.skipped;errors.push(...batch.errors);
-      if(fetchArtwork)artwork.push(...batch.addedGames);
+      artwork.push(...batch.addedGames);
       await new Promise(resolve=>setImmediate(resolve));
     }
     broadcast({type:'gamesChanged',reason:'import'});
-    (async()=>{for(let i=0;i<artwork.length;i+=3)await Promise.allSettled(artwork.slice(i,i+3).map(cachedSteamCover))})().catch(()=>{});
+    (async()=>{for(let i=0;i<artwork.length;i+=3)await Promise.allSettled(artwork.slice(i,i+3).map(enrichGameArtwork))})().catch(()=>{});
     return {imported,skipped,errors};
   });
   bind('launchGame',async id=>{
@@ -286,7 +317,7 @@ app.whenReady().then(async()=>{
     });
     activityTracker.start();
   }
-  if(db.getSettings().useSteamArtwork)setTimeout(()=>repairMissingSteamCovers({limit:30}).catch(()=>{}),2500);
+  setTimeout(()=>repairMissingSteamCovers({limit:30}).catch(()=>{}),2500);
   if(db.getSettings().autoScan)setTimeout(async()=>{try{const result=await discover();const imported=[];for(const g of result.games)if(!g.alreadyAdded&&!g.downloadCandidate)imported.push(g);if(imported.length){for(let i=0;i<imported.length;i+=50){db.upsertBatch(imported.slice(i,i+50));await new Promise(resolve=>setImmediate(resolve));}broadcast({type:'gamesChanged',reason:'autoScan'});}}catch(e){broadcast({type:'error',message:`Background scan failed: ${e.message}`})}},1000);
   app.on('activate',()=>{if(BrowserWindow.getAllWindows().length===0)createWindow()});
 });

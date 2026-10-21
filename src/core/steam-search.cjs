@@ -2,6 +2,9 @@
 const {cleanKey}=require('./game-identity.cjs');
 
 const MAX_SEARCH_BYTES=256*1024;
+// Trademark characters can expand into literal TM/SM under Unicode NFKD.
+// Remove them before comparing exact catalog titles.
+const titleKey=name=>cleanKey(String(name||'').replace(/[™℠®©]/g,''));
 const isUsableName=name=>typeof name==='string' && name.length>=3 && name.length<=140 && /^[^\u0000-\u001f]+$/.test(name) && cleanKey(name).length>=4;
 async function readSmallJson(response){
   if(!response?.ok||!response.body)return null;
@@ -28,11 +31,11 @@ async function findExactSteamApp(name,{fetchImpl=globalThis.fetch}={}){
   try{
     const response=await fetchImpl(url,{signal:AbortSignal.timeout(3500)});
     const data=await readSmallJson(response);
-    const key=cleanKey(title);
+    const key=titleKey(title);
     if(!Array.isArray(data?.items))return null;
     for(const item of data.items.slice(0,20)){
       if(item?.type!=='app'||!Number.isSafeInteger(item.id)||item.id<1)continue;
-      if(cleanKey(item.name)!==key)continue;
+      if(titleKey(item.name)!==key)continue;
       return {name:item.name,steamId:String(item.id)};
     }
   }catch{/* Steam search is optional; local games work offline. */}

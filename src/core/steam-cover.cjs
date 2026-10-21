@@ -8,7 +8,7 @@ const {steamRoots}=require('./discovery.cjs');
 const CDN='https://shared.fastly.steamstatic.com/store_item_assets/';
 const MAX_JSON_BYTES=1024*1024;
 const LEGACY_GAME_PORTRAITS=Object.freeze({'252950':'cc030d5cf1de6d485d41685bf2aac8ae4ca8ab8e/library_capsule_2x.jpg'});
-const VALID_ASSET=/^(?:[a-f0-9]{40}\/)?(?:library_600x900(?:_2x)?|header|capsule_616x353)\.jpg$/i;
+const VALID_ASSET=/^(?:[a-f0-9]{40}\/)?library_600x900(?:_2x)?\.jpg$/i;
 const validId=id=>/^\d{1,15}$/.test(String(id??''));
 
 function officialAssetUrls(appId,assets){

@@ -144,3 +144,11 @@ Downloads is no longer scanned automatically. Select individual game executables
 Epic, Steam, and standalone titles can use their recognized Steam artwork IDs or exact title matches, including a portrait fallback for Rocket League. Library artwork is displayed without excessive zoom, and local executable icons appear when a cover is unavailable.
 
 On Windows, Orbit watches running executable paths inside recognized Steam/Epic installation folders approximately every 15 seconds and records play sessions, including games started directly from the store launcher. Tracking is best effort: it requires Orbit to remain open, can miss protected process paths, and cannot identify executables running outside the known installation folder.
+
+## v0.9.2: Correct portrait artwork and fix old covers
+
+Library cards accept portrait (roughly 2:3) cover art; Steam's wide headers and landscape local banners are not used as box covers. Steam's metadata and on-disk cache are checked for portrait artwork, and manual game imports prefer nearby poster/cover images with portrait dimensions. The library UI hides legacy landscape covers instead of squeezing them into tall cards; icon/gradient fallbacks remain available.
+
+For games imported before this fix, open **Settings → Library discovery → Repair library covers**. This tries to replace missing or landscape images with true portrait covers while preserving existing valid portrait artwork. The operation may replace a manually selected landscape image; original files are not deleted. Some games do not have public portrait images available from Steam; those titles can still use the game icon or a portrait image you select manually under Edit Game.
+
+The app is still a **0.x pre-release**. Installer compilation and unit tests do not establish that every launcher integration has been tested interactively on Windows.

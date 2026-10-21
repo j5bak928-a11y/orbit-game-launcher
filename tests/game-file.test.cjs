@@ -6,7 +6,11 @@ const path = require('node:path');
 const os = require('node:os');
 const {suggestedName,findNearbyArtwork,inspectGameFile,verifyExecutable} = require('../src/core/game-file.cjs');
 const {LibraryDatabase} = require('../src/core/database.cjs');
-const png = Buffer.from('89504e470d0a1a0a0000000000000000','hex');
+const png = Buffer.alloc(24);
+Buffer.from('89504e470d0a1a0a','hex').copy(png);
+png.writeUInt32BE(300,16);png.writeUInt32BE(450,20);
+const widePng=Buffer.from(png);
+widePng.writeUInt32BE(1280,16);widePng.writeUInt32BE(720,20);
 function fixture(t){const root=fs.mkdtempSync(path.join(os.tmpdir(),'orbit-exe-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));const dir=path.join(root,'Starlight Explorer');fs.mkdirSync(dir);const exe=path.join(dir,'Starlight-Explorer.exe');fs.writeFileSync(exe,'fake executable fixture');return {root,dir,exe};}
 test('selecting local executable suggests name and picks nearby named cover art',async t=>{
  const {exe,dir}=fixture(t);fs.writeFileSync(path.join(dir,'cover.png'),png);
@@ -77,4 +81,14 @@ test('offline or rejected Steam artwork leaves correctly recognized title and na
  });
  assert.equal(result.name,'Hearts of Iron IV');assert.equal(result.cover,'');
  assert.equal(result.icon,'fallback.png');
+});
+
+test('local cover discovery skips wide covers and prefers a portrait poster',async t=>{
+ const {exe,dir}=fixture(t);
+ fs.writeFileSync(path.join(dir,'cover.png'),widePng);
+ fs.writeFileSync(path.join(dir,'poster.png'),png);
+ fs.writeFileSync(path.join(dir,'banner.png'),widePng);
+ assert.equal(await findNearbyArtwork(exe),path.join(dir,'poster.png'));
+ fs.rmSync(path.join(dir,'poster.png'));
+ assert.equal(await findNearbyArtwork(exe),null);
 });

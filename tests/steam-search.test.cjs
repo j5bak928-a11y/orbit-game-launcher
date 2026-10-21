@@ -28,3 +28,12 @@ test('Steam search validates inputs, network failures and oversized JSON respons
  const huge='x'.repeat(270000);
  assert.equal(await findExactSteamApp('Celeste',{fetchImpl:async()=>new Response(huge,{status:200,headers:{'Content-Type':'application/json'}})}),null);
 });
+
+test('exact Steam title search ignores trademark characters without matching DLC',async()=>{
+ const mock=async()=>result([
+  {id:900,type:'app',name:'ACE COMBAT™7: SKIES UNKNOWN - Season Pass'},
+  {id:502500,type:'app',name:'ACE COMBAT™7: SKIES UNKNOWN'},
+ ]);
+ const match=await findExactSteamApp('Ace Combat 7: Skies Unknown',{fetchImpl:mock});
+ assert.deepEqual(match,{name:'ACE COMBAT™7: SKIES UNKNOWN',steamId:'502500'});
+});

@@ -6,7 +6,7 @@ const crypto = require('node:crypto');
 
 const DEFAULT_SETTINGS = Object.freeze({
   theme: 'dark', accent: '#8b7aff', reduceMotion: false,
-  autoScan: false, useSteamArtwork: true, libraryFolders: [],
+  autoScan: false, useSteamArtwork: true, scanDownloads: true, libraryFolders: [],
   view: 'grid', sort: 'name', onboardingDone: false,
 });
 const SORTS = {name: 'name COLLATE NOCASE ASC', recent: 'last_played_at DESC, name COLLATE NOCASE ASC', added: 'created_at DESC', time: 'total_play_seconds DESC, name COLLATE NOCASE ASC'};
@@ -84,13 +84,13 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
       if(key==='view'&&!['grid','list'].includes(parsed))continue;
       if(key==='sort'&&!Object.prototype.hasOwnProperty.call(SORTS,parsed))continue;
       if(key==='libraryFolders'&&(!Array.isArray(parsed)||parsed.length>60||parsed.some(p=>!assertString(p,4000))))continue;
-      if(['reduceMotion','autoScan','useSteamArtwork','onboardingDone'].includes(key)&&typeof parsed!=='boolean')continue;
+      if(['reduceMotion','autoScan','useSteamArtwork','scanDownloads','onboardingDone'].includes(key)&&typeof parsed!=='boolean')continue;
       settings[key]=parsed;
     }
     return settings;
   }
   saveSettings(input){
-    const allowed=['theme','accent','reduceMotion','autoScan','useSteamArtwork','libraryFolders','view','sort','onboardingDone'];
+    const allowed=['theme','accent','reduceMotion','autoScan','useSteamArtwork','scanDownloads','libraryFolders','view','sort','onboardingDone'];
     const current=this.getSettings();const next={...current};
     for(const key of allowed)if(Object.prototype.hasOwnProperty.call(input,key))next[key]=input[key];
     if(!['dark','light','system'].includes(next.theme))throw Error('Invalid theme.');

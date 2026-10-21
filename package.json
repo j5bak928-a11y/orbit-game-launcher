@@ -1,6 +1,6 @@
 {
   "name": "orbit-game-launcher",
-  "version": "1.0.2",
+  "version": "0.9.1",
   "private": true,
   "description": "Orbit — a fast, local-first desktop game launcher",
   "main": "src/main.cjs",
@@ -17,17 +17,53 @@
     "dist:mac": "electron-builder --mac dmg zip",
     "dist:linux": "electron-builder --linux AppImage deb"
   },
-  "engines": {"node": ">=22.13.0"},
-  "devDependencies": {"electron": "^38.0.0", "electron-builder": "^26.0.0"},
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "devDependencies": {
+    "electron": "^38.0.0",
+    "electron-builder": "^26.0.0"
+  },
   "build": {
     "appId": "com.orbitlauncher.desktop",
     "productName": "Orbit Launcher",
-    "directories": {"output": "release"},
-    "files": ["src/**/*", "assets/**/*", "package.json", "README.md", "!**/*.map"],
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json",
+      "README.md",
+      "!**/*.map"
+    ],
     "asar": true,
-    "win": {"icon": "assets/icon.ico", "target": ["nsis", "portable"]},
-    "mac": {"icon": "assets/icon.png", "target": ["dmg", "zip"], "category": "public.app-category.games"},
-    "linux": {"icon": "assets/icon.png", "target": ["AppImage", "deb"], "category": "Game"},
-    "nsis": {"oneClick": false, "allowToChangeInstallationDirectory": true}
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "mac": {
+      "icon": "assets/icon.png",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.games"
+    },
+    "linux": {
+      "icon": "assets/icon.png",
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Game"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

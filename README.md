@@ -135,3 +135,12 @@ See [GAME-RECOGNITION-UPDATE.md](GAME-RECOGNITION-UPDATE.md) for the executable 
 ## Security choices
 
 The Electron renderer has no Node access, uses context isolation and a limited preload API, and cannot navigate to arbitrary pages. Launch links are scheme allowlisted. Local artwork is validated, size-limited and kept under the app's artwork directory. File and game process launch arguments never pass through a command shell. Scanning does not read game credentials or authenticate to launchers.
+
+
+## v1.0.2: Artwork and game activity improvements
+
+Downloads is no longer scanned automatically. Select individual game executables with Add Game. Existing imported library entries remain untouched.
+
+Epic, Steam, and standalone titles can use their recognized Steam artwork IDs or exact title matches, including a portrait fallback for Rocket League. Library artwork is displayed without excessive zoom, and local executable icons appear when a cover is unavailable.
+
+On Windows, Orbit watches running executable paths inside recognized Steam/Epic installation folders approximately every 15 seconds and records play sessions, including games started directly from the store launcher. Tracking is best effort: it requires Orbit to remain open, can miss protected process paths, and cannot identify executables running outside the known installation folder.

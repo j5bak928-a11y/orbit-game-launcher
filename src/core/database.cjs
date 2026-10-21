@@ -6,7 +6,7 @@ const crypto = require('node:crypto');
 
 const DEFAULT_SETTINGS = Object.freeze({
   theme: 'dark', accent: '#8b7aff', reduceMotion: false,
-  autoScan: false, useSteamArtwork: true, scanDownloads: true, libraryFolders: [],
+  autoScan: false, useSteamArtwork: true, scanDownloads: false, libraryFolders: [],
   view: 'grid', sort: 'name', onboardingDone: false,
 });
 const SORTS = {name: 'name COLLATE NOCASE ASC', recent: 'last_played_at DESC, name COLLATE NOCASE ASC', added: 'created_at DESC', time: 'total_play_seconds DESC, name COLLATE NOCASE ASC'};
@@ -87,10 +87,11 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
       if(['reduceMotion','autoScan','useSteamArtwork','scanDownloads','onboardingDone'].includes(key)&&typeof parsed!=='boolean')continue;
       settings[key]=parsed;
     }
+    settings.scanDownloads=false; // Legacy opt-in is ignored.
     return settings;
   }
   saveSettings(input){
-    const allowed=['theme','accent','reduceMotion','autoScan','useSteamArtwork','scanDownloads','libraryFolders','view','sort','onboardingDone'];
+    const allowed=['theme','accent','reduceMotion','autoScan','useSteamArtwork','libraryFolders','view','sort','onboardingDone'];
     const current=this.getSettings();const next={...current};
     for(const key of allowed)if(Object.prototype.hasOwnProperty.call(input,key))next[key]=input[key];
     if(!['dark','light','system'].includes(next.theme))throw Error('Invalid theme.');

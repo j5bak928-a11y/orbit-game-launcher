@@ -34,6 +34,7 @@ const CATALOG = [
   {name:'The Sims 4',steamId:'1222670',aliases:['ts4','thesims4']},
   {name:'Counter-Strike 2',steamId:'730',aliases:['cs2','counterstrike2']},
   {name:'Dota 2',steamId:'570',aliases:['dota2']},
+  {name:'Rocket League',steamId:'252950',aliases:['rocketleague']},
   {name:'Kingdom Come: Deliverance',steamId:'379430',aliases:['kingdomcome','kingdomcomedeliverance']},
 ];
 const cleanKey = text => String(text || '').normalize('NFKD').toLowerCase().replace(/[^a-z0-9]/g,'');

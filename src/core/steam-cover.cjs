@@ -6,6 +6,7 @@ const {steamRoots}=require('./discovery.cjs');
 
 const CDN='https://shared.fastly.steamstatic.com/store_item_assets/';
 const MAX_JSON_BYTES=1024*1024;
+const LEGACY_GAME_PORTRAITS=Object.freeze({'252950':'cc030d5cf1de6d485d41685bf2aac8ae4ca8ab8e/library_capsule_2x.jpg'});
 const VALID_ASSET=/^(?:[a-f0-9]{40}\/)?(?:library_600x900(?:_2x)?|header|capsule_616x353)\.jpg$/i;
 const validId=id=>/^\d{1,15}$/.test(String(id??''));
 
@@ -68,7 +69,8 @@ async function findSteamCover(appId,{fetchImpl=globalThis.fetch,roots=steamRoots
   const fromCache=await local(appId,{roots});if(fromCache)return fromCache;
   const metadata=await steamMetadataUrls(appId,{fetchImpl});
   const fallbacks=['library_600x900_2x.jpg','library_600x900.jpg','header.jpg'].map(name=>`${CDN}steam/apps/${appId}/${name}`);
-  const urls=[...new Set([...metadata,...fallbacks])].slice(0,7);
+  const extra=LEGACY_GAME_PORTRAITS[String(appId)]?CDN+'steam/apps/'+appId+'/'+LEGACY_GAME_PORTRAITS[String(appId)]:'';
+  const urls=[...new Set([...metadata,...fallbacks,extra].filter(Boolean))].slice(0,8);
   for(const url of urls){
     try{const response=await fetchImpl(url,{signal:AbortSignal.timeout(2800)});const bytes=await readJpegWithLimit(response);if(bytes)return bytes;}catch{}
   }

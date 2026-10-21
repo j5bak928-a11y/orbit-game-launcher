@@ -35,13 +35,13 @@ const iconPaths={
  dots:'<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>'
 };
 const ic=(name,size=18)=>`<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">${iconPaths[name]||iconPaths.gamepad}</svg>`;
-const state={games:[],settings:null,route:'home',query:'',filter:'all',tag:'all',genre:'all',view:'grid',sort:'name',modal:null,imports:[],importPage:0,selectedImports:new Set(),scanWarnings:[],scanning:false,busy:false,platform:'',version:'',viewGames:[]};
+const state={games:[],runningIds:[],settings:null,route:'home',query:'',filter:'all',tag:'all',genre:'all',view:'grid',sort:'name',modal:null,imports:[],importPage:0,selectedImports:new Set(),scanWarnings:[],scanning:false,busy:false,platform:'',version:'',viewGames:[]};
 const sourceNames={steam:'Steam',epic:'Epic Games',gog:'GOG',folder:'Local',manual:'Manual'};
 const palette=['#8b7aff','#5bafef','#fc8ca8','#53c5b3','#f3a65c','#bf87f5'];
 function artwork(token){return /^[a-f\d-]{36}\.(jpg|jpeg|png|webp)$/.test(token||'')?`orbit-art://file/${token}`:null}
 function paletteFor(name){let hash=0;for(const c of name||'')hash=(hash*31+c.charCodeAt(0))>>>0;return [hash%360,(hash*11+126)%360]}
 function coverStyle(g){const [hue,hue2]=paletteFor(g.name);return `--hue:${hue};--hue2:${hue2}`}
-function coverImage(g){return artwork(g.cover)?`<img class="cover-image" src="${artwork(g.cover)}" loading="lazy" alt="" />`:''}
+function coverImage(g){return artwork(g.cover)?`<img class="cover-image" src="${artwork(g.cover)}" loading="lazy" alt="" />`:artwork(g.icon)?`<span class="cover-icon-frame"><img class="cover-icon" src="${artwork(g.icon)}" loading="lazy" alt="" /></span>`:''}
 function timeLabel(seconds){if(!seconds)return 'Not played yet';const hrs=Math.floor(seconds/3600),mins=Math.round((seconds%3600)/60);return hrs?`${hrs}h ${mins}m played`:`${Math.max(1,mins)}m played`}
 function sourceLabel(game){return sourceNames[game.source]||'Game'}
 function formatDate(date){if(!date)return 'Never';const d=new Date(date);return Number.isNaN(d.getTime())?'Unknown':new Intl.DateTimeFormat(undefined,{month:'short',day:'numeric',year:'numeric'}).format(d)}
@@ -60,7 +60,7 @@ function card(g){return `<article class="game-card" style="${coverStyle(g)}" dat
   <div class="cover">${coverImage(g)}<span class="cover-letter">${esc(g.name.slice(0,2))}</span><span class="cover-source">${esc(sourceLabel(g))}</span>
   <button class="favorite-float ${g.favorite?'active':''}" data-action="favorite" data-id="${esc(g.id)}" aria-label="${g.favorite?'Remove favorite':'Add favorite'}">${ic('heart',16)}</button>
   <button class="cover-play" data-action="launch" data-id="${esc(g.id)}" aria-label="Launch ${esc(g.name)}">${ic('play',17)}</button></div>
-  <div class="game-label"><div style="min-width:0"><span class="game-name" title="${esc(g.name)}">${esc(g.name)}</span><span class="game-meta">${g.total_play_seconds?esc(timeLabel(g.total_play_seconds)):esc(sourceLabel(g))}</span></div>
+  <div class="game-label"><div style="min-width:0"><span class="game-name" title="${esc(g.name)}">${esc(g.name)}</span><span class="game-meta">${state.runningIds?.includes(g.id)?'● Playing now':g.total_play_seconds?esc(timeLabel(g.total_play_seconds)):esc(sourceLabel(g))}</span></div>
   <button class="game-menu" data-action="detail" data-id="${esc(g.id)}" aria-label="More about ${esc(g.name)}">${ic('dots',18)}</button></div></article>`}
 function rowGame(g){return `<article class="game-row" data-action="detail" data-id="${esc(g.id)}" tabindex="0" role="button" aria-label="View ${esc(g.name)}">
   <div class="row-cover" style="${coverStyle(g)}">${artwork(g.cover||g.icon)?`<img src="${artwork(g.cover||g.icon)}" alt="" loading="lazy" class="${artwork(g.cover)?'':'list-game-icon'}" />`:esc(g.name.slice(0,1))}</div>
@@ -122,11 +122,10 @@ function settingsView(){const s=state.settings,folders=s.libraryFolders||[];retu
  <div class="setting-row"><div><div class="setting-name">Theme</div><div class="setting-help">Choose a color mode for the launcher.</div></div><div class="select-wrap setting-control"><select id="theme-select" aria-label="Theme"><option value="dark" ${s.theme==='dark'?'selected':''}>Dark</option><option value="light" ${s.theme==='light'?'selected':''}>Light</option><option value="system" ${s.theme==='system'?'selected':''}>System</option></select></div></div>
  <div class="setting-row"><div><div class="setting-name">Accent color</div><div class="setting-help">Add a personal touch to your library.</div></div><div class="accent-swatches setting-control">${palette.map(c=>`<button class="swatch ${s.accent.toLowerCase()===c?'chosen':''}" style="--sw:${c}" data-action="accent" data-color="${c}" aria-label="Set accent color ${c}"></button>`).join('')}</div></div>
  <div class="setting-row"><div><div class="setting-name">Reduce motion</div><div class="setting-help">Limit animation and transitions.</div></div><button class="switch ${s.reduceMotion?'on':''}" data-action="setting-toggle" data-key="reduceMotion" role="switch" aria-checked="${s.reduceMotion}" aria-label="Reduce motion"></button></div></div>
- <div class="settings-card"><h2>Library discovery</h2><p>Orbit searches installed game stores, your Downloads folder, and the locations you choose.</p>
+ <div class="settings-card"><h2>Library discovery</h2><p>Orbit searches installed game stores and folders you select. Downloads is never scanned automatically.</p>
  <div class="setting-row"><div><div class="setting-name">Scan at startup</div><div class="setting-help">Look for new games whenever Orbit starts.</div></div><button class="switch ${s.autoScan?'on':''}" data-action="setting-toggle" data-key="autoScan" role="switch" aria-checked="${s.autoScan}" aria-label="Scan at startup"></button></div>
- <div class="setting-row"><div><div class="setting-name">Search Downloads for games</div><div class="setting-help">Review detected games in Downloads. Installers are excluded, and startup scanning never adds these candidates automatically.</div></div><button class="switch ${s.scanDownloads!==false?'on':''}" data-action="setting-toggle" data-key="scanDownloads" role="switch" aria-checked="${s.scanDownloads!==false}" aria-label="Scan Downloads for games"></button></div>
  <div class="setting-row"><div><div class="setting-name">Steam artwork</div><div class="setting-help">Download publicly available cover images when online.</div></div><button class="switch ${s.useSteamArtwork?'on':''}" data-action="setting-toggle" data-key="useSteamArtwork" role="switch" aria-checked="${s.useSteamArtwork}" aria-label="Steam artwork downloads"></button></div>
- <div class="setting-row"><div><div class="setting-name">Missing Steam covers</div><div class="setting-help">Retry covers for previously imported games, including newer Steam artwork paths.</div></div><button class="secondary-btn" data-action="repair-artwork">${ic('refresh',14)} Repair missing covers</button></div>
+ <div class="setting-row"><div><div class="setting-name">Missing game covers</div><div class="setting-help">Retry missing covers for Steam, Epic and manually imported games.</div></div><button class="secondary-btn" data-action="repair-artwork">${ic('refresh',14)} Repair missing covers</button></div>
  <div class="setting-row"><div><div class="setting-name">Custom library locations</div><div class="setting-help">Optional folders to scan for game executables and GOG info files.</div></div><button class="secondary-btn" data-action="add-folder">${ic('plus',14)} Add folder</button></div>
  <div class="folder-list">${folders.length?folders.map((f,index)=>`<div class="folder-item">${ic('folder',15)}<span title="${esc(f)}">${esc(f)}</span><button data-action="remove-folder" data-index="${index}" aria-label="Remove folder">${ic('close',15)}</button></div>`).join(''):'<span class="setting-help">No custom folders yet. Steam, Epic and GOG discovery works independently.</span>'}</div><div style="margin-top:16px"><button class="secondary-btn" data-action="scan">${ic('refresh',15)} Scan now</button></div></div>
  <div class="settings-card"><h2>Data & privacy</h2><p>Your collection lives in a local SQLite database. Orbit does not require an account.</p>
@@ -144,7 +143,7 @@ function refreshNavigation(keepScroll=false){el('side-slot').innerHTML=sidebar()
 function navigate(route){if(!['home','library','favorites','recent','settings'].includes(route))return;state.route=route;state.query='';state.filter='all';state.tag='all';state.genre='all';refreshNavigation();}
 function toast(message,error=false){const item=document.createElement('div');item.className=`toast ${error?'error':''}`;item.innerHTML=ic(error?'alert':'check',19)+`<p>${esc(message)}</p>`;const root=el('toast-root');root.appendChild(item);while(root.children.length>3)root.firstElementChild.remove();setTimeout(()=>item.remove(),4600)}
 async function call(promise){try{return await promise}catch(e){toast(e.message||'Something went wrong.',true);throw e}}
-async function refreshGames(){state.games=await window.orbit.listGames();el('side-slot').innerHTML=sidebar();renderPage({keepScroll:true});}
+async function refreshGames(){state.games=await window.orbit.listGames();state.runningIds=typeof window.orbit.runningGames==='function'?await window.orbit.runningGames():[];el('side-slot').innerHTML=sidebar();renderPage({keepScroll:true});}
 async function saveSettings(patch){state.settings=await window.orbit.saveSettings(patch);setupTheme();if(state.route==='settings')renderPage({keepScroll:true});}
 let modalReturnFocus=null;
 function openModal(type,meta={}){if(!state.modal)modalReturnFocus=document.activeElement;state.modal={type,...meta};renderModal()}
@@ -349,7 +348,7 @@ document.addEventListener('keydown',event=>{
 window.addEventListener('resize',()=>{if(['library','recent','favorites'].includes(state.route))renderVirtual()});
 window.matchMedia?.('(prefers-color-scheme:light)')?.addEventListener('change',()=>{if(state.settings?.theme==='system')setupTheme()});
 async function boot(){try{if(!window.orbit)throw Error('Desktop integration is unavailable. Start Orbit using Electron.');
- const data=await window.orbit.bootstrap();state.games=data.games;state.settings=data.settings;state.sort=data.settings.sort||'name';state.view=data.settings.view||'grid';state.platform=data.platform;state.version=data.version;
+ const data=await window.orbit.bootstrap();state.games=data.games;state.runningIds=data.runningIds||[];state.settings=data.settings;state.sort=data.settings.sort||'name';state.view=data.settings.view||'grid';state.platform=data.platform;state.version=data.version;
  setupTheme();renderShell();window.orbit.onEvent(async event=>{
   if(event.type==='gamesChanged')try{await refreshGames();if(state.modal?.type==='detail')renderModal()}catch(e){toast(e.message,true)}
   if(event.type==='settingsChanged'){state.settings=event.settings;setupTheme()}

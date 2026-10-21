@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
 const {identifyGame,readWindowsProductName} = require('./game-identity.cjs');
+const {isPortraitArtwork} = require('./cover-shape.cjs');
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp']);
 const IGNORE_NAMES = /^(?:game|game-win(?:32|64)-shipping|launcher|start|play|run|shipping|unityplayer|unrealengine|application|win64-shipping|setup|install|unins\w*)$/i;
 const normalize = name => name.normalize('NFKD').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -21,7 +22,7 @@ function rankArtwork(filename, gameKey) {
   const score = new Map([
     ['cover', 100], ['poster', 99], ['boxart', 98], ['keyart', 97],
     ['library600x900', 95], ['verticalcover', 94], ['folder', 90],
-    ['artwork', 85], ['capsule', 75], ['banner', 65], ['hero', 60],
+    ['artwork', 85], ['capsule', 75],
   ]);
   if (score.has(key)) return score.get(key);
   if (gameKey && (key === gameKey || key === `${gameKey}cover` || key === `${gameKey}poster` || key === `${gameKey}boxart`)) return 82;
@@ -49,7 +50,7 @@ async function findNearbyArtwork(executable, displayName='') {
   }
   candidates.sort((a,b)=>b.score-a.score || a.file.localeCompare(b.file));
   for (const entry of candidates.slice(0, 16)) {
-    try {const stat = await fsp.stat(entry.file);if (stat.isFile() && stat.size > 0 && stat.size <= 15*1024*1024) return entry.file;}
+    try {const stat = await fsp.stat(entry.file);if (stat.isFile() && stat.size > 0 && stat.size <= 15*1024*1024 && isPortraitArtwork(await fsp.readFile(entry.file))) return entry.file;}
     catch { /* broken or disappearing artwork is optional */ }
   }
   return null;

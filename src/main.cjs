@@ -9,6 +9,7 @@ const {LibraryDatabase}=require('./core/database.cjs');
 const {discoverAll}=require('./core/discovery.cjs');
 const {launchGame:executeGame,deferredExit}=require('./core/launch.cjs');
 const {findSteamCover}=require('./core/steam-cover.cjs');
+const {isPortraitArtwork}=require('./core/cover-shape.cjs');
 const {inspectGameFile}=require('./core/game-file.cjs');
 const {findExactSteamApp}=require('./core/steam-search.cjs');
 const {WindowsActivityTracker}=require('./core/windows-activity.cjs');
@@ -81,26 +82,46 @@ async function downloadSteamCover(appId){
   catch(e){if(e.code!=='EEXIST')throw e;}
   return filename;
 }
-async function repairMissingSteamCovers({limit=100}={}){
+async function coverNeedsPortrait(game){
+  if(!game.cover)return true;
+  if(!/^[a-f0-9-]{36}\\.(?:jpg|jpeg|png|webp)$/i.test(game.cover))return false;
+  try {
+    const file=path.join(artworkDir(),game.cover);
+    const info=await fsp.stat(file);
+    if(!info.isFile()||info.size>15*1024*1024)return false;
+    return !isPortraitArtwork(await fsp.readFile(file));
+  }catch{return true;} // Image deleted on disk: restore it when possible.
+}
+async function repairMissingSteamCovers({limit=100,replaceLandscape=false}={}){
   if(!db.getSettings().useSteamArtwork)return {found:0,attempted:0,disabled:true};
-  const candidates=db.list().filter(g=>!g.cover).slice(0,limit);
+  const candidates=[];
+  for(const game of db.list()){
+    if(candidates.length>=limit)break;
+    if(!game.cover||(replaceLandscape&&await coverNeedsPortrait(game)))candidates.push(game);
+  }
   let found=0;
   for(let i=0;i<candidates.length;i+=3){
-    const results=await Promise.allSettled(candidates.slice(i,i+3).map(async g=>{
-      await cachedSteamCover(g);return !!db.get(g.id)?.cover;
+    const results=await Promise.allSettled(candidates.slice(i,i+3).map(async game=>{
+      await cachedSteamCover(game,{replaceLandscape});
+      const current=db.get(game.id);
+      return !!current?.cover && current.cover!==game.cover;
     }));
     found+=results.filter(r=>r.status==='fulfilled'&&r.value).length;
   }
   return {found,attempted:candidates.length,disabled:false};
 }
-async function cachedSteamCover(game){
-  if(game.cover||!db.getSettings().useSteamArtwork)return;
+async function cachedSteamCover(game,{replaceLandscape=false}={}){
+  if(!db.getSettings().useSteamArtwork || (game.cover&&!replaceLandscape))return;
   const appId=game.source==='steam'?game.source_id:(catalogMatch(game.name)?.steamId||(await findExactSteamApp(game.name))?.steamId);
   if(!appId)return;
   const filename=await downloadSteamCover(appId);
   if(!filename)return;
   const current=db.get(game.id);
-  if(current&&!current.cover){db.update(game.id,{cover:filename});broadcast({type:'gamesChanged',reason:'artwork'});}
+  // Never replace a cover that changed while the network request was pending.
+  if(current&&current.cover===game.cover&&(!current.cover||(replaceLandscape&&await coverNeedsPortrait(current)))){
+    db.update(game.id,{cover:filename});
+    broadcast({type:'gamesChanged',reason:'artwork'});
+  }
 }
 
 async function discover(){
@@ -149,7 +170,7 @@ function handlers(){
   bind('chooseArtwork',imageFromDialog);
   bind('chooseFolder',async()=>{const result=await dialog.showOpenDialog(win,{title:'Choose game library folder',properties:['openDirectory']});return result.canceled?null:result.filePaths[0]});
   bind('discoverGames',discover);
-  bind('repairSteamArtwork',()=>repairMissingSteamCovers({limit:300}));
+  bind('repairSteamArtwork',()=>repairMissingSteamCovers({limit:300,replaceLandscape:true}));
   bind('importGames',async games=>{
     if(!Array.isArray(games)||games.length>10000)throw Error('Invalid import batch.');
     let imported=0,skipped=0;const artwork=[];const errors=[];

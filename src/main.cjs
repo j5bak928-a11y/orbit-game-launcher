@@ -11,12 +11,13 @@ const {launchGame:executeGame,deferredExit}=require('./core/launch.cjs');
 const {findSteamCover}=require('./core/steam-cover.cjs');
 const {inspectGameFile}=require('./core/game-file.cjs');
 const {findExactSteamApp}=require('./core/steam-search.cjs');
+const {WindowsActivityTracker}=require('./core/windows-activity.cjs');
 const {catalogMatch}=require('./core/game-identity.cjs');
 const {createPortableBackup,decodePortableBackup,installBackupArtwork,writeAtomic,MAX_ARCHIVE}=require('./core/backup.cjs');
 
 protocol.registerSchemesAsPrivileged([{scheme:'orbit-art',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true}}]);
 if(!app.requestSingleInstanceLock())app.quit();
-let win,db,scanning=false;
+let win,db,scanning=false,activityTracker=null;
 const sessions=new Map();
 const pendingLaunches=new Set();
 const artworkDir=()=>path.join(app.getPath('userData'),'artwork');
@@ -82,7 +83,7 @@ async function downloadSteamCover(appId){
 }
 async function repairMissingSteamCovers({limit=100}={}){
   if(!db.getSettings().useSteamArtwork)return {found:0,attempted:0,disabled:true};
-  const candidates=db.list().filter(g=>!g.cover&&(g.source==='steam'||(['manual','folder'].includes(g.source)&&catalogMatch(g.name)?.steamId))).slice(0,limit);
+  const candidates=db.list().filter(g=>!g.cover).slice(0,limit);
   let found=0;
   for(let i=0;i<candidates.length;i+=3){
     const results=await Promise.allSettled(candidates.slice(i,i+3).map(async g=>{
@@ -94,7 +95,7 @@ async function repairMissingSteamCovers({limit=100}={}){
 }
 async function cachedSteamCover(game){
   if(game.cover||!db.getSettings().useSteamArtwork)return;
-  const appId=game.source==='steam'?game.source_id:['manual','folder'].includes(game.source)?catalogMatch(game.name)?.steamId:'';
+  const appId=game.source==='steam'?game.source_id:(catalogMatch(game.name)?.steamId||(await findExactSteamApp(game.name))?.steamId);
   if(!appId)return;
   const filename=await downloadSteamCover(appId);
   if(!filename)return;
@@ -120,8 +121,9 @@ async function discover(){
 }
 function handlers(){
   const bind=(name,fn)=>ipcMain.handle('orbit:'+name,async(_, ...args)=>{try{return await fn(...args)}catch(e){throw new Error(e?.message||'Unexpected error.')}});
-  bind('bootstrap',()=>({games:db.list(),settings:db.getSettings(),platform:process.platform,version:app.getVersion()}));
+  bind('bootstrap',()=>({games:db.list(),runningIds:activityTracker?.runningIds()||[],settings:db.getSettings(),platform:process.platform,version:app.getVersion()}));
   bind('listGames',()=>db.list());
+  bind('runningGames',()=>activityTracker?.runningIds()||[]);
   bind('getGame',id=>{if(!okId(id))throw Error('Invalid game identifier.');return db.get(id)});
   bind('addGame',data=>{const result=db.upsert(data);broadcast({type:'gamesChanged'});if(result.added)cachedSteamCover(result.game);return result});
   bind('updateGame',(id,patch)=>{if(!okId(id))throw Error('Invalid game identifier.');const result=db.update(id,patch);broadcast({type:'gamesChanged'});return result});
@@ -155,7 +157,7 @@ function handlers(){
     for(let i=0;i<games.length;i+=50){
       const batch=db.upsertBatch(games.slice(i,i+50));
       imported+=batch.imported;skipped+=batch.skipped;errors.push(...batch.errors);
-      if(fetchArtwork)artwork.push(...batch.addedGames.filter(g=>g.source==='steam'||g.source==='folder'));
+      if(fetchArtwork)artwork.push(...batch.addedGames);
       await new Promise(resolve=>setImmediate(resolve));
     }
     broadcast({type:'gamesChanged',reason:'import'});
@@ -166,7 +168,7 @@ function handlers(){
     if(!okId(id))throw Error('Invalid game identifier.');const game=db.get(id);if(!game)throw Error('Game was removed.');
     // A process can take time to emit "spawn". Reserve the game ID before
     // awaiting it so double-clicks cannot launch two copies concurrently.
-    if(sessions.has(id)||pendingLaunches.has(id))throw Error('This game is already launching or has a tracked session running.');
+    if(sessions.has(id)||pendingLaunches.has(id)||activityTracker?.isRunning(id))throw Error('This game is already launching or has a tracked session running.');
     pendingLaunches.add(id);
     try{
       let sessionId=null,startTime=0;
@@ -255,11 +257,20 @@ app.whenReady().then(async()=>{
   });
   handlers();nativeTheme.themeSource=db.getSettings().theme;
   createWindow();
+  if(process.platform==='win32'){
+    activityTracker=new WindowsActivityTracker({
+      listGames:()=>db.list(),isDirectSession:id=>sessions.has(id),
+      start:id=>db.startSession(id),finish:(sessionId,seconds)=>db.finishSession(sessionId,seconds),
+      onChange:()=>broadcast({type:'gamesChanged',reason:'playtime'})
+    });
+    activityTracker.start();
+  }
   if(db.getSettings().useSteamArtwork)setTimeout(()=>repairMissingSteamCovers({limit:30}).catch(()=>{}),2500);
   if(db.getSettings().autoScan)setTimeout(async()=>{try{const result=await discover();const imported=[];for(const g of result.games)if(!g.alreadyAdded&&!g.downloadCandidate)imported.push(g);if(imported.length){for(let i=0;i<imported.length;i+=50){db.upsertBatch(imported.slice(i,i+50));await new Promise(resolve=>setImmediate(resolve));}broadcast({type:'gamesChanged',reason:'autoScan'});}}catch(e){broadcast({type:'error',message:`Background scan failed: ${e.message}`})}},1000);
   app.on('activate',()=>{if(BrowserWindow.getAllWindows().length===0)createWindow()});
 });
 app.on('before-quit',()=>{
+  activityTracker?.stop();activityTracker=null;
   if(db){for(const [id,session] of sessions){try{const started=db.db.prepare('SELECT started_at FROM sessions WHERE id=?').get(session);if(started)db.finishSession(session,Math.floor((Date.now()-Date.parse(started.started_at))/1000))}catch{}}db.close();db=null;}
 });
 app.on('window-all-closed',()=>{if(process.platform!=='darwin')app.quit()});

@@ -41,3 +41,13 @@ test('invalid Steam IDs never access network',async()=>{
  assert.deepEqual(await steamMetadataUrls('bad',{fetchImpl:async()=>{throw Error('network')}}),[]);
  assert.equal(await findSteamCover('bad',{fetchImpl:async()=>{throw Error('network')}}),null);
 });
+
+test('Delisted Rocket League uses an available published portrait fallback',async()=>{
+ const requests=[];
+ const cover=await findSteamCover('252950',{local:async()=>null,fetchImpl:async url=>{
+  requests.push(url);
+  if(url.includes('GetItems'))return json({response:{store_items:[]}});
+  return url.includes('cc030d5cf1de6d485d41685bf2aac8ae4ca8ab8e/library_capsule_2x.jpg')?image():new Response('missing',{status:404});
+ }});
+ assert.deepEqual(cover,jpeg);assert.ok(requests.at(-1).includes('library_capsule_2x.jpg'));
+});

@@ -188,9 +188,7 @@ async function scanDownloadsFolder(downloadsPath,{platform=process.platform}={})
 }
 async function discoverAll(settings,{downloadsPath=path.join(os.homedir(),'Downloads'),platform=process.platform}={}){
   const results=await Promise.allSettled([discoverSteam(),discoverEpic(),discoverGog(),discoverGogRegistry()]);
-  if(settings.scanDownloads!==false){
-    results.push(await Promise.resolve().then(()=>scanDownloadsFolder(downloadsPath,{platform})).then(value=>({status:'fulfilled',value}),reason=>({status:'rejected',reason})));
-  }
+  // Downloads is not included in automatic discovery. Add standalone games manually.
   const folders=(settings.libraryFolders||[]).slice(0,60);
   for(let i=0;i<folders.length;i+=4){
     results.push(...await Promise.allSettled(folders.slice(i,i+4).map(dir=>scanFolder(dir))));

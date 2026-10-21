@@ -8,7 +8,7 @@ const {pathToFileURL}=require('node:url');
 const {LibraryDatabase}=require('./core/database.cjs');
 const {discoverAll}=require('./core/discovery.cjs');
 const {launchGame:executeGame,deferredExit}=require('./core/launch.cjs');
-const {findSteamCover}=require('./core/steam-cover.cjs');
+const {findSteamCover,localSteamIcon}=require('./core/steam-cover.cjs');
 const {isPortraitArtwork}=require('./core/cover-shape.cjs');
 const {inspectGameFile}=require('./core/game-file.cjs');
 const {findGameExecutable}=require('./core/game-executable.cjs');
@@ -98,8 +98,14 @@ async function cacheGameIcon(game){
   // Storefront imports contain installation folders but often lack an EXE.
   // Inspect the existing files without changing the Steam/Epic launch URI.
   const executable=await findGameExecutable(game);
-  if(!executable)return false;
-  const icon=await extractNativeIcon(executable);
+  let icon='';
+  if(executable)try{icon=await extractNativeIcon(executable)}catch{}
+  // Some Steam titles have no easy-to-identify EXE. Steam may already have
+  // a local library icon; this requires no online service or API key.
+  if(!icon&&game.source==='steam'){
+    const cached=await localSteamIcon(game.source_id);
+    if(cached)try{icon=await saveArtwork(cached)}catch{}
+  }
   if(!icon)return false;
   const current=db.get(game.id);
   if(!current||current.icon||current.executable!==game.executable||current.install_path!==game.install_path)return false;

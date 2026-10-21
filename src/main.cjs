@@ -8,7 +8,7 @@ const {pathToFileURL}=require('node:url');
 const {LibraryDatabase}=require('./core/database.cjs');
 const {discoverAll}=require('./core/discovery.cjs');
 const {launchGame:executeGame,deferredExit}=require('./core/launch.cjs');
-const {readJpegWithLimit}=require('./core/artwork.cjs');
+const {findSteamCover}=require('./core/steam-cover.cjs');
 const {inspectGameFile}=require('./core/game-file.cjs');
 const {findExactSteamApp}=require('./core/steam-search.cjs');
 const {catalogMatch}=require('./core/game-identity.cjs');
@@ -71,21 +71,26 @@ async function extractNativeIcon(executable){
   return file;
 }
 async function downloadSteamCover(appId){
-  if(!/^[0-9]{1,15}$/.test(String(appId||'')))return '';
-  const url=`https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${appId}/library_600x900.jpg`;
-  try{
-    const response=await fetch(url,{signal:AbortSignal.timeout(4000)});
-    const bytes=await readJpegWithLimit(response);
-    if(!bytes)return '';
-    // Hash-based filenames are stable for repeated local selections and
-    // existing imports. No duplicate file is written for identical artwork.
-    const digest=crypto.createHash('sha256').update(bytes).digest('hex');
-    const filename=`${digest.slice(0,8)}-${digest.slice(8,12)}-${digest.slice(12,16)}-${digest.slice(16,20)}-${digest.slice(20,32)}.jpg`;
-    await fsp.mkdir(artworkDir(),{recursive:true});
-    try{await fsp.writeFile(path.join(artworkDir(),filename),bytes,{flag:'wx'});}
-    catch(e){if(e.code!=='EEXIST')throw e;}
-    return filename;
-  }catch{return '';}
+  const bytes=await findSteamCover(appId);
+  if(!bytes)return '';
+  const digest=crypto.createHash('sha256').update(bytes).digest('hex');
+  const filename=`${digest.slice(0,8)}-${digest.slice(8,12)}-${digest.slice(12,16)}-${digest.slice(16,20)}-${digest.slice(20,32)}.jpg`;
+  await fsp.mkdir(artworkDir(),{recursive:true});
+  try{await fsp.writeFile(path.join(artworkDir(),filename),bytes,{flag:'wx'});}
+  catch(e){if(e.code!=='EEXIST')throw e;}
+  return filename;
+}
+async function repairMissingSteamCovers({limit=100}={}){
+  if(!db.getSettings().useSteamArtwork)return {found:0,attempted:0,disabled:true};
+  const candidates=db.list().filter(g=>!g.cover&&(g.source==='steam'||(['manual','folder'].includes(g.source)&&catalogMatch(g.name)?.steamId))).slice(0,limit);
+  let found=0;
+  for(let i=0;i<candidates.length;i+=3){
+    const results=await Promise.allSettled(candidates.slice(i,i+3).map(async g=>{
+      await cachedSteamCover(g);return !!db.get(g.id)?.cover;
+    }));
+    found+=results.filter(r=>r.status==='fulfilled'&&r.value).length;
+  }
+  return {found,attempted:candidates.length,disabled:false};
 }
 async function cachedSteamCover(game){
   if(game.cover||!db.getSettings().useSteamArtwork)return;
@@ -101,7 +106,7 @@ async function discover(){
   if(scanning)throw Error('A library scan is already running.');
   scanning=true;broadcast({type:'scanStarted'});
   try{
-    const result=await discoverAll(db.getSettings());
+    const result=await discoverAll(db.getSettings(),{downloadsPath:app.getPath('downloads')});
     const library=db.list();
     const knownSources=new Set(library.filter(g=>g.source_id).map(g=>`${g.source}:${g.source_id}`));
     const knownFiles=new Set(library.filter(g=>g.executable).map(g=>path.normalize(g.executable).toLowerCase()));
@@ -142,6 +147,7 @@ function handlers(){
   bind('chooseArtwork',imageFromDialog);
   bind('chooseFolder',async()=>{const result=await dialog.showOpenDialog(win,{title:'Choose game library folder',properties:['openDirectory']});return result.canceled?null:result.filePaths[0]});
   bind('discoverGames',discover);
+  bind('repairSteamArtwork',()=>repairMissingSteamCovers({limit:300}));
   bind('importGames',async games=>{
     if(!Array.isArray(games)||games.length>10000)throw Error('Invalid import batch.');
     let imported=0,skipped=0;const artwork=[];const errors=[];
@@ -249,7 +255,8 @@ app.whenReady().then(async()=>{
   });
   handlers();nativeTheme.themeSource=db.getSettings().theme;
   createWindow();
-  if(db.getSettings().autoScan)setTimeout(async()=>{try{const result=await discover();const imported=[];for(const g of result.games)if(!g.alreadyAdded)imported.push(g);if(imported.length){for(let i=0;i<imported.length;i+=50){db.upsertBatch(imported.slice(i,i+50));await new Promise(resolve=>setImmediate(resolve));}broadcast({type:'gamesChanged',reason:'autoScan'});}}catch(e){broadcast({type:'error',message:`Background scan failed: ${e.message}`})}},1000);
+  if(db.getSettings().useSteamArtwork)setTimeout(()=>repairMissingSteamCovers({limit:30}).catch(()=>{}),2500);
+  if(db.getSettings().autoScan)setTimeout(async()=>{try{const result=await discover();const imported=[];for(const g of result.games)if(!g.alreadyAdded&&!g.downloadCandidate)imported.push(g);if(imported.length){for(let i=0;i<imported.length;i+=50){db.upsertBatch(imported.slice(i,i+50));await new Promise(resolve=>setImmediate(resolve));}broadcast({type:'gamesChanged',reason:'autoScan'});}}catch(e){broadcast({type:'error',message:`Background scan failed: ${e.message}`})}},1000);
   app.on('activate',()=>{if(BrowserWindow.getAllWindows().length===0)createWindow()});
 });
 app.on('before-quit',()=>{

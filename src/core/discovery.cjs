@@ -91,10 +91,10 @@ async function discoverEpic(roots=epicManifestRoots()){
   return {games,warnings};
 }
 const ignored=/^(unins\d*|uninstall|setup|install|crashreport|unitycrash|vc_redist|vcredist|dxsetup|update|updater|bootstrapper|launcher\s*setup|eac|easyanticheat|redist|redistributable|configuration|repair)([_.-]|$)/i;
-function likelyGameExecutable(name){
+function likelyGameExecutable(name,platform=process.platform){
   if(ignored.test(name)||name.toLowerCase().includes('uninstall'))return false;
-  if(process.platform==='win32')return /\.exe$/i.test(name);
-  if(process.platform==='darwin')return /\.app$/i.test(name);
+  if(platform==='win32')return /\.exe$/i.test(name);
+  if(platform==='darwin')return /\.app$/i.test(name);
   return !name.startsWith('.');
 }
 async function discoverGog(roots=gogRoots()){
@@ -133,7 +133,7 @@ async function discoverGogRegistry(){
   }
   return {games,warnings};
 }
-async function scanFolder(root,{limit=6000,maxDepth=3}={}){
+async function scanFolder(root,{limit=6000,maxDepth=3,platform=process.platform}={}){
   const games=[],warnings=[];if(!path.isAbsolute(root)||!(await isDir(root)))return {games,warnings:[`Folder unavailable: ${root}`]};
   let seen=0;const queue=[{dir:root,depth:0}];let cursor=0;
   while(cursor<queue.length&&seen<limit){const {dir,depth}=queue[cursor++];let entries;
@@ -148,10 +148,10 @@ async function scanFolder(root,{limit=6000,maxDepth=3}={}){
       const full=path.join(dir,entry.name);
       if(entry.isSymbolicLink())continue;
       if(entry.isDirectory()){
-        if(process.platform==='darwin'&&entry.name.endsWith('.app')){candidates.push(full);continue;}
+        if(platform==='darwin'&&entry.name.endsWith('.app')){candidates.push(full);continue;}
         if(depth<maxDepth&&!/^(node_modules|\.git|__pycache__|redist|redistributables|_commonredist|engine|binaries|support|prerequisites|windows|system32)$/i.test(entry.name))queue.push({dir:full,depth:depth+1});
-      }else if(entry.isFile()&&likelyGameExecutable(entry.name)){
-        if(process.platform==='win32'||/\.(AppImage|sh|x86_64|bin)$/i.test(entry.name))candidates.push(full);
+      }else if(entry.isFile()&&likelyGameExecutable(entry.name,platform)){
+        if(platform==='win32'||/\.(AppImage|sh|x86_64|bin)$/i.test(entry.name))candidates.push(full);
         else {try{if((await fsp.stat(full)).mode&0o111)candidates.push(full)}catch{}}
       }
     }
@@ -171,8 +171,26 @@ async function scanFolder(root,{limit=6000,maxDepth=3}={}){
   if(seen>=limit)warnings.push(`Scan stopped at ${limit} entries for ${root}; choose smaller folders for complete results.`);
   return {games,warnings};
 }
-async function discoverAll(settings){
+async function scanDownloadsFolder(downloadsPath,{platform=process.platform}={}){
+  if(!downloadsPath||!path.isAbsolute(downloadsPath))return {games:[],warnings:[]};
+  if(!(await isDir(downloadsPath)))return {games:[],warnings:[]};
+  // Downloads contains installers and utilities; review candidates before import.
+  const result=await scanFolder(downloadsPath,{limit:2400,maxDepth:2,platform});
+  result.games=result.games.filter(game=>{
+    const file=path.basename(game.executable||'');
+    if(ignored.test(file)||/^(?:discord|chrome|firefox|steam|epicgames|7z|winrar|obs|vlc|node|python|java)(?:[_.-]|\d|$)/i.test(file))return false;
+    const relative=path.relative(downloadsPath,game.executable||'');
+    const atRoot=!relative.includes(path.sep);
+    return !atRoot||identifyGame(game.executable).kind!=='filename';
+  });
+  result.games=result.games.map(game=>({...game,downloadCandidate:true}));
+  return result;
+}
+async function discoverAll(settings,{downloadsPath=path.join(os.homedir(),'Downloads'),platform=process.platform}={}){
   const results=await Promise.allSettled([discoverSteam(),discoverEpic(),discoverGog(),discoverGogRegistry()]);
+  if(settings.scanDownloads!==false){
+    results.push(await Promise.resolve().then(()=>scanDownloadsFolder(downloadsPath,{platform})).then(value=>({status:'fulfilled',value}),reason=>({status:'rejected',reason})));
+  }
   const folders=(settings.libraryFolders||[]).slice(0,60);
   for(let i=0;i<folders.length;i+=4){
     results.push(...await Promise.allSettled(folders.slice(i,i+4).map(dir=>scanFolder(dir))));
@@ -192,4 +210,4 @@ async function discoverAll(settings){
   }
   return {games,warnings};
 }
-module.exports={parseVdf,discoverSteam,discoverEpic,discoverGog,discoverGogRegistry,scanFolder,discoverAll,steamRoots,epicManifestRoots,gogRoots};
+module.exports={parseVdf,discoverSteam,discoverEpic,discoverGog,discoverGogRegistry,scanFolder,scanDownloadsFolder,discoverAll,steamRoots,epicManifestRoots,gogRoots};

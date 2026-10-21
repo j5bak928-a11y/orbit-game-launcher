@@ -13,7 +13,7 @@ on:
       - ".github/workflows/windows-build.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   windows:
@@ -37,12 +37,14 @@ jobs:
         run: npm run dist:win -- --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      - name: Upload Windows executables
-        uses: actions/upload-artifact@v4
-        with:
-          name: orbit-windows-exe
-          path: |
-            release/*.exe
-            release/*.blockmap
-          if-no-files-found: error
-          retention-days: 14
+      - name: Attach executables to a private prerelease
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $tag = "orbit-windows-$version-build-$env:GITHUB_RUN_NUMBER"
+          $files = @(Get-ChildItem -Path release -Filter '*.exe' | ForEach-Object { $_.FullName })
+          if ($files.Count -lt 2) { throw 'Expected both a Windows installer and portable EXE.' }
+          gh release create $tag @files --title "Orbit Windows $version (test build)" --notes "Unsigned Windows installer and portable executable from this source commit. Not yet verified by an interactive Windows launch test. This repository currently contains v1.0.0; v1.1 source has not been pushed." --prerelease --latest=false --target $env:GITHUB_SHA

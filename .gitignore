@@ -1,0 +1,26 @@
+# Dependencies and build outputs
+node_modules/
+release/
+dist/
+coverage/
+.cache/
+.DS_Store
+Thumbs.db
+*.log
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
+
+# Runtime library data and backups
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+*.orbit
+userData/

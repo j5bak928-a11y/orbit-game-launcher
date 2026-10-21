@@ -4,7 +4,7 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs/promises');
 const os=require('node:os');
 const path=require('node:path');
-const {officialAssetUrls,steamMetadataUrls,localSteamCover,findSteamCover}=require('../src/core/steam-cover.cjs');
+const {officialAssetUrls,steamMetadataUrls,localSteamCover,localSteamIcon,findSteamCover}=require('../src/core/steam-cover.cjs');
 const jpeg=Buffer.from([255,216,255,192,0,11,8,3,132,2,88,1,1,17,0,255,217]);
 const landscape=Buffer.from([255,216,255,192,0,11,8,1,97,2,104,1,1,17,0,255,217]);
 const hash='a'.repeat(40);
@@ -72,4 +72,15 @@ test('never promotes wide-only Steam banners into portrait library covers',async
   return new Response(landscape,{headers:{'content-type':'image/jpeg'}});
  }});
  assert.equal(result,null);
+});
+
+test('Steam cached icon is usable when no portrait is available',async()=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'orbit-steam-icon-'));
+ try{
+  const dir=path.join(root,'appcache','librarycache');await fs.mkdir(dir,{recursive:true});
+  const file=path.join(dir,'8765_icon.jpg');await fs.writeFile(file,Buffer.alloc(60,17));
+  assert.equal(await localSteamIcon('8765',{roots:[root]}),file);
+  assert.equal(await localSteamIcon('other',{roots:[root]}),'');
+  assert.equal(await localSteamIcon('9901',{roots:[root]}),'');
+ }finally{await fs.rm(root,{recursive:true,force:true})}
 });

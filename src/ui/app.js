@@ -41,7 +41,7 @@ const palette=['#8b7aff','#5bafef','#fc8ca8','#53c5b3','#f3a65c','#bf87f5'];
 function artwork(token){return /^[a-f\d-]{36}\.(jpg|jpeg|png|webp)$/.test(token||'')?`orbit-art://file/${token}`:null}
 function paletteFor(name){let hash=0;for(const c of name||'')hash=(hash*31+c.charCodeAt(0))>>>0;return [hash%360,(hash*11+126)%360]}
 function coverStyle(g){const [hue,hue2]=paletteFor(g.name);return `--hue:${hue};--hue2:${hue2}`}
-function coverImage(g){return artwork(g.cover)?`<img class="cover-image" src="${artwork(g.cover)}" loading="lazy" alt="" />`:artwork(g.icon)?`<span class="cover-icon-frame"><img class="cover-icon" src="${artwork(g.icon)}" loading="lazy" alt="" /></span>`:''}
+function coverImage(g){const fallback=artwork(g.icon)?`<span class="cover-icon-frame"><img class="cover-icon" src="${artwork(g.icon)}" loading="lazy" alt="" /></span>`:'';const poster=artwork(g.cover)?`<img class="cover-image" src="${artwork(g.cover)}" loading="lazy" alt="" />`:'';return fallback+poster;}
 function timeLabel(seconds){if(!seconds)return 'Not played yet';const hrs=Math.floor(seconds/3600),mins=Math.round((seconds%3600)/60);return hrs?`${hrs}h ${mins}m played`:`${Math.max(1,mins)}m played`}
 function sourceLabel(game){return sourceNames[game.source]||'Game'}
 function formatDate(date){if(!date)return 'Never';const d=new Date(date);return Number.isNaN(d.getTime())?'Unknown':new Intl.DateTimeFormat(undefined,{month:'short',day:'numeric',year:'numeric'}).format(d)}
@@ -63,7 +63,7 @@ function card(g){return `<article class="game-card" style="${coverStyle(g)}" dat
   <div class="game-label"><div style="min-width:0"><span class="game-name" title="${esc(g.name)}">${esc(g.name)}</span><span class="game-meta">${state.runningIds?.includes(g.id)?'● Playing now':g.total_play_seconds?esc(timeLabel(g.total_play_seconds)):esc(sourceLabel(g))}</span></div>
   <button class="game-menu" data-action="detail" data-id="${esc(g.id)}" aria-label="More about ${esc(g.name)}">${ic('dots',18)}</button></div></article>`}
 function rowGame(g){return `<article class="game-row" data-action="detail" data-id="${esc(g.id)}" tabindex="0" role="button" aria-label="View ${esc(g.name)}">
-  <div class="row-cover" style="${coverStyle(g)}">${artwork(g.cover||g.icon)?`<img src="${artwork(g.cover||g.icon)}" alt="" loading="lazy" class="${artwork(g.cover)?'':'list-game-icon'}" />`:esc(g.name.slice(0,1))}</div>
+  <div class="row-cover" style="${coverStyle(g)}">${esc(g.name.slice(0,1))}${artwork(g.cover||g.icon)?`<img src="${artwork(g.cover||g.icon)}" alt="" loading="lazy" class="${artwork(g.cover)?'':'list-game-icon'}" />`:''}</div>
   <div class="row-info"><h3>${esc(g.name)}</h3><p>${esc(sourceLabel(g))}${g.tags?.length?' · '+esc(g.tags.slice(0,2).join(', ')):''}</p></div>
   <div class="row-right"><span class="playtime">${esc(timeLabel(g.total_play_seconds))}</span><button class="ghost-btn" data-action="favorite" data-id="${esc(g.id)}" aria-label="Toggle favorite" style="${g.favorite?'color:#ffc171':''}">${ic('heart',17)}</button><button class="ghost-btn row-play" data-action="launch" data-id="${esc(g.id)}">${ic('play',15)} Play</button></div></article>`}
 function sidebar(){const links=[['home','home','Overview'],['library','library','My library'],['favorites','heart','Favorites'],['recent','clock','Recently played']];return `<aside class="sidebar">
@@ -125,7 +125,7 @@ function settingsView(){const s=state.settings,folders=s.libraryFolders||[];retu
  <div class="settings-card"><h2>Library discovery</h2><p>Orbit searches installed game stores and folders you select. Downloads is never scanned automatically.</p>
  <div class="setting-row"><div><div class="setting-name">Scan at startup</div><div class="setting-help">Look for new games whenever Orbit starts.</div></div><button class="switch ${s.autoScan?'on':''}" data-action="setting-toggle" data-key="autoScan" role="switch" aria-checked="${s.autoScan}" aria-label="Scan at startup"></button></div>
  <div class="setting-row"><div><div class="setting-name">Steam artwork</div><div class="setting-help">Download publicly available cover images when online.</div></div><button class="switch ${s.useSteamArtwork?'on':''}" data-action="setting-toggle" data-key="useSteamArtwork" role="switch" aria-checked="${s.useSteamArtwork}" aria-label="Steam artwork downloads"></button></div>
- <div class="setting-row"><div><div class="setting-name">Missing game covers</div><div class="setting-help">Retry missing covers for Steam, Epic and manually imported games.</div></div><button class="secondary-btn" data-action="repair-artwork">${ic('refresh',14)} Repair missing covers</button></div>
+ <div class="setting-row"><div><div class="setting-name">Missing or incorrect covers</div><div class="setting-help">Find proper portrait covers for empty and wide-image cards. This can replace manually chosen landscape artwork; valid portraits are preserved.</div></div><button class="secondary-btn" data-action="repair-artwork">${ic('refresh',14)} Repair library covers</button></div>
  <div class="setting-row"><div><div class="setting-name">Custom library locations</div><div class="setting-help">Optional folders to scan for game executables and GOG info files.</div></div><button class="secondary-btn" data-action="add-folder">${ic('plus',14)} Add folder</button></div>
  <div class="folder-list">${folders.length?folders.map((f,index)=>`<div class="folder-item">${ic('folder',15)}<span title="${esc(f)}">${esc(f)}</span><button data-action="remove-folder" data-index="${index}" aria-label="Remove folder">${ic('close',15)}</button></div>`).join(''):'<span class="setting-help">No custom folders yet. Steam, Epic and GOG discovery works independently.</span>'}</div><div style="margin-top:16px"><button class="secondary-btn" data-action="scan">${ic('refresh',15)} Scan now</button></div></div>
  <div class="settings-card"><h2>Data & privacy</h2><p>Your collection lives in a local SQLite database. Orbit does not require an account.</p>
@@ -265,7 +265,7 @@ async function handleAction(button){const action=button.dataset.action,id=button
   case 'remove-confirm':openModal('remove',{id});break;
   case 'remove':try{await window.orbit.removeGame(id);closeModal();await refreshGames();toast('Game removed from your library.')}catch(e){toast(e.message,true)}break;
   case 'scan':await performScan();break;
-  case 'repair-artwork':{button.disabled=true;try{const result=await window.orbit.repairSteamArtwork();await refreshGames();toast(result.disabled?'Enable Steam artwork downloads first.':`Found ${result.found} covers out of ${result.attempted} missing games.`)}catch(e){toast(e.message||'Cover repair failed.',true)}finally{button.disabled=false}break;}
+  case 'repair-artwork':{button.disabled=true;try{const result=await window.orbit.repairSteamArtwork();await refreshGames();toast(result.disabled?'Enable Steam artwork downloads first.':`Repaired ${result.found} of ${result.attempted} missing or landscape covers.`)}catch(e){toast(e.message||'Cover repair failed.',true)}finally{button.disabled=false}break;}
   case 'import':await performImport();break;
   case 'toggle-all-import':{const allowed=state.imports.flatMap((g,i)=>g.alreadyAdded?[]:[i]).slice(0,MAX_IMPORT_SELECTION);state.selectedImports=state.selectedImports.size?new Set():new Set(allowed);renderModal();break;}
   case 'import-page':{const direction=button.dataset.page;state.importPage=Math.max(0,Math.min(Math.ceil(state.imports.length/IMPORT_PAGE_SIZE)-1,state.importPage+(direction==='next'?1:-1)));renderModal();el('modal-root').querySelector(`[data-page="${direction}"]:not([disabled])`)?.focus();break;}
@@ -345,6 +345,18 @@ document.addEventListener('keydown',event=>{
   }
  }
 });
+// A wide header/banner is not a portrait cover. Let the icon or gradient
+// show until the user requests a proper portrait via Repair library covers.
+function checkCoverAspect(img){
+  if(!(img instanceof HTMLImageElement)||!img.matches('.cover-image,.row-cover img:not(.list-game-icon)'))return;
+  const ratio=img.naturalHeight?img.naturalWidth/img.naturalHeight:0;
+  img.classList.toggle('bad-aspect',ratio<0.5||ratio>0.85);
+}
+document.addEventListener('load',event=>checkCoverAspect(event.target),true);
+document.addEventListener('error',event=>{
+  if(event.target instanceof HTMLImageElement&&event.target.matches('.cover-image,.row-cover img:not(.list-game-icon)'))
+    event.target.classList.add('bad-aspect');
+},true);
 window.addEventListener('resize',()=>{if(['library','recent','favorites'].includes(state.route))renderVirtual()});
 window.matchMedia?.('(prefers-color-scheme:light)')?.addEventListener('change',()=>{if(state.settings?.theme==='system')setupTheme()});
 async function boot(){try{if(!window.orbit)throw Error('Desktop integration is unavailable. Start Orbit using Electron.');

@@ -84,3 +84,41 @@ test('Steam cached icon is usable when no portrait is available',async()=>{
   assert.equal(await localSteamIcon('9901',{roots:[root]}),'');
  }finally{await fs.rm(root,{recursive:true,force:true})}
 });
+
+test('newer Steam library_capsule assets are accepted without accidentally fetching wide headers',async()=>{
+ const modern={appid:5043180,assets:{asset_url_format:'steam/apps/5043180/${FILENAME}?t=20261009',
+   library_capsule_2x:'89f835791c1daa04f54fc43aa35da99a62683925/library_capsule_2x.jpg',
+   library_capsule:'89f835791c1daa04f54fc43aa35da99a62683925/library_capsule.jpg',
+   header:'dbc92ea85a96bf4d26352de723f9bc5362e140a5/header.jpg'}};
+ const urls=officialAssetUrls('5043180',modern.assets);
+ assert.equal(urls.length,2);
+ assert.match(urls[0],/5043180\/89f835791c1daa04f54fc43aa35da99a62683925\/library_capsule_2x.jpg/);
+ assert.ok(urls.every(u=>!u.includes('header.jpg')));
+ const requested=[];
+ const cover=await findSteamCover('5043180',{local:async()=>null,fetchImpl:async url=>{
+   requested.push(url);
+   if(url.includes('GetItems'))return json({response:{store_items:[modern]}});
+   if(url.includes('library_capsule_2x.jpg'))return image();
+   return new Response('Not found',{status:404});
+ }});
+ assert.deepEqual(cover,jpeg);
+ assert.equal(requested.length,2);
+});
+test('Football, sports and other recent Steam cover names are supported, but unsafe files are rejected',()=>{
+ const hash40='81210d536b70c14e4cf9725f3f03d82bf64e5e25';
+ const assets={asset_url_format:'steam/apps/4080220/${FILENAME}',library_capsule_2x:hash40+'/library_capsule_2x.jpg'};
+ assert.match(officialAssetUrls('4080220',assets)[0],/library_capsule_2x.jpg$/);
+ assert.deepEqual(officialAssetUrls('4080220',{...assets,library_capsule_2x:hash40+'/header.jpg'}),[]);
+ assert.deepEqual(officialAssetUrls('4080220',{...assets,library_capsule_2x:'https://attacker.example/art.jpg'}),[]);
+ assert.deepEqual(officialAssetUrls('4080220',{...assets,asset_url_format:'https://attacker.example/${FILENAME}'}),[]);
+});
+test('Steam can load a newer portrait capsule from the disk cache without the internet',async()=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'orbit-capsule-modern-'));
+ try{
+   const dir=path.join(root,'appcache','librarycache','4080220',hash);
+   await fs.mkdir(dir,{recursive:true});
+   await fs.writeFile(path.join(dir,'library_capsule_2x.jpg'),jpeg);
+   assert.deepEqual(await localSteamCover('4080220',{roots:[root]}),jpeg);
+   assert.deepEqual(await findSteamCover('4080220',{roots:[root],fetchImpl:async()=>{throw Error('offline')}}),jpeg);
+ }finally{await fs.rm(root,{recursive:true,force:true})}
+});

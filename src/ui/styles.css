@@ -42,3 +42,15 @@ body[data-reduce-motion=true] *,body[data-reduce-motion=true] *:before,body[data
 .cover-image.bad-aspect,.row-cover img.bad-aspect{display:none!important}
 .cover:has(.cover-image.bad-aspect){background:linear-gradient(151deg,hsl(var(--hue) 54% 39%),hsl(var(--hue2) 45% 13%) 83%);border-color:var(--border)}
 .cover:has(.cover-image.bad-aspect)::before,.cover:has(.cover-image.bad-aspect)::after{display:block}
+
+/* A missing portrait is not an invitation to upscale a Windows application icon.
+   Use a readable game title and a quiet icon instead of a full-card default EXE logo. */
+.cover:has(.cover-placeholder-title) .cover-letter{display:none}
+.cover-placeholder-title{position:absolute;z-index:2;top:63%;left:12%;width:76%;
+  color:#f5f4ff;text-align:center;font-size:clamp(12px,1.1vw,16px);font-weight:800;
+  line-height:1.32;letter-spacing:-.025em;overflow:hidden;
+  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+  text-shadow:0 2px 14px rgba(0,0,0,.45);pointer-events:none}
+.cover:has(.cover-image:not(.bad-aspect)) .cover-placeholder-title{display:none}
+.cover-icon-frame{align-items:start;padding-top:25%;background:none}
+.cover-icon{width:32%;max-height:34%;filter:drop-shadow(0 7px 14px rgba(0,0,0,.26))}

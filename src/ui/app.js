@@ -41,7 +41,7 @@ const palette=['#8b7aff','#5bafef','#fc8ca8','#53c5b3','#f3a65c','#bf87f5'];
 function artwork(token){return /^[a-f\d-]{36}\.(jpg|jpeg|png|webp)$/.test(token||'')?`orbit-art://file/${token}`:null}
 function paletteFor(name){let hash=0;for(const c of name||'')hash=(hash*31+c.charCodeAt(0))>>>0;return [hash%360,(hash*11+126)%360]}
 function coverStyle(g){const [hue,hue2]=paletteFor(g.name);return `--hue:${hue};--hue2:${hue2}`}
-function coverImage(g){const fallback=artwork(g.icon)?`<span class="cover-icon-frame"><img class="cover-icon" src="${artwork(g.icon)}" loading="lazy" alt="" /></span>`:'';const poster=artwork(g.cover)?`<img class="cover-image" src="${artwork(g.cover)}" loading="lazy" alt="" />`:'';return fallback+poster;}
+function coverImage(g){const fallback=artwork(g.icon)?`<span class="cover-icon-frame"><img class="cover-icon" src="${artwork(g.icon)}" loading="lazy" alt="" /></span>`:'';const title=`<span class="cover-placeholder-title">${esc(g.name)}</span>`;const poster=artwork(g.cover)?`<img class="cover-image" src="${artwork(g.cover)}" loading="lazy" alt="" />`:'';return fallback+title+poster;}
 function timeLabel(seconds){if(!seconds)return 'Not played yet';const hrs=Math.floor(seconds/3600),mins=Math.round((seconds%3600)/60);return hrs?`${hrs}h ${mins}m played`:`${Math.max(1,mins)}m played`}
 function sourceLabel(game){return sourceNames[game.source]||'Game'}
 function formatDate(date){if(!date)return 'Never';const d=new Date(date);return Number.isNaN(d.getTime())?'Unknown':new Intl.DateTimeFormat(undefined,{month:'short',day:'numeric',year:'numeric'}).format(d)}

@@ -160,3 +160,9 @@ The app is still a **0.x pre-release**. Installer compilation and unit tests do 
 Orbit searches only existing game installation folders, with depth and entry-count limits and exclusions for installers, crash reporters and anti-cheat tools; it does not scan Downloads. Icon extraction also works with online artwork downloads disabled. The Settings repair action reports separate numbers of covers and icons recovered.
 
 **Limitations:** Not all Steam games offer a retrievable portrait cover, and Windows may return a generic icon for executables without an embedded resource. Native results on particular games need real Windows verification. No third-party artwork account or API key is required for this fallback.
+
+## v0.9.4: Modern Steam portrait capsules
+
+New Steam titles can use `library_capsule.jpg` and `library_capsule_2x.jpg` rather than `library_600x900.jpg`. Orbit now accepts both modern and legacy portrait assets through Steam's public GetItems metadata, plus their equivalent local Steam library-cache paths. This fixes a known cause of missing legitimate portraits on newer releases (including the artwork format used by CoasterWorks and EA SPORTS FC 27) without adding title-specific artwork IDs or any API key. Only verified portrait images are selected for the library; wide headers and arbitrary remote URLs remain rejected.
+
+**After installing:** open Settings → Library discovery → Repair library covers to fill missing portrait covers. Existing proper covers and personal game metadata remain intact. Games without publicly accessible artwork still fall back to a smaller icon plus a readable game name rather than an oversized application icon. Actual coverage depends on availability of Steam's public assets and your network. Native in-app Windows visual checks are still needed before the 1.0 milestone.

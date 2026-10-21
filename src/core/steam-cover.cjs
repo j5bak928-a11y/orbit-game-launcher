@@ -2,6 +2,7 @@
 const fs=require('node:fs/promises');
 const path=require('node:path');
 const {readJpegWithLimit}=require('./artwork.cjs');
+const {isPortraitArtwork}=require('./cover-shape.cjs');
 const {steamRoots}=require('./discovery.cjs');
 
 const CDN='https://shared.fastly.steamstatic.com/store_item_assets/';
@@ -15,7 +16,7 @@ function officialAssetUrls(appId,assets){
   const template=String(assets.asset_url_format||'');
   if(!new RegExp(`^steam/apps/${appId}/(?:[a-f0-9]{40}/)?\\$\\{FILENAME\\}(?:\\?t=\\d+)?$`,'i').test(template))return [];
   const urls=[];
-  for(const key of ['library_capsule_2x','library_capsule','header','main_capsule']){
+  for(const key of ['library_capsule_2x','library_capsule']){
     const filename=assets[key];
     if(typeof filename!=='string'||!VALID_ASSET.test(filename))continue;
     urls.push(CDN+template.replace('${FILENAME}',filename));
@@ -56,7 +57,7 @@ async function localSteamCover(appId,{roots=steamRoots(),readFile=fs.readFile,re
     }
     for(const file of direct){
       try{const info=await stat(file);if(!info.isFile()||info.size>5*1024*1024||info.size<3)continue;
-        const bytes=await readFile(file);if(bytes.length<3||bytes[0]!==255||bytes[1]!==216||bytes[2]!==255)continue;
+        const bytes=await readFile(file);if(!isPortraitArtwork(bytes))continue;
         return bytes;
       }catch{}
     }
@@ -66,13 +67,13 @@ async function localSteamCover(appId,{roots=steamRoots(),readFile=fs.readFile,re
 
 async function findSteamCover(appId,{fetchImpl=globalThis.fetch,roots=steamRoots(),local=localSteamCover}={}){
   if(!validId(appId))return null;
-  const fromCache=await local(appId,{roots});if(fromCache)return fromCache;
+  const fromCache=await local(appId,{roots});if(fromCache&&isPortraitArtwork(fromCache))return fromCache;
   const metadata=await steamMetadataUrls(appId,{fetchImpl});
-  const fallbacks=['library_600x900_2x.jpg','library_600x900.jpg','header.jpg'].map(name=>`${CDN}steam/apps/${appId}/${name}`);
+  const fallbacks=['library_600x900_2x.jpg','library_600x900.jpg'].map(name=>`${CDN}steam/apps/${appId}/${name}`);
   const extra=LEGACY_GAME_PORTRAITS[String(appId)]?CDN+'steam/apps/'+appId+'/'+LEGACY_GAME_PORTRAITS[String(appId)]:'';
   const urls=[...new Set([...metadata,...fallbacks,extra].filter(Boolean))].slice(0,8);
   for(const url of urls){
-    try{const response=await fetchImpl(url,{signal:AbortSignal.timeout(2800)});const bytes=await readJpegWithLimit(response);if(bytes)return bytes;}catch{}
+    try{const response=await fetchImpl(url,{signal:AbortSignal.timeout(2800)});const bytes=await readJpegWithLimit(response);if(bytes&&isPortraitArtwork(bytes))return bytes;}catch{}
   }
   return null;
 }

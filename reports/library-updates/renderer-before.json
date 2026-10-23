@@ -1,0 +1,23 @@
+{
+  "mode": "before",
+  "browser": "155.0.8059.86",
+  "libraryGames": 5000,
+  "favorite": {
+    "listGames": 2,
+    "snapshot": 0,
+    "runningGames": 2,
+    "events": 1,
+    "pageRebuilds": 2,
+    "unchangedCardPreserved": false,
+    "favoriteFocusPreserved": false
+  },
+  "burst": {
+    "listGames": 25,
+    "snapshot": 0,
+    "runningGames": 25,
+    "events": 25,
+    "pageRebuilds": 25
+  },
+  "journeysPassed": false,
+  "note": "Mocked IPC in installed headless Chrome; not native Electron."
+}

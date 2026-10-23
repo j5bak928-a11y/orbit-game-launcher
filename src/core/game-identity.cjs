@@ -66,7 +66,7 @@ function folderCandidates(file){
 }
 function sensibleProductName(value){
   if(typeof value!=='string')return '';
-  const name=value.replace(/[\u0000-\u001f]+/g,' ').replace(/\s+/g,' ').trim();
+  const name=Array.from(value,c=>c.charCodeAt(0)<32?' ':c).join('').replace(/\s+/g,' ').trim();
   if(name.length<3||name.length>140||!/[a-z]{3}/i.test(name)||GENERIC.test(cleanKey(name)))return '';
   if(/^(?:microsoft|windows|unity|unreal engine|electron|game engine|product name|unknown)(?:\s|$)/i.test(name))return '';
   return name;

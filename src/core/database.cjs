@@ -77,12 +77,12 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
   getSettings(){
     const settings={...DEFAULT_SETTINGS};
     for(const {key,value} of this.db.prepare('SELECT key,value FROM settings').all()){
-      if(!Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS,key))continue;
+      if(!Object.hasOwn(DEFAULT_SETTINGS,key))continue;
       const parsed=json(value,DEFAULT_SETTINGS[key]);
       if(key==='theme'&&!['dark','light','system'].includes(parsed))continue;
       if(key==='accent'&&(typeof parsed!=='string'||!/^#[0-9a-fA-F]{6}$/.test(parsed)))continue;
       if(key==='view'&&!['grid','list'].includes(parsed))continue;
-      if(key==='sort'&&!Object.prototype.hasOwnProperty.call(SORTS,parsed))continue;
+      if(key==='sort'&&!Object.hasOwn(SORTS,parsed))continue;
       if(key==='libraryFolders'&&(!Array.isArray(parsed)||parsed.length>60||parsed.some(p=>!assertString(p,4000))))continue;
       if(['reduceMotion','autoScan','useSteamArtwork','scanDownloads','onboardingDone'].includes(key)&&typeof parsed!=='boolean')continue;
       settings[key]=parsed;
@@ -93,17 +93,21 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
   saveSettings(input){
     const allowed=['theme','accent','reduceMotion','autoScan','useSteamArtwork','libraryFolders','view','sort','onboardingDone'];
     const current=this.getSettings();const next={...current};
-    for(const key of allowed)if(Object.prototype.hasOwnProperty.call(input,key))next[key]=input[key];
+    for(const key of allowed)if(Object.hasOwn(input,key))next[key]=input[key];
     if(!['dark','light','system'].includes(next.theme))throw Error('Invalid theme.');
     if(!/^#[0-9a-fA-F]{6}$/.test(next.accent))throw Error('Invalid accent color.');
-    if(!['grid','list'].includes(next.view)||!Object.prototype.hasOwnProperty.call(SORTS,next.sort))throw Error('Invalid library preferences.');
+    if(!['grid','list'].includes(next.view)||!Object.hasOwn(SORTS,next.sort))throw Error('Invalid library preferences.');
     if(!Array.isArray(next.libraryFolders)||next.libraryFolders.length>60||next.libraryFolders.some(x=>!assertString(x,4000)))throw Error('Invalid library folders.');
     for(const key of ['reduceMotion','autoScan','useSteamArtwork','onboardingDone'])next[key]=!!next[key];
     const set=this.db.prepare('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value');
     this.db.exec('BEGIN');try{for(const key of allowed)set.run(key,encode(next[key]));this.db.exec('COMMIT')}catch(e){this.db.exec('ROLLBACK');throw e}
     return next;
   }
-  list(sort='name'){const order=Object.prototype.hasOwnProperty.call(SORTS,sort)?SORTS[sort]:SORTS.name;return this.db.prepare(`SELECT ${COLUMNS.join(',')} FROM games ORDER BY ${order}`).all().map(deserialize);}
+  list(sort='name'){const order=Object.hasOwn(SORTS,sort)?SORTS[sort]:SORTS.name;return this.db.prepare(`SELECT ${COLUMNS.join(',')} FROM games ORDER BY ${order}`).all().map(deserialize);}
+  listActivityGames(){
+    this.activityList ??= this.db.prepare("SELECT id,source,install_path FROM games WHERE source IN ('steam','epic') AND install_path != ''");
+    return this.activityList.all();
+  }
   get(id){return deserialize(this.db.prepare(`SELECT ${COLUMNS.join(',')} FROM games WHERE id=?`).get(id));}
   count(){return this.db.prepare('SELECT COUNT(*) as count FROM games').get().count;}
   findExecutableDuplicate(executable,exceptId=''){

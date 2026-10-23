@@ -100,21 +100,66 @@ function libraryView(){const subtitle={library:'A home for everything you play.'
  <div class="view-switch" aria-label="Library display"><button data-action="view" data-view="grid" class="${state.view==='grid'?'selected':''}" aria-label="Grid view" aria-pressed="${state.view==='grid'}">${ic('grid',16)}</button><button data-action="view" data-view="list" class="${state.view==='list'?'selected':''}" aria-label="List view" aria-pressed="${state.view==='list'}">${ic('list',16)}</button></div></div></div>
  <div id="library-area" class="virtual-area">${state.games.length?'<div id="virtual-games"></div>':emptyState('No games yet','Scan your installed launchers or add a game manually.')}</div></section>`;
 }
-let virtualRangeKey=null,virtualGamesRef=null;
-function renderVirtual(){const host=el('virtual-games');if(!host)return;const games=filtered();state.viewGames=games;
- const count=el('game-result-count');if(count)count.textContent=`${games.length} ${games.length===1?'game':'games'}`;
- if(!games.length){if(virtualRangeKey==='empty'&&virtualGamesRef===games)return;virtualRangeKey='empty';virtualGamesRef=games;host.innerHTML=emptyState(state.query?'No matching games':state.route==='favorites'?'No favorites yet':state.route==='recent'?'No games played yet':'Nothing here yet',state.query?'Try another search or clear filters.':state.route==='favorites'?'Mark games with the heart icon to see them here.':state.route==='recent'?'Launch a game and it will appear here.':'Try changing the platform or tag filters.',`<button class="secondary-btn" data-action="clear-filters">Clear filters</button>`);return;}
- const scroll=el('main-scroll');if(!scroll)return;const isGrid=state.view==='grid';
- const cols=isGrid?Math.max(1,Math.floor((host.clientWidth+18)/195)):1;
+let virtualRangeKey=null,virtualGamesRef=null,virtualRunningRef=null,virtualItems=new Map();
+function captureGameFocus(host){
+ const active=document.activeElement;
+ if(!active||!host?.contains(active))return null;
+ const item=active.closest('.game-card,.game-row');
+ if(!item)return null;
+ return {id:item.dataset.id,action:active.dataset.action,root:active===item,index:[...item.parentElement.children].indexOf(item)};
+}
+function restoreGameFocus(host,focus){
+ if(!focus||!host)return;
+ const items=[...host.querySelectorAll('.game-card,.game-row')];
+ const item=items.find(node=>node.dataset.id===focus.id)||items[Math.min(focus.index,items.length-1)];
+ const target=item?(focus.root?item:[...item.querySelectorAll('[data-action]')].find(node=>node.dataset.action===focus.action)||item):host.querySelector('button');
+ if(target&&document.activeElement!==target)target.focus({preventScroll:true});
+}
+function renderVirtual(){
+ const host=el('virtual-games');if(!host)return;
+ const games=filtered();state.viewGames=games;
+ const count=el('game-result-count'),label=`${games.length} ${games.length===1?'game':'games'}`;
+ if(count&&count.textContent!==label)count.textContent=label;
+ const focus=captureGameFocus(host);
+ if(!games.length){
+  if(virtualRangeKey==='empty'&&virtualGamesRef===games)return;
+  virtualRangeKey='empty';virtualGamesRef=games;virtualItems=new Map();
+  host.innerHTML=emptyState(state.query?'No matching games':state.route==='favorites'?'No favorites yet':state.route==='recent'?'No games played yet':'Nothing here yet',state.query?'Try another search or clear filters.':state.route==='favorites'?'Mark games with the heart icon to see them here.':state.route==='recent'?'Launch a game and it will appear here.':'Try changing the platform or tag filters.',`<button class="secondary-btn" data-action="clear-filters">Clear filters</button>`);
+  restoreGameFocus(host,focus);return;
+ }
+ const scroll=el('main-scroll');if(!scroll)return;
+ const isGrid=state.view==='grid',cols=isGrid?Math.max(1,Math.floor((host.clientWidth+18)/195)):1;
  const rowHeight=isGrid?(window.innerWidth<=1180?304:327):88;
  const listTop=host.getBoundingClientRect().top-scroll.getBoundingClientRect().top+scroll.scrollTop;
  const totalRows=Math.ceil(games.length/cols),visible=Math.ceil(scroll.clientHeight/rowHeight)+7;
  const first=Math.min(Math.max(0,totalRows-visible),Math.max(0,Math.floor(Math.max(0,scroll.scrollTop-listTop)/rowHeight)-3));
- const last=Math.min(totalRows,first+visible);const key=`${state.view}:${cols}:${rowHeight}:${first}:${last}`;
- if(virtualGamesRef===games&&virtualRangeKey===key)return;
- virtualGamesRef=games;virtualRangeKey=key;
- const slice=games.slice(first*cols,last*cols);
- host.innerHTML=`<div style="height:${first*rowHeight}px"></div><div class="${isGrid?'games-grid':'game-list'}" style="${isGrid?`grid-template-columns:repeat(${cols},minmax(0,1fr))`:''}">${slice.map(isGrid?card:rowGame).join('')}</div><div style="height:${Math.max(0,(totalRows-last)*rowHeight)}px"></div>`;
+ const last=Math.min(totalRows,first+visible),key=`${state.view}:${cols}:${rowHeight}:${first}:${last}`;
+ if(virtualGamesRef===games&&virtualRangeKey===key&&virtualRunningRef===state.runningIds)return;
+ virtualGamesRef=games;virtualRangeKey=key;virtualRunningRef=state.runningIds;
+ let container=host.querySelector('[data-virtual-items]');
+ if(!container||container.dataset.view!==state.view){
+  host.innerHTML='<div data-virtual-before></div><div data-virtual-items></div><div data-virtual-after></div>';
+  container=host.querySelector('[data-virtual-items]');container.dataset.view=state.view;virtualItems=new Map();
+ }
+ container.className=isGrid?'games-grid':'game-list';
+ container.style.gridTemplateColumns=isGrid?`repeat(${cols},minmax(0,1fr))`:'';
+ host.firstElementChild.style.height=`${first*rowHeight}px`;
+ host.lastElementChild.style.height=`${Math.max(0,(totalRows-last)*rowHeight)}px`;
+ const slice=games.slice(first*cols,last*cols),nextItems=new Map(),running=new Set(state.runningIds);
+ for(let index=0;index<slice.length;index++){
+  const game=slice[index],playing=running.has(game.id),previous=virtualItems.get(game.id);
+  let node=previous?.node;
+  if(!node||previous.game!==game||previous.playing!==playing){
+   const template=document.createElement('template');template.innerHTML=(isGrid?card:rowGame)(game);
+   const replacement=template.content.firstElementChild;
+   if(node?.parentElement===container)node.replaceWith(replacement);
+   node=replacement;
+  }
+  if(container.children[index]!==node)container.insertBefore(node,container.children[index]||null);
+  nextItems.set(game.id,{node,game,playing});
+ }
+ for(const node of [...container.children])if(!nextItems.has(node.dataset.id))node.remove();
+ virtualItems=nextItems;restoreGameFocus(host,focus);
 }
 function settingsView(){const s=state.settings,folders=s.libraryFolders||[];return `<section class="page">${headline('Make it yours','Settings','Customize how Orbit looks, discovers games, and works for you.')}
  <div class="settings-layout"><div class="settings-stack">
@@ -136,14 +181,52 @@ function settingsView(){const s=state.settings,folders=s.libraryFolders||[];retu
 function renderShell(){el('app').innerHTML=`<div class="app-shell"><div id="side-slot">${sidebar()}</div><div class="workspace"><div id="top-slot">${topbar()}</div><main class="content-scroll" id="main-scroll" tabindex="-1"><div id="page-slot"></div></main></div></div>`;el('main-scroll').addEventListener('scroll',()=>{if(['library','favorites','recent'].includes(state.route)&&!scrollFrame){scrollFrame=requestAnimationFrame(()=>{scrollFrame=null;renderVirtual()})}},{passive:true});renderPage()}
 let scrollFrame=null;
 function renderPage({keepScroll=false}={}){const slot=el('page-slot'),scroller=el('main-scroll');if(!slot)return;const old=keepScroll?scroller.scrollTop:0;
- virtualRangeKey=null;virtualGamesRef=null;
+ virtualRangeKey=null;virtualGamesRef=null;virtualRunningRef=null;virtualItems=new Map();
  slot.innerHTML=state.route==='home'?home():state.route==='settings'?settingsView():libraryView();scroller.scrollTop=old;
  if(['library','favorites','recent'].includes(state.route))renderVirtual();}
 function refreshNavigation(keepScroll=false){el('side-slot').innerHTML=sidebar();el('top-slot').innerHTML=topbar();renderPage({keepScroll});}
 function navigate(route){if(!['home','library','favorites','recent','settings'].includes(route))return;state.route=route;state.query='';state.filter='all';state.tag='all';state.genre='all';refreshNavigation();}
 function toast(message,error=false){const item=document.createElement('div');item.className=`toast ${error?'error':''}`;item.innerHTML=ic(error?'alert':'check',19)+`<p>${esc(message)}</p>`;const root=el('toast-root');root.appendChild(item);while(root.children.length>3)root.firstElementChild.remove();setTimeout(()=>item.remove(),4600)}
-async function call(promise){try{return await promise}catch(e){toast(e.message||'Something went wrong.',true);throw e}}
-async function refreshGames(){state.games=await window.orbit.listGames();state.runningIds=typeof window.orbit.runningGames==='function'?await window.orbit.runningGames():[];el('side-slot').innerHTML=sidebar();renderPage({keepScroll:true});}
+let libraryUpdates=null;
+async function loadLibrarySnapshot(){
+ if(typeof window.orbit.librarySnapshot==='function')return window.orbit.librarySnapshot();
+ const [games,runningIds]=await Promise.all([window.orbit.listGames(),typeof window.orbit.runningGames==='function'?window.orbit.runningGames():[]]);
+ return {games,runningIds};
+}
+function refreshFilterOptions(id,values,label,active){
+ const select=el(id);if(!select)return;
+ const choices=[...new Set(values.filter(Boolean))].sort((a,b)=>a.localeCompare(b)).slice(0,100);
+ if(active!=='all'&&!choices.includes(active))choices.push(active);
+ const options=[['all',label],...choices.map(value=>[value,value])];
+ const previous=[...select.options].map(option=>[option.value,option.textContent]);
+ if(JSON.stringify(previous)!==JSON.stringify(options)){
+  select.replaceChildren(...options.map(([value,text])=>{const option=document.createElement('option');option.value=value;option.textContent=text;return option;}));
+ }
+ select.value=active;
+}
+function applyLibraryUpdate(change){
+ const runningChanged=state.runningIds!==change.runningIds;
+ state.games=change.games;state.runningIds=change.runningIds;
+ const count=el('side-slot')?.querySelector('[data-route="library"] .count');
+ if(count&&count.textContent!==String(state.games.length))count.textContent=String(state.games.length);
+ if(['library','favorites','recent'].includes(state.route)){
+  if(change.reset||!el('virtual-games')||!state.games.length){
+   const focus=captureGameFocus(el('page-slot'));renderPage({keepScroll:true});restoreGameFocus(el('page-slot'),focus);
+  }else{
+   refreshFilterOptions('genre-filter',state.games.map(game=>game.genre),'All categories',state.genre);
+   refreshFilterOptions('tag-filter',state.games.flatMap(game=>game.tags||[]),'All tags',state.tag);
+   renderVirtual();
+  }
+ }else if(state.route==='home'){
+  const focus=captureGameFocus(el('page-slot'));renderPage({keepScroll:true});restoreGameFocus(el('page-slot'),focus);
+ }
+ if(state.modal?.type==='detail'&&(change.reset||runningChanged||change.changedIds.includes(state.modal.id)||change.removedIds.includes(state.modal.id)))renderModal();
+}
+function handleOrbitEvent(event){
+ if(event.type==='gamesChanged')libraryUpdates.receive(event);
+ if(event.type==='settingsChanged'){state.settings=event.settings;setupTheme();}
+ if(event.type==='error')toast(event.message,true);
+}
 async function saveSettings(patch){state.settings=await window.orbit.saveSettings(patch);setupTheme();if(state.route==='settings')renderPage({keepScroll:true});}
 let modalReturnFocus=null;
 function openModal(type,meta={}){if(!state.modal)modalReturnFocus=document.activeElement;state.modal={type,...meta};renderModal()}
@@ -202,19 +285,19 @@ async function performScan(){if(state.scanning)return toast('A scan is already r
 }
 async function performImport(){const games=[...state.selectedImports].map(i=>state.imports[i]).filter(x=>x&&!x.alreadyAdded).map(({alreadyAdded,...rest})=>rest);if(!games.length)return;
  const button=el('modal-root').querySelector('[data-action=import]');if(button)button.disabled=true;
- try{const result=await window.orbit.importGames(games);closeModal();await refreshGames();toast(`Imported ${result.imported} ${result.imported===1?'game':'games'}.${result.skipped?' '+result.skipped+' already in library.':''}`);if(result.errors.length)toast(result.errors.slice(0,3).join(' · '),true)}
+ try{const result=await window.orbit.importGames(games);closeModal();toast(`Imported ${result.imported} ${result.imported===1?'game':'games'}.${result.skipped?' '+result.skipped+' already in library.':''}`);if(result.errors.length)toast(result.errors.slice(0,3).join(' · '),true)}
  catch(e){toast(e.message||'Import failed.',true);if(button)button.disabled=false}
 }
 async function performLaunch(id){const game=state.games.find(g=>g.id===id);if(!game)return;
- try{const result=await window.orbit.launchGame(id);toast(result.message||`Launched ${game.name}`);await refreshGames();if(state.modal?.type==='detail'&&state.modal.id===id)renderModal();}
+ try{const result=await window.orbit.launchGame(id);toast(result.message||`Launched ${game.name}`);}
  catch(e){toast(e.message||`Could not launch ${game.name}`,true)}
 }
-async function favorite(id){try{await window.orbit.favoriteGame(id);await refreshGames();if(state.modal?.type==='detail'&&state.modal.id===id)renderModal()}catch(e){toast(e.message,true)}}
+async function favorite(id){try{await window.orbit.favoriteGame(id)}catch(e){toast(e.message,true)}}
 async function storeGame(form){const data=Object.fromEntries(new FormData(form));data.tags=String(data.tags||'').split(',').map(t=>t.trim()).filter(Boolean);
  try{data.launch_args=JSON.parse(data.launch_args||'[]');if(!Array.isArray(data.launch_args))throw Error()}catch{toast('Launch arguments must be a JSON array, for example ["--fullscreen"].',true);return}
  if(!data.executable?.trim()&&!data.launch_uri?.trim()){toast('Choose an executable or enter a supported game-launch URI.',true);return}
  const button=form.querySelector('[type=submit]');button.disabled=true;
- try{if(form.dataset.id)await window.orbit.updateGame(form.dataset.id,data);else await window.orbit.addGame({...data,source:'manual'});closeModal();await refreshGames();toast(form.dataset.id?'Game updated.':'Game added to your library.');}
+ try{if(form.dataset.id)await window.orbit.updateGame(form.dataset.id,data);else await window.orbit.addGame({...data,source:'manual'});closeModal();toast(form.dataset.id?'Game updated.':'Game added to your library.');}
  catch(e){toast(e.message||'Could not save game.',true)}finally{button.disabled=false}
 }
 async function detectGameFile(file){
@@ -263,9 +346,9 @@ async function handleAction(button){const action=button.dataset.action,id=button
   case 'launch':await performLaunch(id);break;
   case 'favorite':await favorite(id);break;
   case 'remove-confirm':openModal('remove',{id});break;
-  case 'remove':try{await window.orbit.removeGame(id);closeModal();await refreshGames();toast('Game removed from your library.')}catch(e){toast(e.message,true)}break;
+  case 'remove':try{await window.orbit.removeGame(id);closeModal();toast('Game removed from your library.')}catch(e){toast(e.message,true)}break;
   case 'scan':await performScan();break;
-  case 'repair-artwork':{button.disabled=true;try{const result=await window.orbit.repairSteamArtwork();await refreshGames();toast(result.disabled?'Enable Steam artwork downloads first.':`Updated ${result.found} portrait covers and ${result.icons||0} game icons across ${result.attempted} games.`)}catch(e){toast(e.message||'Cover repair failed.',true)}finally{button.disabled=false}break;}
+  case 'repair-artwork':{button.disabled=true;try{const result=await window.orbit.repairSteamArtwork();toast(result.disabled?'Enable Steam artwork downloads first.':`Updated ${result.found} portrait covers and ${result.icons||0} game icons across ${result.attempted} games.`)}catch(e){toast(e.message||'Cover repair failed.',true)}finally{button.disabled=false}break;}
   case 'import':await performImport();break;
   case 'toggle-all-import':{const allowed=state.imports.flatMap((g,i)=>g.alreadyAdded?[]:[i]).slice(0,MAX_IMPORT_SELECTION);state.selectedImports=state.selectedImports.size?new Set():new Set(allowed);renderModal();break;}
   case 'import-page':{const direction=button.dataset.page;state.importPage=Math.max(0,Math.min(Math.ceil(state.imports.length/IMPORT_PAGE_SIZE)-1,state.importPage+(direction==='next'?1:-1)));renderModal();el('modal-root').querySelector(`[data-page="${direction}"]:not([disabled])`)?.focus();break;}
@@ -294,14 +377,14 @@ async function handleAction(button){const action=button.dataset.action,id=button
 
   case 'open-folder':try{await window.orbit.openGameFolder(id)}catch(e){toast(e.message,true)}break;
   case 'open-data':try{await window.orbit.openAppData()}catch(e){toast(e.message,true)}break;
-  case 'clear-filters':state.query='';state.filter='all';state.tag='all';state.genre='all';const search=el('global-search');if(search)search.value='';renderPage();break;
+  case 'clear-filters':{state.query='';state.filter='all';state.tag='all';state.genre='all';const search=el('global-search');if(search)search.value='';renderPage();break;}
   case 'view':state.view=button.dataset.view;await saveSettings({view:state.view});renderPage({keepScroll:true});break;
   case 'accent':await saveSettings({accent:button.dataset.color});break;
   case 'setting-toggle':{const key=button.dataset.key;await saveSettings({[key]:!state.settings[key]});break;}
   case 'add-folder':{try{const dir=await window.orbit.chooseFolder();if(dir){const folders=[...new Set([...state.settings.libraryFolders,dir])];await saveSettings({libraryFolders:folders});toast('Scan location added.')}}catch(e){toast(e.message,true)}break;}
   case 'remove-folder':{const folders=state.settings.libraryFolders.filter((_,i)=>i!==Number(button.dataset.index));await saveSettings({libraryFolders:folders});break;}
   case 'export':try{const res=await window.orbit.exportLibrary();if(res?.path){toast(res.portable?'Portable library backup exported.':'Metadata-only JSON backup exported.');if(res.missingArtwork)toast(`${res.missingArtwork} missing or invalid artwork file(s) were not included.`,true)}}catch(e){toast(e.message,true)}break;
-  case 'restore':try{const res=await window.orbit.restoreLibrary();if(res){await refreshGames();toast(`Restored ${res.imported} games; skipped ${res.skipped}.`);if(res.errors?.length)toast(res.errors.slice(0,2).join(' · '),true)}}catch(e){toast(e.message,true)}break;
+  case 'restore':try{const res=await window.orbit.restoreLibrary();if(res){toast(`Restored ${res.imported} games; skipped ${res.skipped}.`);if(res.errors?.length)toast(res.errors.slice(0,2).join(' · '),true)}}catch(e){toast(e.message,true)}break;
  }
 }
 document.addEventListener('click',event=>{const button=event.target.closest('[data-action]');if(!button||button.disabled)return;
@@ -359,13 +442,20 @@ document.addEventListener('error',event=>{
 },true);
 window.addEventListener('resize',()=>{if(['library','recent','favorites'].includes(state.route))renderVirtual()});
 window.matchMedia?.('(prefers-color-scheme:light)')?.addEventListener('change',()=>{if(state.settings?.theme==='system')setupTheme()});
-async function boot(){try{if(!window.orbit)throw Error('Desktop integration is unavailable. Start Orbit using Electron.');
- const data=await window.orbit.bootstrap();state.games=data.games;state.runningIds=data.runningIds||[];state.settings=data.settings;state.sort=data.settings.sort||'name';state.view=data.settings.view||'grid';state.platform=data.platform;state.version=data.version;
- setupTheme();renderShell();window.orbit.onEvent(async event=>{
-  if(event.type==='gamesChanged')try{await refreshGames();if(state.modal?.type==='detail')renderModal()}catch(e){toast(e.message,true)}
-  if(event.type==='settingsChanged'){state.settings=event.settings;setupTheme()}
-  if(event.type==='error')toast(event.message,true);
+async function boot(){try{
+ if(!window.orbit)throw Error('Desktop integration is unavailable. Start Orbit using Electron.');
+ const buffered=[];
+ window.orbit.onEvent(event=>{if(libraryUpdates)handleOrbitEvent(event);else buffered.push(event);});
+ const data=await window.orbit.bootstrap();
+ libraryUpdates=new window.OrbitLibraryUpdates.LibraryUpdates({
+  snapshot:data,loadSnapshot:loadLibrarySnapshot,onChange:applyLibraryUpdate,
+  onError:error=>toast(error.message||'Could not update the library.',true)
  });
- }catch(e){el('app').innerHTML=`<div class="boot"><div class="boot-logo">!</div><h2>Orbit could not start</h2><p>${esc(e.message||'Unknown error.')}</p></div>`}}
+ state.games=libraryUpdates.snapshot().games;state.runningIds=data.runningIds||[];state.settings=data.settings;
+ state.sort=data.settings.sort||'name';state.view=data.settings.view||'grid';state.platform=data.platform;state.version=data.version;
+ setupTheme();renderShell();
+ for(const event of buffered)handleOrbitEvent(event);
+ }catch(e){el('app').innerHTML=`<div class="boot"><div class="boot-logo">!</div><h2>Orbit could not start</h2><p>${esc(e.message||'Unknown error.')}</p></div>`;}}
+
 boot();
 })();

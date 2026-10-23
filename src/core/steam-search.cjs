@@ -5,7 +5,7 @@ const MAX_SEARCH_BYTES=256*1024;
 // Trademark characters can expand into literal TM/SM under Unicode NFKD.
 // Remove them before comparing exact catalog titles.
 const titleKey=name=>cleanKey(String(name||'').replace(/[™℠®©]/g,''));
-const isUsableName=name=>typeof name==='string' && name.length>=3 && name.length<=140 && /^[^\u0000-\u001f]+$/.test(name) && cleanKey(name).length>=4;
+const isUsableName=name=>typeof name==='string' && name.length>=3 && name.length<=140 && !Array.from(name).some(c=>c.charCodeAt(0)<32) && cleanKey(name).length>=4;
 async function readSmallJson(response){
   if(!response?.ok||!response.body)return null;
   const length=Number(response.headers.get('content-length')||0);

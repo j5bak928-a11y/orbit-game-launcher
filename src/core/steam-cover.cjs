@@ -21,7 +21,7 @@ function officialAssetUrls(appId,assets){
   for(const key of ['library_capsule_2x','library_capsule']){
     const filename=assets[key];
     if(typeof filename!=='string'||!VALID_ASSET.test(filename))continue;
-    urls.push(CDN+template.replace('${FILENAME}',filename));
+    urls.push(CDN+template.replace(`\${FILENAME}`,filename));
   }
   return [...new Set(urls)];
 }

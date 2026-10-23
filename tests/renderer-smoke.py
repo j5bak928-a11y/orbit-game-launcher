@@ -48,6 +48,7 @@ async def run():
     html=html.replace('<script src="./app.js" defer></script>','')
     await page.set_content(html)
     await page.evaluate(MOCK)
+    await page.add_script_tag(content=(ROOT/'src/ui/library-updates.js').read_text(encoding='utf-8'))
     await page.add_script_tag(content=(ROOT/'src/ui/app.js').read_text())
     await page.get_by_text('Welcome to Orbit').wait_for()
     await page.screenshot(path=str(ROOT/'preview-dashboard.png'),full_page=True)

@@ -70,9 +70,12 @@ Other launcher URI schemes include Heroic, Ubisoft, EA and Battle.net as **manua
 
 ```bash
 npm run check
+npm run lint
 npm test
 npm run bench       # optional synthetic 5,000-game DB and 1,020-file scan benchmark
 ```
+
+The lint command runs Biome 2.6.2 and fails on errors or any warning outside the exact reviewed cases in scripts/lint-review.json. The six reviewed diagnostics preserve classic-script strict mode and app/OS reduced-motion overrides; no Biome rules are disabled. Source changes at those reviewed locations require another review. Optional checks include npm run bench:tracking (synthetic tracking-query timings) and npm run test:renderer (Playwright plus installed Chrome; mocked IPC, not native Electron).
 
 Tests cover SQLite data integrity, settings across restarts, favorite/edit/remove actions, tracked sessions, malformed data, Steam/Epic/GOG parsing, missing manifests, and safe URI/process launch behavior.
 
@@ -112,7 +115,8 @@ src/
   ui/
     index.html        Offline UI document with strict CSP
     styles.css        Complete dark/light visual system
-    app.js            Application state, routing, UI and virtual grid
+    library-updates.js Coalesced per-game changes and versioned snapshot recovery
+    app.js            Application state, routing, UI and keyed virtual grid
 assets/
   icon.png, icon.ico  App identity and packaging assets
 tests/
@@ -121,6 +125,8 @@ tests/
 ```
 
 ## Current verification
+
+See [LIBRARY-UPDATES.md](LIBRARY-UPDATES.md) for incremental library updates, the tracking-query benchmark, the CI lint gate and the current 111-test validation.
 
 See [GAME-RECOGNITION-UPDATE.md](GAME-RECOGNITION-UPDATE.md) for the executable title recognition update with **51 passing backend tests**; see [EXE-ARTWORK-UPDATE.md](EXE-ARTWORK-UPDATE.md) for the earlier local artwork update; see [IMPROVEMENT-VERIFICATION.md](IMPROVEMENT-VERIFICATION.md) for the earlier audit. The Stage 5 baseline is recorded in [FINAL-VERIFICATION.md](FINAL-VERIFICATION.md), [STAGE3-VERIFICATION.md](STAGE3-VERIFICATION.md) for handler-backed workflows, and [STAGE4-VERIFICATION.md](STAGE4-VERIFICATION.md) for performance measurements. Native Electron and cross-platform checks remain outstanding.
 

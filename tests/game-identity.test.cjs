@@ -48,3 +48,10 @@ test('non-game product names are ignored and unknown filenames are not invented'
  assert.equal(fallback.kind,'filename');assert.equal(fallback.name,'My Custom Creation');
  assert.equal(fallback.steamId,'');
 });
+
+test('product metadata normalizes all C0 controls without losing Unicode text', () => {
+ for (let code=0; code<32; code++) {
+  assert.equal(sensibleProductName('Orbit'+String.fromCharCode(code)+'Adventure'),'Orbit Adventure');
+ }
+ assert.equal(sensibleProductName('Café 星空 Adventure'),'Café 星空 Adventure');
+});

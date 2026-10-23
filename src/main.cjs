@@ -19,11 +19,18 @@ const {createPortableBackup,decodePortableBackup,installBackupArtwork,writeAtomi
 
 protocol.registerSchemesAsPrivileged([{scheme:'orbit-art',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true}}]);
 if(!app.requestSingleInstanceLock())app.quit();
-let win,db,scanning=false,activityTracker=null;
+let win,db,scanning=false,activityTracker=null,libraryRevision=0;
 const sessions=new Map();
 const pendingLaunches=new Set();
 const artworkDir=()=>path.join(app.getPath('userData'),'artwork');
 const broadcast=payload=>{if(win&&!win.isDestroyed())win.webContents.send('orbit:event',payload)};
+const runningGameIds=()=>[...new Set([...sessions.keys(),...(activityTracker?.runningIds()||[])])];
+const librarySnapshot=()=>({games:db.list(),runningIds:runningGameIds(),revision:libraryRevision});
+function gamesChanged({games=[],removedIds=[],reason='',reset=false}={}){
+  const event={type:'gamesChanged',reason,revision:++libraryRevision,runningIds:runningGameIds()};
+  if(!reset){event.games=games.filter(Boolean);event.removedIds=removedIds;}
+  broadcast(event);
+}
 const okId=id=>typeof id==='string'&&/^[0-9a-f-]{36}$/.test(id);
 function createWindow(){
   win=new BrowserWindow({width:1440,height:920,minWidth:910,minHeight:610,backgroundColor:'#101016',title:'Orbit Launcher',icon:path.join(__dirname,'../assets/icon.png'),show:false,
@@ -85,7 +92,7 @@ async function downloadSteamCover(appId){
 }
 async function coverNeedsPortrait(game){
   if(!game.cover)return true;
-  if(!/^[a-f0-9-]{36}\\.(?:jpg|jpeg|png|webp)$/i.test(game.cover))return false;
+  if(!/^[a-f0-9-]{36}\.(?:jpg|jpeg|png|webp)$/i.test(game.cover))return false;
   try {
     const file=path.join(artworkDir(),game.cover);
     const info=await fsp.stat(file);
@@ -109,8 +116,8 @@ async function cacheGameIcon(game){
   if(!icon)return false;
   const current=db.get(game.id);
   if(!current||current.icon||current.executable!==game.executable||current.install_path!==game.install_path)return false;
-  db.update(game.id,{icon});
-  broadcast({type:'gamesChanged',reason:'artwork'});
+  const updated=db.update(game.id,{icon});
+  gamesChanged({games:[updated],reason:'artwork'});
   return true;
 }
 async function repairMissingSteamCovers({limit=100,replaceLandscape=false}={}){
@@ -152,8 +159,8 @@ async function cachedSteamCover(game,{replaceLandscape=false}={}){
   const current=db.get(game.id);
   // Never replace a cover that changed while the network request was pending.
   if(current&&current.cover===game.cover&&(!current.cover||(replaceLandscape&&await coverNeedsPortrait(current)))){
-    db.update(game.id,{cover:filename});
-    broadcast({type:'gamesChanged',reason:'artwork'});
+    const updated=db.update(game.id,{cover:filename});
+    gamesChanged({games:[updated],reason:'artwork'});
   }
 }
 
@@ -179,14 +186,15 @@ async function discover(){
 }
 function handlers(){
   const bind=(name,fn)=>ipcMain.handle('orbit:'+name,async(_, ...args)=>{try{return await fn(...args)}catch(e){throw new Error(e?.message||'Unexpected error.')}});
-  bind('bootstrap',()=>({games:db.list(),runningIds:activityTracker?.runningIds()||[],settings:db.getSettings(),platform:process.platform,version:app.getVersion()}));
+  bind('bootstrap',()=>({...librarySnapshot(),settings:db.getSettings(),platform:process.platform,version:app.getVersion()}));
+  bind('librarySnapshot',librarySnapshot);
   bind('listGames',()=>db.list());
-  bind('runningGames',()=>activityTracker?.runningIds()||[]);
+  bind('runningGames',runningGameIds);
   bind('getGame',id=>{if(!okId(id))throw Error('Invalid game identifier.');return db.get(id)});
-  bind('addGame',data=>{const result=db.upsert(data);broadcast({type:'gamesChanged'});if(result.added)enrichGameArtwork(result.game).catch(()=>{});return result});
-  bind('updateGame',(id,patch)=>{if(!okId(id))throw Error('Invalid game identifier.');const result=db.update(id,patch);broadcast({type:'gamesChanged'});return result});
-  bind('removeGame',id=>{if(!okId(id))throw Error('Invalid game identifier.');const found=db.remove(id);broadcast({type:'gamesChanged'});return found});
-  bind('favoriteGame',id=>{if(!okId(id))throw Error('Invalid game identifier.');const result=db.toggleFavorite(id);broadcast({type:'gamesChanged'});return result});
+  bind('addGame',data=>{const result=db.upsert(data);gamesChanged({games:[result.game],reason:'add'});if(result.added)enrichGameArtwork(result.game).catch(()=>{});return result});
+  bind('updateGame',(id,patch)=>{if(!okId(id))throw Error('Invalid game identifier.');const result=db.update(id,patch);gamesChanged({games:[result],reason:'edit'});return result});
+  bind('removeGame',id=>{if(!okId(id))throw Error('Invalid game identifier.');const found=db.remove(id);if(found)gamesChanged({removedIds:[id],reason:'remove'});return found});
+  bind('favoriteGame',id=>{if(!okId(id))throw Error('Invalid game identifier.');const result=db.toggleFavorite(id);gamesChanged({games:[result],reason:'favorite'});return result});
   bind('saveSettings',patch=>{const settings=db.saveSettings(patch||{});nativeTheme.themeSource=settings.theme;broadcast({type:'settingsChanged',settings});return settings});
   bind('chooseExecutable',async()=>{const result=await dialog.showOpenDialog(win,{title:'Choose game executable',properties:['openFile'],filters:process.platform==='win32'?[{name:'Programs',extensions:['exe','com']},{name:'All files',extensions:['*']}]:[{name:'All files',extensions:['*']}]});return result.canceled?null:result.filePaths[0]});
   bind('inspectGameFile',executable=>inspectGameFile(executable,{
@@ -218,7 +226,7 @@ function handlers(){
       artwork.push(...batch.addedGames);
       await new Promise(resolve=>setImmediate(resolve));
     }
-    broadcast({type:'gamesChanged',reason:'import'});
+    gamesChanged({reset:true,reason:'import'});
     (async()=>{for(let i=0;i<artwork.length;i+=3)await Promise.allSettled(artwork.slice(i,i+3).map(enrichGameArtwork))})().catch(()=>{});
     return {imported,skipped,errors};
   });
@@ -234,7 +242,7 @@ function handlers(){
         if(!sessionId||!db)return;
         try{db.finishSession(sessionId,Math.floor((Date.now()-startTime)/1000));}
         catch(e){broadcast({type:'error',message:`Could not save play time: ${e.message}`})}
-        sessions.delete(id);broadcast({type:'gamesChanged',reason:'playtime'});
+        sessions.delete(id);gamesChanged({games:[db.get(id)],reason:'playtime'});
       });
       const result=await executeGame(game,url=>shell.openExternal(url),exit.onExit);
       if(result.tracked){
@@ -247,7 +255,7 @@ function handlers(){
           return {...result,tracked:false,message:'Game launched. Play-time tracking could not start.'};
         }
       }else db.db.prepare('UPDATE games SET last_played_at=?,updated_at=? WHERE id=?').run(new Date().toISOString(),new Date().toISOString(),id);
-      broadcast({type:'gamesChanged',reason:'launch'});
+      gamesChanged({games:[db.get(id)],reason:'launch'});
       return result;
     }finally{pendingLaunches.delete(id);}
   });
@@ -298,7 +306,7 @@ function handlers(){
       try{const settings=db.saveSettings(data.settings);nativeTheme.themeSource=settings.theme;settingsRestored=true;broadcast({type:'settingsChanged',settings});}
       catch(e){errors.push(`Settings: ${e.message}`)}
     }
-    broadcast({type:'gamesChanged',reason:'restore'});return {imported,skipped,errors,settingsRestored};
+    gamesChanged({reset:true,reason:'restore'});return {imported,skipped,errors,settingsRestored};
   });
   bind('getAppInfo',()=>({platform:process.platform,version:app.getVersion(),dataPath:app.getPath('userData')}));
 }
@@ -317,18 +325,18 @@ app.whenReady().then(async()=>{
   createWindow();
   if(process.platform==='win32'){
     activityTracker=new WindowsActivityTracker({
-      listGames:()=>db.list(),isDirectSession:id=>sessions.has(id),
+      listGames:()=>db.listActivityGames(),isDirectSession:id=>sessions.has(id),
       start:id=>db.startSession(id),finish:(sessionId,seconds)=>db.finishSession(sessionId,seconds),
-      onChange:()=>broadcast({type:'gamesChanged',reason:'playtime'})
+      onChange:ids=>gamesChanged({games:ids.map(id=>db.get(id)),reason:'playtime'})
     });
     activityTracker.start();
   }
   setTimeout(()=>repairMissingSteamCovers({limit:30}).catch(()=>{}),2500);
-  if(db.getSettings().autoScan)setTimeout(async()=>{try{const result=await discover();const imported=[];for(const g of result.games)if(!g.alreadyAdded&&!g.downloadCandidate)imported.push(g);if(imported.length){for(let i=0;i<imported.length;i+=50){db.upsertBatch(imported.slice(i,i+50));await new Promise(resolve=>setImmediate(resolve));}broadcast({type:'gamesChanged',reason:'autoScan'});}}catch(e){broadcast({type:'error',message:`Background scan failed: ${e.message}`})}},1000);
+  if(db.getSettings().autoScan)setTimeout(async()=>{try{const result=await discover();const imported=[];for(const g of result.games)if(!g.alreadyAdded&&!g.downloadCandidate)imported.push(g);if(imported.length){for(let i=0;i<imported.length;i+=50){db.upsertBatch(imported.slice(i,i+50));await new Promise(resolve=>setImmediate(resolve));}gamesChanged({reset:true,reason:'autoScan'});}}catch(e){broadcast({type:'error',message:`Background scan failed: ${e.message}`})}},1000);
   app.on('activate',()=>{if(BrowserWindow.getAllWindows().length===0)createWindow()});
 });
 app.on('before-quit',()=>{
   activityTracker?.stop();activityTracker=null;
-  if(db){for(const [id,session] of sessions){try{const started=db.db.prepare('SELECT started_at FROM sessions WHERE id=?').get(session);if(started)db.finishSession(session,Math.floor((Date.now()-Date.parse(started.started_at))/1000))}catch{}}db.close();db=null;}
+  if(db){for(const session of sessions.values()){try{const started=db.db.prepare('SELECT started_at FROM sessions WHERE id=?').get(session);if(started)db.finishSession(session,Math.floor((Date.now()-Date.parse(started.started_at))/1000))}catch{}}db.close();db=null;}
 });
 app.on('window-all-closed',()=>{if(process.platform!=='darwin')app.quit()});

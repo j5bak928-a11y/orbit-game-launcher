@@ -4,7 +4,7 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs/promises');
 const os=require('node:os');
 const path=require('node:path');
-const {findGameExecutable,scoreExecutable}=require('../src/core/game-executable.cjs');
+const {findGameExecutable}=require('../src/core/game-executable.cjs');
 
 async function fixture(t){
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'orbit-icon-discovery-'));

@@ -68,9 +68,9 @@ const electron = {
   nativeTheme: {themeSource:'dark'}
 };
 const originalLoad = Module._load;
-Module._load = function(request, parent, isMain) {
+Module._load = function(request, ...args) {
   if (request === 'electron') return electron;
-  return originalLoad.apply(this,arguments);
+  return originalLoad.call(this,request,...args);
 };
 require('../src/main.cjs');
 const run = async request => {

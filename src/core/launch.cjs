@@ -2,7 +2,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const {spawn} = require('node:child_process');
-const {pathToFileURL} = require('node:url');
 const ALLOWED_SCHEMES = new Set(['steam:','com.epicgames.launcher:','goggalaxy:','heroic:','uplay:','ubisoftconnect:','origin:','ea:','battlenet:']);
 function validateLaunch(game) {
   if(!game || typeof game !== 'object')throw Error('Game not found.');

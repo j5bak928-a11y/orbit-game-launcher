@@ -17,5 +17,7 @@ jobs:
           node-version: '22'
       - name: Validate JavaScript
         run: npm run check
+      - name: Lint and verify reviewed warnings
+        run: npm run lint
       - name: Run tests
         run: npm test

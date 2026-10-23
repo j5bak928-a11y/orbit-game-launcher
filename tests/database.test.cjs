@@ -100,3 +100,18 @@ test('batched imports tolerate invalid games while keeping valid entries atomic 
     assert.equal(reopened.integrity_check,'ok');
   }finally{db.close();fs.rmSync(dir,{recursive:true,force:true})}
 });
+
+test('tracking projection selects only storefront folders and omits all library metadata',()=>withDb(db=>{
+ const steam=db.upsert({name:'Steam',source:'steam',source_id:'1',install_path:'D:\\Games\\Steam'}).game;
+ const epic=db.upsert({name:'Epic',source:'epic',source_id:'2',install_path:'D:\\Games\\Epic'}).game;
+ db.upsert({name:'GOG',source:'gog',source_id:'3',install_path:'D:\\Games\\GOG'});
+ db.upsert({name:'Manual',install_path:'D:\\Games\\Manual'});
+ db.upsert({name:'No installation',source:'steam',source_id:'4'});
+ const rows=db.listActivityGames();
+ assert.deepEqual(rows.map(g=>g.id).sort(),[steam.id,epic.id].sort());
+ for(const row of rows)assert.deepEqual(Object.keys(row).sort(),['id','install_path','source']);
+ db.update(epic.id,{install_path:''});
+ assert.deepEqual(db.listActivityGames().map(g=>g.id),[steam.id]);
+ db.remove(steam.id);
+ assert.deepEqual(db.listActivityGames(),[]);
+}));

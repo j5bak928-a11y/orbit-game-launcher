@@ -1,0 +1,89 @@
+{
+  "date": "2026-10-23",
+  "repository": "https://github.com/j5bak928-a11y/orbit-game-launcher",
+  "snapshot": "512948047790401ce1395014712fa47c2cc5e652",
+  "runtime": {
+    "node": "v26.3.0",
+    "platform": "win32",
+    "chrome": "155.0.8059.86",
+    "ciNode": "22"
+  },
+  "checks": {
+    "syntax": {
+      "exitCode": 0
+    },
+    "tests": {
+      "exitCode": 0
+    },
+    "lint": {
+      "exitCode": 0
+    },
+    "browser": {
+      "exitCode": 0
+    }
+  },
+  "tests": {
+    "pass": 111,
+    "fail": 0,
+    "skipped": 0
+  },
+  "lint": {
+    "biome": "2.6.2",
+    "errors": 0,
+    "originalWarnings": 38,
+    "remainingReviewedWarnings": 6,
+    "unreviewedWarnings": 0,
+    "infos": 28
+  },
+  "warningReviews": [
+    {
+      "rule": "noPrototypeBuiltins",
+      "before": 5,
+      "after": 0
+    },
+    {
+      "rule": "noUnusedFunctionParameters",
+      "before": 5,
+      "after": 0
+    },
+    {
+      "rule": "noUnusedVariables",
+      "before": 4,
+      "after": 0
+    },
+    {
+      "rule": "noTemplateCurlyInString",
+      "before": 8,
+      "after": 0
+    },
+    {
+      "rule": "noArguments",
+      "before": 1,
+      "after": 0
+    },
+    {
+      "rule": "noDescendingSpecificity",
+      "before": 2,
+      "after": 0
+    },
+    {
+      "rule": "noImportantStyles",
+      "before": 12,
+      "after": 5
+    },
+    {
+      "rule": "noRedundantUseStrict",
+      "before": 1,
+      "after": 1
+    }
+  ],
+  "scope": "Synthetic SQLite fixtures and installed headless Chrome with mocked IPC; handler tests use actual main functions with temporary storage.",
+  "notRun": [
+    "native Electron",
+    "native Windows process enumeration",
+    "real storefront launches",
+    "installer builds",
+    "remote GitHub CI"
+  ],
+  "stage": "Local verification before GitHub publication"
+}

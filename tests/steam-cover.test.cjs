@@ -8,7 +8,7 @@ const {officialAssetUrls,steamMetadataUrls,localSteamCover,localSteamIcon,findSt
 const jpeg=Buffer.from([255,216,255,192,0,11,8,3,132,2,88,1,1,17,0,255,217]);
 const landscape=Buffer.from([255,216,255,192,0,11,8,1,97,2,104,1,1,17,0,255,217]);
 const hash='a'.repeat(40);
-const meta={appid:8765,assets:{asset_url_format:'steam/apps/8765/${FILENAME}?t=123',library_capsule_2x:`${hash}/library_600x900_2x.jpg`}};
+const meta={appid:8765,assets:{asset_url_format:`steam/apps/8765/\${FILENAME}?t=123`,library_capsule_2x:`${hash}/library_600x900_2x.jpg`}};
 const json=body=>new Response(JSON.stringify(body),{headers:{'content-type':'application/json'}});
 const image=()=>new Response(jpeg,{headers:{'content-type':'image/jpeg'}});
 
@@ -20,8 +20,8 @@ test('Steam GetItems metadata resolves content-hashed portrait',async()=>{
  assert.equal(requests.length,2);
 });
 test('remote Steam asset metadata cannot inject URL',()=>{
- assert.deepEqual(officialAssetUrls('8765',{asset_url_format:'https://evil.example/${FILENAME}',library_capsule:'library_600x900.jpg'}),[]);
- assert.deepEqual(officialAssetUrls('8765',{asset_url_format:'steam/apps/8765/${FILENAME}',library_capsule:'../../secret.jpg'}),[]);
+ assert.deepEqual(officialAssetUrls('8765',{asset_url_format:`https://evil.example/\${FILENAME}`,library_capsule:'library_600x900.jpg'}),[]);
+ assert.deepEqual(officialAssetUrls('8765',{asset_url_format:`steam/apps/8765/\${FILENAME}`,library_capsule:'../../secret.jpg'}),[]);
 });
 test('old artwork falls back to legacy paths',async()=>{
  const requests=[];
@@ -58,7 +58,7 @@ test('Steam cover lookup skips wide artwork even when metadata advertises it',as
  const urls=[];
  const result=await findSteamCover('8765',{local:async()=>null,fetchImpl:async url=>{
   urls.push(url);
-  if(url.includes('GetItems'))return json({response:{store_items:[{appid:8765,assets:{asset_url_format:'steam/apps/8765/${FILENAME}',library_capsule:'header.jpg',header:'header.jpg'}}]}});
+  if(url.includes('GetItems'))return json({response:{store_items:[{appid:8765,assets:{asset_url_format:`steam/apps/8765/\${FILENAME}`,library_capsule:'header.jpg',header:'header.jpg'}}]}});
   if(url.endsWith('library_600x900_2x.jpg'))return new Response(landscape,{headers:{'content-type':'image/jpeg'}});
   if(url.endsWith('library_600x900.jpg'))return image();
   return new Response('missing',{status:404});
@@ -86,7 +86,7 @@ test('Steam cached icon is usable when no portrait is available',async()=>{
 });
 
 test('newer Steam library_capsule assets are accepted without accidentally fetching wide headers',async()=>{
- const modern={appid:5043180,assets:{asset_url_format:'steam/apps/5043180/${FILENAME}?t=20261009',
+ const modern={appid:5043180,assets:{asset_url_format:`steam/apps/5043180/\${FILENAME}?t=20261009`,
    library_capsule_2x:'89f835791c1daa04f54fc43aa35da99a62683925/library_capsule_2x.jpg',
    library_capsule:'89f835791c1daa04f54fc43aa35da99a62683925/library_capsule.jpg',
    header:'dbc92ea85a96bf4d26352de723f9bc5362e140a5/header.jpg'}};
@@ -106,11 +106,11 @@ test('newer Steam library_capsule assets are accepted without accidentally fetch
 });
 test('Football, sports and other recent Steam cover names are supported, but unsafe files are rejected',()=>{
  const hash40='81210d536b70c14e4cf9725f3f03d82bf64e5e25';
- const assets={asset_url_format:'steam/apps/4080220/${FILENAME}',library_capsule_2x:hash40+'/library_capsule_2x.jpg'};
+ const assets={asset_url_format:`steam/apps/4080220/\${FILENAME}`,library_capsule_2x:hash40+'/library_capsule_2x.jpg'};
  assert.match(officialAssetUrls('4080220',assets)[0],/library_capsule_2x.jpg$/);
  assert.deepEqual(officialAssetUrls('4080220',{...assets,library_capsule_2x:hash40+'/header.jpg'}),[]);
  assert.deepEqual(officialAssetUrls('4080220',{...assets,library_capsule_2x:'https://attacker.example/art.jpg'}),[]);
- assert.deepEqual(officialAssetUrls('4080220',{...assets,asset_url_format:'https://attacker.example/${FILENAME}'}),[]);
+ assert.deepEqual(officialAssetUrls('4080220',{...assets,asset_url_format:`https://attacker.example/\${FILENAME}`}),[]);
 });
 test('Steam can load a newer portrait capsule from the disk cache without the internet',async()=>{
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'orbit-capsule-modern-'));

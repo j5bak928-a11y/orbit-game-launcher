@@ -11,13 +11,13 @@ const unique = a=>[...new Set(a.filter(Boolean).map(p=>path.resolve(p)))];
 async function isDir(p){try{return (await fsp.stat(p)).isDirectory()}catch{return false}}
 async function isFile(p){try{return (await fsp.stat(p)).isFile()}catch{return false}}
 function tokenizeVdf(source){
-  const tokens=[];const re=/\/\/[^\r\n]*|"((?:\\.|[^"\\])*)"|\{|\}|([^\s{}"]+)/g;let match;
-  while((match=re.exec(source))!==null){if(match[0].startsWith('//'))continue;tokens.push(match[1]!==undefined?match[1].replace(/\\"/g,'"').replace(/\\\\/g,'\\'):match[0]==='{'||match[0]==='}'?match[0]:match[2]);}
+  const tokens=[];const re=/\/\/[^\r\n]*|"((?:\\.|[^"\\])*)"|\{|\}|([^\s{}"]+)/g;
+  for(let match=re.exec(source);match!==null;match=re.exec(source)){if(match[0].startsWith('//'))continue;tokens.push(match[1]!==undefined?match[1].replace(/\\"/g,'"').replace(/\\\\/g,'\\'):match[0]==='{'||match[0]==='}'?match[0]:match[2]);}
   return tokens;
 }
 function parseVdf(source){
   const tokens=tokenizeVdf(source);let i=0;
-  function object(nested=false){const out={};while(i<tokens.length){const key=tokens[i++];if(key==='}')break;if(key==='{')continue;const next=tokens[i++];if(next==='{')out[key]=object(true);else if(next!==undefined&&next!=='}')out[key]=next;else if(next==='}')break;}return out;}
+  function object(){const out={};while(i<tokens.length){const key=tokens[i++];if(key==='}')break;if(key==='{')continue;const next=tokens[i++];if(next==='{')out[key]=object();else if(next!==undefined&&next!=='}')out[key]=next;else if(next==='}')break;}return out;}
   return object();
 }
 function steamRoots(){
@@ -186,7 +186,7 @@ async function scanDownloadsFolder(downloadsPath,{platform=process.platform}={})
   result.games=result.games.map(game=>({...game,downloadCandidate:true}));
   return result;
 }
-async function discoverAll(settings,{downloadsPath=path.join(os.homedir(),'Downloads'),platform=process.platform}={}){
+async function discoverAll(settings){
   const results=await Promise.allSettled([discoverSteam(),discoverEpic(),discoverGog(),discoverGogRegistry()]);
   // Downloads is not included in automatic discovery. Add standalone games manually.
   const folders=(settings.libraryFolders||[]).slice(0,60);

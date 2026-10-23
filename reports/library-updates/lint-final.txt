@@ -1,0 +1,7 @@
+
+> orbit-game-launcher@0.9.4 lint
+> npx --yes --package @biomejs/biome@2.6.2 biome lint src tests scripts --reporter=json --max-diagnostics=none | node scripts/lint-report.cjs
+
+npm warn allow-scripts .npmrc allow-scripts setting is being ignored because --allow-scripts was passed on the command line
+The `json` and `json-pretty` reporters are experimental and may change in patch releases.
+Biome 2.6.2: 0 errors, 6 reviewed warnings, 0 new warnings; 28 informational diagnostics.

@@ -37,3 +37,12 @@ test('exact Steam title search ignores trademark characters without matching DLC
  const match=await findExactSteamApp('Ace Combat 7: Skies Unknown',{fetchImpl:mock});
  assert.deepEqual(match,{name:'ACE COMBAT™7: SKIES UNKNOWN',steamId:'502500'});
 });
+
+test('Steam title validation rejects every interior C0 control before fetching', async () => {
+ let requests=0;
+ const fetchImpl=async()=>{requests++;return result([]);};
+ for (let code=0; code<32; code++) {
+  assert.equal(await findExactSteamApp('Cel'+String.fromCharCode(code)+'este',{fetchImpl}),null);
+ }
+ assert.equal(requests,0);
+});

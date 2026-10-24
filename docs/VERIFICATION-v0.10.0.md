@@ -38,7 +38,7 @@ These are fixture/database measurements, not game FPS, native storefront benchma
 
 An actual Electron launch was attempted after installing dependencies. The host rejected `socket()` in Chromium's `process_singleton_posix` with `Operation not permitted`, so native startup could not complete here. The app's production single-instance/security behavior was preserved. Packaged/native startup is therefore **not claimed**.
 
-Real Windows registry contents, game executables, filesystem dialogs, URI registration, interactive animation on a user's GPU, and installed-game launches were **not tested on a Windows PC**. Neither macOS packaging/signing nor Linux AppImage/deb installation was performed. A Windows PR workflow is included to build installer and portable EXEs; its result is reported separately, not inferred from local Linux packaging.
+Real Windows registry contents, game executables, filesystem dialogs, URI registration, interactive animation on a user's GPU, and installed-game launches were **not tested on a Windows PC**. Neither macOS packaging/signing nor Linux AppImage/deb installation was performed. A Windows PR workflow builds and verifies installer and portable EXEs; its result is reported separately, not inferred from local Linux packaging. GitHub artifact-storage quotas can block downloadable attachments, and upload status is reported separately from test/build status. The first Windows CI run exposed a pre-existing fixture using a POSIX shell target on Windows; that positive fixture now selects a host-appropriate executable without weakening production validation.
 
 ## Native Windows acceptance
 

@@ -45,8 +45,13 @@ jobs:
         env:
           ORBIT_QA_OUTPUT: ${{ runner.temp }}/orbit-browser
       - uses: actions/upload-artifact@v4
+        id: browser_artifacts
         if: always()
+        continue-on-error: true
         with:
           name: Orbit-browser-checks
           path: ${{ runner.temp }}/orbit-browser
           if-no-files-found: ignore
+      - name: Report unavailable browser attachments
+        if: steps.browser_artifacts.outcome == 'failure'
+        run: echo 'Browser report upload failed; inspect the upload log for the storage or network error. Test results are recorded in their own steps.' >> "$GITHUB_STEP_SUMMARY"

@@ -1,6 +1,6 @@
 {
   "name": "orbit-game-launcher",
-  "version": "0.9.4",
+  "version": "0.10.0",
   "private": true,
   "description": "Orbit — a fast, local-first desktop game launcher",
   "main": "src/main.cjs",
@@ -11,21 +11,23 @@
     "dev": "electron . --dev",
     "test": "node --test tests/*.test.cjs",
     "bench": "node tests/performance.cjs",
-    "check": "node --check src/main.cjs && node --check src/preload.cjs && node --check src/core/database.cjs && node --check src/core/discovery.cjs && node --check src/core/launch.cjs && node --check src/core/artwork.cjs && node --check src/core/steam-cover.cjs && node --check src/core/windows-activity.cjs && node --check src/core/game-file.cjs && node --check src/core/game-identity.cjs && node --check src/core/steam-search.cjs && node --check src/core/backup.cjs && node --check src/ui/app.js && node --check src/ui/library-updates.js && node --check scripts/lint-report.cjs",
+    "check": "node scripts/check.cjs",
     "dist": "electron-builder",
     "dist:win": "electron-builder --win nsis portable",
     "dist:mac": "electron-builder --mac dmg zip",
     "dist:linux": "electron-builder --linux AppImage deb",
     "lint": "npx --yes --package @biomejs/biome@2.6.2 biome lint src tests scripts --reporter=json --max-diagnostics=none | node scripts/lint-report.cjs",
     "bench:tracking": "node tests/tracking-performance.cjs",
-    "test:renderer": "node tests/library-renderer.cjs"
+    "test:renderer": "node tests/library-renderer.cjs",
+    "test:experience": "node tests/experience-renderer.cjs"
   },
   "engines": {
     "node": ">=22.13.0"
   },
   "devDependencies": {
     "electron": "^38.0.0",
-    "electron-builder": "^26.0.0"
+    "electron-builder": "^26.0.0",
+    "playwright": "1.62.1"
   },
   "build": {
     "appId": "com.orbitlauncher.desktop",

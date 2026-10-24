@@ -102,3 +102,12 @@ test('bulk import publishes one versioned invalidation for a shared snapshot', a
   assert.equal(snapshot.revision,1);
   assert.equal(snapshot.games.length,1);
 });
+
+test('additional detected storefronts import as real library games',async t=>{
+ const f=fixture(t);
+ const games=['ea','ubisoft','battlenet'].map((source,i)=>({name:`Detected ${source}`,source,source_id:String(800+i),executable:path.join(os.tmpdir(),`game-${source}.exe`),install_path:os.tmpdir()}));
+ const result=await f.invoke('importGames',games);
+ assert.equal(result.imported,3);assert.equal(result.errors.length,0);
+ const snapshot=await f.invoke('librarySnapshot');
+ assert.deepEqual(snapshot.games.map(game=>game.source).sort(),['battlenet','ea','ubisoft']);
+});

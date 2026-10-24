@@ -1,174 +1,101 @@
 # Orbit — Game Launcher
 
-Orbit is a local-first desktop game launcher for Windows, macOS, and Linux. It provides one fast library for games discovered in installed stores or added manually, with a polished interface, quick search, tags, filters, favorites, cover art, play actions, and optional play-time tracking.
+Orbit is a local-first Electron desktop launcher. Keep installed games in one fast library, find something to play, and open it through its own launcher or a verified executable. Your library, preferences, artwork and play history stay on your computer.
 
-![Orbit dashboard](preview-dashboard.png)
+![Orbit library](docs/images/orbit-library.png)
 
-## Requirements
-
-- Node.js 22.13 or newer and npm for development.
-- Electron 38 or newer (installed by npm).
-- Windows 10/11, modern macOS, or desktop Linux. Native builds have **not** been validated on all three platforms yet.
-- Internet access only for installing dependencies and, optionally, fetching Steam cover art. Running the launcher and the local library require no account or network.
+The screenshot uses a sample library with public Steam artwork. It does not show a user's installed games or measured play history.
 
 ## Run from source
 
+Use Node.js **22.13 or newer** and npm:
+
 ```bash
-npm install
+npm ci
 npm start
 ```
 
-During development, use `npm run dev` to enable Chromium development tools. The app reads/writes its library in Electron's per-user `userData` directory. The Settings page can open this directory directly.
+Use `npm run dev` to enable development tools. Windows 10/11, desktop Linux and modern macOS are intended targets; actual storefront integration still needs smoke testing on the target OS. See [verification and limits](docs/VERIFICATION-v0.10.0.md).
 
-## Build installers
+## What's new in 0.10.0
 
-```bash
-npm run dist:win    # Windows: NSIS installer and portable executable
-npm run dist:mac    # macOS: DMG and ZIP
-npm run dist:linux  # Linux: AppImage and .deb
-```
+- A quieter charcoal interface, game-led dashboard, separate landscape hero artwork, compact continue-playing cards and readable portrait covers.
+- Platform filters with counts, visible active filters, grid/list views, favorites, tags, categories, sorting, and Ctrl/Cmd+K search.
+- Clear pending-launch feedback and protection against repeated clicks. **Choose a game** suggests an existing library game and opens its details before launching.
+- A scan report showing which metadata providers completed, their candidate counts, warnings and timing. Preview discoveries and select the games to import.
+- More Steam locations, correct Epic catalog launch identities, Heroic/Legendary metadata, nested game executables, and conservative EA/Ubisoft/Blizzard registry detection on Windows.
+- Shared, bounded artwork work. Repeated lookups are coalesced, missing art is briefly cached, local icon work stays separate from network work, and stale responses cannot overwrite a game edited while loading.
+- A reproducible dependency lock and pull-request Windows installer/portable build artifacts.
 
-For best results build on the target operating system. macOS Gatekeeper distribution requires appropriate signing/notarization; Windows installer signing is optional but recommended for public release. A package build must be tested on its target OS before being considered supported.
+## Find your games
 
-## Features
+Choose **Find installed games** or **Scan for games**, review the results, then import the selected entries. Orbit does not execute a discovered game during scanning.
 
-- **Dashboard:** highlighted game, continue playing, library count, favorites and tracked play time.
-- **Library:** grid and compact list, virtualized scrolling, instant search, sorting by name/recent/added/time, filters by platform, genre and tags.
-- **Game details:** cover, launch action, source, tags, favorites, play time, location, quick edit/remove.
-- **Custom games:** click **Add game → Browse .exe** to select an existing local game executable. Orbit fills an empty title and working directory, recognizes common abbreviated filenames such as `hoi4.exe` → **Hearts of Iron IV**, checks nearby artwork files, and extracts an executable icon where supported. On Windows, Orbit also attempts to read the executable’s built-in product name without running it. You can replace or clear images manually, enter a supported launcher URI, and configure launch arguments, tags and genre. Orbit stores the executable path; it never uploads or copies the game binary.
-- **Downloads discovery:** Scans the OS Downloads directory and extracted folders for game candidates, excludes common installers, and asks for import confirmation. Downloads candidates are never silently added by startup scanning. Disable this in Settings if desired.
-- **Steam artwork repair:** Retries missing covers, reads Steam's local portrait cache, handles newer content-hashed Steam CDN paths through public app metadata, and falls back to legacy URLs. No API key is required.
-- **Discovery:** Steam manifest and multi-library discovery on Windows/macOS/Linux; Epic Games launcher `.item` manifests on Windows; GOG metadata (`goggame-*.info`) and Windows registry entries; optional filesystem scans of user-selected locations.
-- **Control:** paginated scan preview with checkboxes and persistent selection across pages (up to 10,000 per import), duplicate detection across storefront IDs, executable paths and launcher URIs, error/warning feedback, automatic scanning on launch if enabled.
-- **Persistence:** SQLite database (Node's built-in `node:sqlite`), WAL journaling, serialized settings, sessions, metadata, and art files.
-- **Art:** automatically checks game folders for named cover images and asks the OS to extract an executable icon (best supported on Windows). Cover artwork takes priority; the square icon is displayed neatly against the gradient when no cover exists. Manually choose/clear PNG/JPEG/WebP cover, banner or icon images. Recognized standalone games and Steam imports can optionally download public Steam cover images. Click **Find online cover by title** in the Add/Edit Game dialog to search for an exact match to any title; no Steam account or installation is required. Artwork is stored locally and repeated selections reuse identical files.
-- **Appearance:** light/dark/system theme, six accent colors, reduced-motion setting, responsive layouts, keyboard navigation and a Ctrl/Cmd+K search shortcut.
-- **Privacy:** no accounts, analytics, injected game code or credential scraping. Paths and arguments are passed as discrete executable arguments without a shell. Images are served only from Orbit's own artwork directory.
-- **Backup:** by default, export a compressed **`.orbit` portable backup** with game metadata, settings, and local cover/banner/icon files embedded. Restore it on another computer without separately copying artwork. Orbit also imports and exports legacy **`.json` metadata-only** backups, which do not include images. Imported games retain favorites, tags, dates, and tracked play time; existing duplicate library entries are skipped. Restores never uninstall games or overwrite existing library entries. Portable backups cap embedded artwork at 100 MB and compressed archives at 128 MB; invalid/missing artwork is reported, and you can export metadata-only JSON if your artwork exceeds the limit. Executable paths are still tied to their original computer; edit them after migrating games between devices.
-
-## Import and compatibility details
-
-| Source | Automatic discovery | Launch behavior |
+| Provider | Metadata used | Requirements and limits |
 | --- | --- | --- |
-| Steam | `steamapps/appmanifest_*.acf` and `libraryfolders.vdf` | Opens Steam `steam://rungameid/<appid>` URI |
-| Epic Games | Windows `.item` files from launcher manifests | Opens Epic's game-launch link; executable stored when identifiable |
-| GOG | GOG `.info` files, Windows registry | Launches discovered direct executable when available |
-| Custom folders | Executables and `.info` files in folders you explicitly add | Launches executable directly |
-| Manual | Any executable path or supported launcher URI | Direct process or OS-registered URI |
+| Steam | App manifests, declared libraries, standard/native/Flatpak locations, Windows Steam registry | A verified installation folder and an installed manifest state; supported on Windows/macOS/Linux |
+| Epic Games Launcher | Installed `.item` manifests | Windows; uses namespace, catalog item and app name when available; incomplete installs and DLC are excluded |
+| GOG | `goggame-*.info` and Windows GOG registry | A contained, platform-appropriate executable; installers and utility targets are rejected |
+| Heroic | Installed Epic/Legendary and GOG metadata, including Linux Flatpak config | Heroic must be installed and own its launch URI handler; runtime/authentication is handed back to Heroic |
+| Standalone Legendary | `installed.json` | A verified native executable; Windows/Wine games on Linux/macOS without Heroic need manual setup; no Epic client is assumed |
+| EA / Ubisoft / Battle.net | Windows uninstall registry | Exact recognized publisher, real installation directory and contained game EXE; records without credible executable metadata are skipped |
+| Selected folders | Bounded scans of user-selected directories, including Binaries/Win64-style layouts | Installers, crash tools and symlink cycles are skipped; ambiguous executables require manual selection; macOS app bundles stay separate |
 
-Other launcher URI schemes include Heroic, Ubisoft, EA and Battle.net as **manual links only**; whether these work depends on which OS handlers a launcher has registered. Unsupported game stores should be added manually. Orbit does not claim account-based store synchronization or remote ownership discovery.
+A scan is bounded. If a folder hits its entry limit, choose a smaller game-library folder and rescan. Zero candidates means no usable installed records were found at the supported locations; it does not prove that the launcher is absent. Xbox/Microsoft Store protected packages and other unsupported stores can be added manually when they provide a suitable launch target.
 
-**Play-time accuracy:** The app tracks a directly spawned process for as long as Orbit remains open. Games that immediately hand off to another executable and close, Steam/Epic/other URI-based launching, and macOS `.app` bundles cannot be tracked reliably; Orbit marks those launch methods untracked. Do not interpret the play-time total as a complete historical record.
+**Downloads is never scanned automatically.** To add a standalone game, use **Add game → Browse**, or explicitly select its game-library folder in Settings. The optional **Scan at startup** setting imports new verified candidates at startup; it is off by default.
 
-## Shortcuts
+## Artwork
 
-- `Ctrl+K` / `Cmd+K` — focus search.
-- `Esc` — close dialogs.
-- `Tab`, `Shift+Tab`, `Enter` — keyboard navigation.
+Portrait covers and landscape banners are kept separate. Wide store headers never become stretched portrait covers; missing/broken art falls back to a small game icon and readable title.
 
-## Tests
+Orbit reads local Steam cache images and executable icons without requiring a network connection. When **Steam artwork** is enabled, public Steam metadata/art and exact-title matching can fill missing artwork, including recognized games from other stores. No API key is needed. The setting controls online requests, not local cache access. Artwork requests send app IDs or title searches to Steam, never executable files or installation paths.
+
+Use **Settings → Repair library covers** to explicitly retry missing or malformed art. Valid portraits are preserved. Add/Edit Game also lets you choose or clear a cover, banner and icon, or find a cover by its exact title. A delisted or unmatched title may still require manually selected artwork.
+
+## Launching and play time
+
+Storefront URIs require the appropriate installed game client. Direct executables are started with argument arrays and no shell; advanced launch arguments use a JSON array, such as `["--fullscreen"]`. Orbit does not install, modify or inject into games.
+
+Direct-process sessions track time until their process exits. Windows can also detect running Steam/Epic game processes within known installation directories. A launcher wrapper that exits before its child game, an unrecognized vendor runtime or an external URI on other operating systems may not yield accurate tracked time; Orbit does not invent play history.
+
+Use **Enter/Space** to open a focused game, **Tab** to move between controls, **Escape** to close dialogs and **Ctrl/Cmd+K** to search. Light, dark and system themes, six accents, keyboard focus and both OS/app reduced-motion settings remain supported.
+
+## Data and backup
+
+**Settings → Open folder** shows the local SQLite database and artwork cache. Existing libraries are opened in place, including the prior icon-column migration. This upgrade does not change the database format or replace user libraries.
+
+Export a portable **`.orbit` backup** to include metadata, settings and local artwork, or choose **JSON** for metadata only. Restore preserves favorites, tags, dates and tracked time; existing duplicates are skipped. It does not uninstall games or overwrite existing entries. Paths still refer to the original machine and may need editing after a move. Portable backups cap embedded artwork at 100 MB and the compressed archive at 128 MB.
+
+No account, analytics, credential scraping or game-binary upload is used. Games remain in their original locations. Steam artwork is optional; the local library and direct-game launch paths work offline, subject to each game's own requirements.
+
+## Build and check
 
 ```bash
 npm run check
-npm run lint
 npm test
-npm run bench       # optional synthetic 5,000-game DB and 1,020-file scan benchmark
+npm run lint
+npm run bench
+npm run bench:tracking
+npm run test:renderer
+npm run dist:win
+npm run dist:mac
+npm run dist:linux
 ```
 
-The lint command runs Biome 2.6.2 and fails on errors or any warning outside the exact reviewed cases in scripts/lint-review.json. The six reviewed diagnostics preserve classic-script strict mode and app/OS reduced-motion overrides; no Biome rules are disabled. Source changes at those reviewed locations require another review. Optional checks include npm run bench:tracking (synthetic tracking-query timings) and npm run test:renderer (Playwright plus installed Chrome; mocked IPC, not native Electron).
+The optional renderer suite needs Playwright and an installed Chrome. It accepts `ORBIT_PLAYWRIGHT_PATH`, `ORBIT_BROWSER_CHANNEL`, `ORBIT_BROWSER_EXECUTABLE` and `ORBIT_QA_OUTPUT` for existing/shared installations. Its IPC is mocked; it does not launch real games. The extended interactive regression suite is `npm run test:experience` and uses the same browser variables.
 
-Tests cover SQLite data integrity, settings across restarts, favorite/edit/remove actions, tracked sessions, malformed data, Steam/Epic/GOG parsing, missing manifests, and safe URI/process launch behavior.
+Build on the target OS. GitHub pull requests run a Windows installer/portable build and attach the two EXEs as an artifact; PR builds do not publish releases. Existing main-branch/manual Windows build behavior retains private prereleases. Unsigned installers may be subject to the OS's normal verification prompts.
 
-For an **optional mocked-renderer** smoke test on a machine with Python, Playwright and Chromium installed:
+## Troubleshooting
 
-```bash
-python tests/renderer-smoke.py
-```
+- **A game is missing:** inspect the scan diagnostics, connect the installation drive, add its actual library folder, or choose its executable manually. Custom store locations outside the known metadata roots may need manual setup.
+- **A scan stops early:** use a smaller library folder rather than selecting an entire drive.
+- **A cover is missing:** use Repair library covers, check the artwork setting, or choose a portrait manually. Cached local art works offline.
+- **A game fails to open:** confirm its store client is installed or edit the executable/working directory. Game-specific authentication, launch arguments or runtimes remain the game's responsibility.
+- **Time is not increasing:** check whether the game uses an external launcher or a wrapper process; see the tracking limitations above.
+- **Startup cannot open the database:** Orbit reports the data location without deleting it. Back up that directory before making any manual repairs.
 
-The renderer smoke test injects mock IPC responses into headless Chromium. It tests navigation, add/edit flows, search, settings, imports, virtualization, and scrolling. **This is not an Electron/native end-to-end test**; actual OS launchers, file dialogs, path permissions and installer packaging need a target-system test.
+## License
 
-On a **Linux** test machine with Python Playwright and `/usr/bin/chromium` installed, a deeper browser workflow test drives the actual Electron main-process IPC handlers and SQLite storage through an Electron host stand-in:
-
-```bash
-python tests/workflow-integration.py
-# With Xvfb installed, run headful Chromium:
-xvfb-run -a env ORBIT_HEADFUL=1 python tests/workflow-integration.py
-```
-
-This test performs a safe local script launch, scans Steam/GOG fixtures, tests game add/edit/favorite/remove, backup, error messages, settings and persistence across backend restarts. It still **does not run a native Electron binary** or exercise real system file dialogs. See STAGE3-VERIFICATION.md.
-
-## Architecture
-
-```text
-src/
-  main.cjs            Electron entry point, IPC and native dialogs
-  preload.cjs         Explicit, sandboxed renderer API
-  core/
-    artwork.cjs       Bounded Steam cover-image streaming
-    game-file.cjs     Local executable inspection and nearby artwork detection
-    game-identity.cjs Common game aliases and Windows file product-name detection
-    steam-search.cjs  Exact public Steam title search with bounded responses
-    backup.cjs        Portable compressed backups and safe artwork restore
-    database.cjs      SQLite library and settings
-    discovery.cjs     Steam/Epic/GOG/folder importers
-    launch.cjs        URI validation and shell-free process launch
-  ui/
-    index.html        Offline UI document with strict CSP
-    styles.css        Complete dark/light visual system
-    library-updates.js Coalesced per-game changes and versioned snapshot recovery
-    app.js            Application state, routing, UI and keyed virtual grid
-assets/
-  icon.png, icon.ico  App identity and packaging assets
-tests/
-  *.test.cjs          Built-in Node test runner suites
-  renderer-smoke.py   Optional headless UI exercise
-```
-
-## Current verification
-
-See [LIBRARY-UPDATES.md](LIBRARY-UPDATES.md) for incremental library updates, the tracking-query benchmark, the CI lint gate and the current 111-test validation.
-
-See [GAME-RECOGNITION-UPDATE.md](GAME-RECOGNITION-UPDATE.md) for the executable title recognition update with **51 passing backend tests**; see [EXE-ARTWORK-UPDATE.md](EXE-ARTWORK-UPDATE.md) for the earlier local artwork update; see [IMPROVEMENT-VERIFICATION.md](IMPROVEMENT-VERIFICATION.md) for the earlier audit. The Stage 5 baseline is recorded in [FINAL-VERIFICATION.md](FINAL-VERIFICATION.md), [STAGE3-VERIFICATION.md](STAGE3-VERIFICATION.md) for handler-backed workflows, and [STAGE4-VERIFICATION.md](STAGE4-VERIFICATION.md) for performance measurements. Native Electron and cross-platform checks remain outstanding.
-
-## Limitations and next release checks
-
-- Game-specific installation formats vary by storefront version. Installation manifest parsing is best effort, with the manual entry and custom folder scan as fallbacks.
-- Online cover search uses Steam’s public title search and image servers when the Steam artwork setting is enabled. Only exact title matches are accepted, and not all games appear on Steam. Offline titles and covers/icons remain usable. Unknown executable names can be edited manually. Windows product-name reading and native icon extraction still require testing in a real Windows Electron build.
-- macOS bundle launch commands and Windows-specific store paths are implemented, but production app builds and genuine game launches **need testing on those operating systems**.
-- The Electron package and installer could not be fetched or built in the authoring sandbox (registry access unavailable during the improvement pass). `node --check`, Node integration tests, and a mocked Chromium UI smoke test were run successfully instead.
-- Large library results are virtualized; user-supplied folder scanning is bounded in file count and depth.
-
-## Security choices
-
-The Electron renderer has no Node access, uses context isolation and a limited preload API, and cannot navigate to arbitrary pages. Launch links are scheme allowlisted. Local artwork is validated, size-limited and kept under the app's artwork directory. File and game process launch arguments never pass through a command shell. Scanning does not read game credentials or authenticate to launchers.
-
-
-## v0.9.1: Artwork and game activity improvements
-
-Downloads is no longer scanned automatically. Select individual game executables with Add Game. Existing imported library entries remain untouched.
-
-Epic, Steam, and standalone titles can use their recognized Steam artwork IDs or exact title matches, including a portrait fallback for Rocket League. Library artwork is displayed without excessive zoom, and local executable icons appear when a cover is unavailable.
-
-On Windows, Orbit watches running executable paths inside recognized Steam/Epic installation folders approximately every 15 seconds and records play sessions, including games started directly from the store launcher. Tracking is best effort: it requires Orbit to remain open, can miss protected process paths, and cannot identify executables running outside the known installation folder.
-
-## v0.9.2: Correct portrait artwork and fix old covers
-
-Library cards accept portrait (roughly 2:3) cover art; Steam's wide headers and landscape local banners are not used as box covers. Steam's metadata and on-disk cache are checked for portrait artwork, and manual game imports prefer nearby poster/cover images with portrait dimensions. The library UI hides legacy landscape covers instead of squeezing them into tall cards; icon/gradient fallbacks remain available.
-
-For games imported before this fix, open **Settings → Library discovery → Repair library covers**. This tries to replace missing or landscape images with true portrait covers while preserving existing valid portrait artwork. The operation may replace a manually selected landscape image; original files are not deleted. Some games do not have public portrait images available from Steam; those titles can still use the game icon or a portrait image you select manually under Edit Game.
-
-The app is still a **0.x pre-release**. Installer compilation and unit tests do not establish that every launcher integration has been tested interactively on Windows.
-
-## v0.9.3: Game icons for missing covers
-
-**Settings → Library discovery → Repair library covers** now attempts both portrait artwork retrieval and game-icon recovery. Orbit can identify likely executables inside a Steam or Epic installation folder and extract the Windows executable icon. When no game executable is found, Steam's locally cached library icon is a secondary fallback. Artwork repairs retain the existing Steam/Epic launcher URI, leave installed game files unchanged, and do not overwrite an existing icon or a valid portrait cover. Manual `.exe` importing still works as before.
-
-Orbit searches only existing game installation folders, with depth and entry-count limits and exclusions for installers, crash reporters and anti-cheat tools; it does not scan Downloads. Icon extraction also works with online artwork downloads disabled. The Settings repair action reports separate numbers of covers and icons recovered.
-
-**Limitations:** Not all Steam games offer a retrievable portrait cover, and Windows may return a generic icon for executables without an embedded resource. Native results on particular games need real Windows verification. No third-party artwork account or API key is required for this fallback.
-
-## v0.9.4: Modern Steam portrait capsules
-
-New Steam titles can use `library_capsule.jpg` and `library_capsule_2x.jpg` rather than `library_600x900.jpg`. Orbit now accepts both modern and legacy portrait assets through Steam's public GetItems metadata, plus their equivalent local Steam library-cache paths. This fixes a known cause of missing legitimate portraits on newer releases (including the artwork format used by CoasterWorks and EA SPORTS FC 27) without adding title-specific artwork IDs or any API key. Only verified portrait images are selected for the library; wide headers and arbitrary remote URLs remain rejected.
-
-**After installing:** open Settings → Library discovery → Repair library covers to fill missing portrait covers. Existing proper covers and personal game metadata remain intact. Games without publicly accessible artwork still fall back to a smaller icon plus a readable game name rather than an oversized application icon. Actual coverage depends on availability of Steam's public assets and your network. Native in-app Windows visual checks are still needed before the 1.0 milestone.
+MIT; see [LICENSE](LICENSE). Game names and artwork belong to their respective owners.

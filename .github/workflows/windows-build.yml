@@ -2,6 +2,11 @@ name: Build Windows installer
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish a Windows prerelease
+        type: boolean
+        default: false
   pull_request:
     paths:
       - "src/**"
@@ -70,7 +75,7 @@ jobs:
 
   prerelease:
     name: Publish requested Windows build
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
     needs: windows
     runs-on: windows-latest
     permissions:

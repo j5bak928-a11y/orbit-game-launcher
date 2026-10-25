@@ -19,7 +19,8 @@
     "lint": "npx --yes --package @biomejs/biome@2.6.2 biome lint src tests scripts --reporter=json --max-diagnostics=none | node scripts/lint-report.cjs",
     "bench:tracking": "node tests/tracking-performance.cjs",
     "test:renderer": "node tests/library-renderer.cjs",
-    "test:experience": "node tests/experience-renderer.cjs"
+    "test:experience": "node tests/experience-renderer.cjs",
+    "test:controller": "node tests/controller-renderer.cjs"
   },
   "engines": {
     "node": ">=22.13.0"

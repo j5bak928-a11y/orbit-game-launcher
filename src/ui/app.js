@@ -36,6 +36,19 @@ const iconPaths={
 };
 const ic=(name,size=18)=>`<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">${iconPaths[name]||iconPaths.gamepad}</svg>`;
 const state={games:[],runningIds:[],settings:null,route:'home',query:'',filter:'all',tag:'all',genre:'all',view:'grid',sort:'name',modal:null,imports:[],importPage:0,selectedImports:new Set(),scanWarnings:[],scanDiagnostics:[],pendingLaunches:new Set(),scanning:false,busy:false,platform:'',version:'',viewGames:[]};
+let controllerMode=null;
+function toggleControllerMode(){
+ if(state.modal)closeModal();
+ if(!controllerMode){
+  if(!window.OrbitControllerMode)throw Error('Controller mode is unavailable. Restart Orbit to load the latest files.');
+  controllerMode=window.OrbitControllerMode.create({api:window.orbit,
+   snapshot:()=>({games:state.games,runningIds:state.runningIds,pendingLaunches:state.pendingLaunches}),
+   launch:performLaunch,favorite,notify:toast,
+   onExit:()=>{refreshNavigation(true);document.querySelector('[data-action="controller-mode"]')?.focus();}
+  });
+ }
+ return controllerMode.toggle();
+}
 const sourceNames={steam:'Steam',epic:'Epic Games',gog:'GOG',ea:'EA app',ubisoft:'Ubisoft Connect',battlenet:'Battle.net',folder:'Local',manual:'Manual'};
 const palette=['#8b7aff','#5bafef','#fc8ca8','#53c5b3','#f3a65c','#bf87f5'];
 function artwork(token){return /^[a-f\d-]{36}\.(jpg|jpeg|png|webp)$/.test(token||'')?`orbit-art://file/${token}`:null}
@@ -71,7 +84,7 @@ function sidebar(){const links=[['home','home','Overview'],['library','library',
  <div class="side-bottom"><div class="side-tip"><div class="side-tip-icon">${ic('folder',19)}</div><strong>Keep your library together.</strong><p>Find games from your launchers and selected folders.</p><button data-action="scan">${ic('plus',14)} Find installed games</button></div><div class="side-version"><span class="status-dot"></span><span>${state.scanning?'Scanning your games…':'Local library'} <span class="version-number">v${esc(state.version)}</span></span></div></div></aside>`}
 function topbar(){const name={home:'Overview',library:'My library',favorites:'Favorites',recent:'Recently played',settings:'Settings'}[state.route]||'Overview';return `<header class="topbar"><div class="breadcrumb">${name}</div>
  <div class="topbar-right"><label class="searchbox">${ic('search',18)}<input id="global-search" type="search" placeholder="Search your library" value="${esc(state.query)}" autocomplete="off" aria-label="Search games"/><kbd>Ctrl K</kbd></label>
- <button class="top-icon" data-action="scan" title="Discover installed games" aria-label="Discover installed games">${ic('refresh',18)}</button>
+ <button class="top-icon" data-action="controller-mode" title="Controller mode (F11)" aria-label="Enter controller mode">${ic('gamepad',18)}</button><button class="top-icon" data-action="scan" title="Discover installed games" aria-label="Discover installed games">${ic('refresh',18)}</button>
  <button class="primary-btn" data-action="add">${ic('plus',18)}<span>Add game</span></button></div></header>`}
 function headline(eyebrow,title,subtitle,buttons=''){return `<div class="page-heading"><div><div class="eyebrow"><i></i>${esc(eyebrow)}</div><h1 class="page-title">${esc(title)}</h1><p class="page-intro">${esc(subtitle)}</p></div>${buttons}</div>`}
 function platformFilters(){
@@ -225,6 +238,7 @@ function refreshFilterOptions(id,values,label,active){
 function applyLibraryUpdate(change){
  const runningChanged=state.runningIds!==change.runningIds;
  state.games=change.games;state.runningIds=change.runningIds;
+ if(controllerMode?.active){controllerMode.update();return;}
  const count=el('side-slot')?.querySelector('[data-route="library"] .count');
  if(count&&count.textContent!==String(state.games.length))count.textContent=String(state.games.length);
  if(['library','favorites','recent'].includes(state.route)){
@@ -245,6 +259,8 @@ function applyLibraryUpdate(change){
 function handleOrbitEvent(event){
  if(event.type==='gamesChanged')libraryUpdates.receive(event);
  if(event.type==='settingsChanged'){state.settings=event.settings;setupTheme();}
+ if(event.type==='windowState')controllerMode?.windowState(event);
+ if(event.type==='toggleControllerMode')Promise.resolve().then(toggleControllerMode).catch(error=>toast(error.message,true));
  if(event.type==='error')toast(event.message,true);
 }
 async function saveSettings(patch){state.settings=await window.orbit.saveSettings(patch);setupTheme();if(state.route==='settings')renderPage({keepScroll:true});}
@@ -324,6 +340,7 @@ function syncActivity(){
  for(const button of document.querySelectorAll('[data-action="shuffle"]'))button.disabled=state.games.length===0;
  for(const button of document.querySelectorAll('[data-action="scan"]')){button.setAttribute('aria-busy',String(state.scanning));button.classList.toggle('is-scanning',state.scanning);button.title=state.scanning?'Scanning installed games…':'Find installed games';}
  const status=document.querySelector('.side-version>span:last-child');if(status)status.innerHTML=state.scanning?'Scanning your games…':`Local library <span class="version-number">v${esc(state.version)}</span>`;
+ controllerMode?.update();
 }
 async function performLaunch(id){const game=state.games.find(g=>g.id===id);if(!game||state.pendingLaunches.has(id)||state.runningIds.includes(id))return;
  const started=performance.now();state.pendingLaunches.add(id);syncActivity();
@@ -376,6 +393,7 @@ async function detectGameFile(file){
 }
 async function handleAction(button){const action=button.dataset.action,id=button.dataset.id;
  switch(action){
+  case 'controller-mode':await toggleControllerMode();break;
   case 'navigate':navigate(button.dataset.route);break;
   case 'shuffle':{if(state.games.length){const game=state.games[Math.floor(Math.random()*state.games.length)];openModal('detail',{id:game.id});}else toast('Add a game to your library first.');break;}
   case 'platform':{state.filter=button.dataset.source;if(state.route==='home'){state.route='library';el('side-slot').innerHTML=sidebar();el('top-slot').innerHTML=topbar();}renderPage();break;}
@@ -454,6 +472,7 @@ let searchTimer;document.addEventListener('input',event=>{if(event.target.id!=='
 });
 document.addEventListener('submit',event=>{if(event.target.id==='game-form'){event.preventDefault();storeGame(event.target)}});
 document.addEventListener('keydown',event=>{
+ if(event.key==='F11'&&!event.ctrlKey&&!event.metaKey&&!event.altKey){event.preventDefault();if(!event.repeat)Promise.resolve().then(toggleControllerMode).catch(error=>toast(error.message,true));return;}
  if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();el('global-search')?.focus();el('global-search')?.select()}
  if(event.key==='Escape'&&state.modal){event.preventDefault();closeModal()}
  if((event.key==='Enter'||event.key===' ')&&event.target.matches('[role=button][data-action=detail]')){event.preventDefault();openModal('detail',{id:event.target.dataset.id})}

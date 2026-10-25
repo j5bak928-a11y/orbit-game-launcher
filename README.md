@@ -21,11 +21,36 @@ Use `npm run dev` to enable development tools. Windows 10/11, desktop Linux and 
 
 - A quieter charcoal interface, game-led dashboard, separate landscape hero artwork, compact continue-playing cards and readable portrait covers.
 - Platform filters with counts, visible active filters, grid/list views, favorites, tags, categories, sorting, and Ctrl/Cmd+K search.
+- Fullscreen controller mode with a Continue playing row, large cards, clear focus, favorites and a paged library.
 - Clear pending-launch feedback and protection against repeated clicks. **Choose a game** suggests an existing library game and opens its details before launching.
 - A scan report showing which metadata providers completed, their candidate counts, warnings and timing. Preview discoveries and select the games to import.
 - More Steam locations, correct Epic catalog launch identities, Heroic/Legendary metadata, nested game executables, and conservative EA/Ubisoft/Blizzard registry detection on Windows.
 - Shared, bounded artwork work. Repeated lookups are coalesced, missing art is briefly cached, local icon work stays separate from network work, and stale responses cannot overwrite a game edited while loading.
-- A reproducible dependency lock and pull-request Windows installer/portable build artifacts.
+- A reproducible dependency lock and pull-request Windows build checks.
+
+## Controller mode
+
+![Orbit fullscreen controller mode](docs/images/orbit-controller.jpg)
+
+Preview with sample games, artwork and play history; the controller status is simulated for QA.
+
+Choose the **controller button** beside Search or press **F11**. Orbit opens a fullscreen library, focuses your most recently played game, and shows up to eight games in **Continue playing**. All games and Favorites use bounded pages, including with a large library. Selecting a card opens large Play, Favorite and Back controls.
+
+| Action | Controller position / Xbox–PlayStation labels | Keyboard |
+| --- | --- | --- |
+| Move focus | D-pad or left stick | Arrow keys; Tab / Shift+Tab |
+| Select | South button: A / Cross | Enter / Space |
+| Back; exit from the library | East button: B / Circle | Escape / Backspace |
+| Toggle the focused game's favorite | West button: X / Square | Use the Favorite button in the game sheet |
+| Jump to Continue playing | North button: Y / Triangle | Home |
+| Previous / next library page | LB / RB | Page Up / Page Down |
+| Toggle controller mode | Visible exit control | F11 |
+
+Connect your controller and press then release a button if it has not appeared yet. Orbit uses controllers exposed by Chromium with a **standard** mapping. Unrecognized layouts show a keyboard fallback; the displayed button labels use Xbox/PlayStation positions. Mouse and keyboard remain available without a controller.
+
+Input pauses while Orbit is unfocused, hidden or outside controller mode. Stick drift is filtered, and held selection buttons must be released before another action can fire. Exiting restores the window's previous fullscreen state and returns focus to the entry button. Native fullscreen exit also returns to the desktop library. OS and application reduced-motion preferences are respected.
+
+Run the browser journey with `npm run test:controller`. Tests inject gamepad snapshots and native-window IPC responses; actual USB/Bluetooth hardware, driver mapping and native OS fullscreen still require a desktop smoke test.
 
 ## Find your games
 

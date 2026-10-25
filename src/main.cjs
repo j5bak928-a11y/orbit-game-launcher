@@ -10,6 +10,7 @@ const {discoverAll,steamRoots}=require('./core/discovery.cjs');
 const {launchGame:executeGame,deferredExit}=require('./core/launch.cjs');
 const {findSteamCover,findSteamBanner,localSteamIcon}=require('./core/steam-cover.cjs');
 const {ArtworkWork}=require('./core/artwork-work.cjs');
+const {FullscreenController}=require('./core/window-state.cjs');
 const {isPortraitArtwork}=require('./core/cover-shape.cjs');
 const {inspectGameFile}=require('./core/game-file.cjs');
 const {findGameExecutable}=require('./core/game-executable.cjs');
@@ -21,6 +22,7 @@ const {createPortableBackup,decodePortableBackup,installBackupArtwork,writeAtomi
 protocol.registerSchemesAsPrivileged([{scheme:'orbit-art',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true}}]);
 if(!app.requestSingleInstanceLock())app.quit();
 let win,db,scanning=false,activityTracker=null,libraryRevision=0;
+const fullscreenController=new FullscreenController(()=>win);
 const sessions=new Map();
 const pendingLaunches=new Set();
 const artworkWork=new ArtworkWork();
@@ -48,6 +50,13 @@ function createWindow(){
   win.loadFile(path.join(__dirname,'ui/index.html'));
   win.webContents.setWindowOpenHandler(()=>({action:'deny'}));
   win.webContents.on('will-navigate',(event)=>event.preventDefault());
+  win.webContents.on('before-input-event',(event,input)=>{
+    if(input.type!=='keyDown'||input.key!=='F11'||input.control||input.meta||input.alt||input.shift)return;
+    event.preventDefault();
+    if(!input.isAutoRepeat)broadcast({type:'toggleControllerMode'});
+  });
+  win.on('enter-full-screen',()=>broadcast({type:'windowState',fullscreen:true}));
+  win.on('leave-full-screen',()=>broadcast({type:'windowState',fullscreen:false}));
 }
 async function imageFromDialog(){
   const result=await dialog.showOpenDialog(win,{title:'Choose game artwork',properties:['openFile'],filters:[{name:'Images',extensions:['png','jpg','jpeg','webp']}]});
@@ -228,6 +237,8 @@ async function discover(){
 }
 function handlers(){
   const bind=(name,fn)=>ipcMain.handle('orbit:'+name,async(_, ...args)=>{try{return await fn(...args)}catch(e){throw new Error(e?.message||'Unexpected error.')}});
+  bind('getWindowState',()=>fullscreenController.get());
+  bind('setFullscreen',enabled=>fullscreenController.set(enabled));
   bind('bootstrap',()=>({...librarySnapshot(),settings:db.getSettings(),platform:process.platform,version:app.getVersion()}));
   bind('librarySnapshot',librarySnapshot);
   bind('listGames',()=>db.list());

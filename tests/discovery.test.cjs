@@ -48,7 +48,7 @@ test('macOS GOG search paths are independent of Windows environment variables',(
 
 test('a GOG title discovered through a custom folder only appears once',()=>fixture(async root=>{
  const game=path.join(root,'Example');await fsp.mkdir(game);
- const executable=path.join(game,'example.sh');await fsp.writeFile(executable,'#!/bin/sh\nexit 0\n');
+ const executable=path.join(game,process.platform==='win32'?'example.exe':'example.sh');await fsp.writeFile(executable,'#!/bin/sh\nexit 0\n');
  if(process.platform!=='win32')await fsp.chmod(executable,0o755);
  await fsp.writeFile(path.join(game,'goggame-154.info'),JSON.stringify({gameId:'154',name:'Example',playTasks:[{isPrimary:true,path:'example.sh'}]}));
  const result=await discoverAll({libraryFolders:[root]});

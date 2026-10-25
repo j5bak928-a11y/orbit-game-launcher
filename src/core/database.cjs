@@ -20,7 +20,7 @@ function cleanGame(raw, previous = {}) {
   const name = String(raw.name ?? previous.name ?? '').trim();
   if (!name || name.length > 140) throw new Error('Game name must contain 1–140 characters.');
   const source = String(raw.source ?? previous.source ?? 'manual');
-  if (!['manual','steam','epic','gog','folder'].includes(source)) throw new Error('Unsupported game source.');
+  if (!['manual','steam','epic','gog','ea','ubisoft','battlenet','folder'].includes(source)) throw new Error('Unsupported game source.');
   const result = {};
   for (const key of ['source_id','executable','launch_uri','install_path','cover','banner','icon','genre','working_dir']) {
     const val = raw[key] !== undefined ? raw[key] : previous[key];

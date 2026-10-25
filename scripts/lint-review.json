@@ -22,11 +22,59 @@
       "location": {
         "path": "src/ui/styles.css",
         "start": {
-          "line": 19,
+          "line": 43,
+          "column": 124
+        },
+        "end": {
+          "line": 43,
+          "column": 134
+        }
+      },
+      "source": "body[data-reduce-motion=true] *,body[data-reduce-motion=true] *:before,body[data-reduce-motion=true] *:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}",
+      "reason": "Reduced-motion preferences must override component and inline animation, transition, and scrolling styles."
+    },
+    {
+      "category": "lint/complexity/noImportantStyles",
+      "location": {
+        "path": "src/ui/styles.css",
+        "start": {
+          "line": 43,
+          "column": 150
+        },
+        "end": {
+          "line": 43,
+          "column": 160
+        }
+      },
+      "source": "body[data-reduce-motion=true] *,body[data-reduce-motion=true] *:before,body[data-reduce-motion=true] *:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}",
+      "reason": "Reduced-motion preferences must override component and inline animation, transition, and scrolling styles."
+    },
+    {
+      "category": "lint/complexity/noImportantStyles",
+      "location": {
+        "path": "src/ui/styles.css",
+        "start": {
+          "line": 43,
+          "column": 181
+        },
+        "end": {
+          "line": 43,
+          "column": 191
+        }
+      },
+      "source": "body[data-reduce-motion=true] *,body[data-reduce-motion=true] *:before,body[data-reduce-motion=true] *:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}",
+      "reason": "Reduced-motion preferences must override component and inline animation, transition, and scrolling styles."
+    },
+    {
+      "category": "lint/complexity/noImportantStyles",
+      "location": {
+        "path": "src/ui/styles.css",
+        "start": {
+          "line": 42,
           "column": 72
         },
         "end": {
-          "line": 19,
+          "line": 42,
           "column": 82
         }
       },
@@ -38,11 +86,11 @@
       "location": {
         "path": "src/ui/styles.css",
         "start": {
-          "line": 19,
+          "line": 42,
           "column": 98
         },
         "end": {
-          "line": 19,
+          "line": 42,
           "column": 108
         }
       },
@@ -54,47 +102,15 @@
       "location": {
         "path": "src/ui/styles.css",
         "start": {
-          "line": 19,
+          "line": 42,
           "column": 129
         },
         "end": {
-          "line": 19,
+          "line": 42,
           "column": 139
         }
       },
       "source": "@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}",
-      "reason": "Reduced-motion preferences must override component and inline animation, transition, and scrolling styles."
-    },
-    {
-      "category": "lint/complexity/noImportantStyles",
-      "location": {
-        "path": "src/ui/styles.css",
-        "start": {
-          "line": 20,
-          "column": 124
-        },
-        "end": {
-          "line": 20,
-          "column": 134
-        }
-      },
-      "source": "body[data-reduce-motion=true] *,body[data-reduce-motion=true] *:before,body[data-reduce-motion=true] *:after{animation:none!important;transition:none!important}",
-      "reason": "Reduced-motion preferences must override component and inline animation, transition, and scrolling styles."
-    },
-    {
-      "category": "lint/complexity/noImportantStyles",
-      "location": {
-        "path": "src/ui/styles.css",
-        "start": {
-          "line": 20,
-          "column": 150
-        },
-        "end": {
-          "line": 20,
-          "column": 160
-        }
-      },
-      "source": "body[data-reduce-motion=true] *,body[data-reduce-motion=true] *:before,body[data-reduce-motion=true] *:after{animation:none!important;transition:none!important}",
       "reason": "Reduced-motion preferences must override component and inline animation, transition, and scrolling styles."
     }
   ]

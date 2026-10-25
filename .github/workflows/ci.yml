@@ -21,3 +21,41 @@ jobs:
         run: npm run lint
       - name: Run tests
         run: npm test
+
+  renderer:
+    name: Library and experience browser regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install developer tools without downloading Electron
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify Chrome is available
+        run: google-chrome --version
+      - name: Check the renderer with 5,000 games
+        run: npm run test:renderer
+        env:
+          ORBIT_QA_OUTPUT: ${{ runner.temp }}/orbit-browser
+      - name: Check interactions and responsive scrolling
+        run: npm run test:experience
+        env:
+          ORBIT_QA_OUTPUT: ${{ runner.temp }}/orbit-browser
+      - name: Check fullscreen controller navigation
+        run: npm run test:controller
+        env:
+          ORBIT_QA_OUTPUT: ${{ runner.temp }}/orbit-browser
+      - uses: actions/upload-artifact@v4
+        id: browser_artifacts
+        if: always()
+        continue-on-error: true
+        with:
+          name: Orbit-browser-checks
+          path: ${{ runner.temp }}/orbit-browser
+          if-no-files-found: ignore
+      - name: Report unavailable browser attachments
+        if: steps.browser_artifacts.outcome == 'failure'
+        run: echo 'Browser report upload failed; inspect the upload log for the storage or network error. Test results are recorded in their own steps.' >> "$GITHUB_STEP_SUMMARY"

@@ -122,3 +122,23 @@ test('Steam can load a newer portrait capsule from the disk cache without the in
    assert.deepEqual(await findSteamCover('4080220',{roots:[root],fetchImpl:async()=>{throw Error('offline')}}),jpeg);
  }finally{await fs.rm(root,{recursive:true,force:true})}
 });
+
+test('offline-only cover lookups use disk without making any network request',async()=>{
+ let calls=0;
+ const result=await findSteamCover('123',{online:false,local:async()=>null,fetchImpl:async()=>{calls++;return image()}});
+ assert.equal(result,null);assert.equal(calls,0);
+ assert.deepEqual(await findSteamCover('123',{online:false,local:async()=>jpeg,fetchImpl:async()=>{throw Error('network')}}),jpeg);
+});
+
+test('Steam hero lookup accepts only landscape art and works offline',async()=>{
+ const {findSteamBanner}=require('../src/core/steam-cover.cjs');
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'orbit-steam-banner-'));
+ try{
+  const folder=path.join(root,'appcache','librarycache');await fs.mkdir(folder,{recursive:true});
+  await fs.writeFile(path.join(folder,'123_library_hero.jpg'),landscape);
+  let calls=0;assert.deepEqual(await findSteamBanner('123',{roots:[root],online:false,fetchImpl:async()=>{calls++;throw Error('network')}}),landscape);
+  assert.equal(calls,0);
+  await fs.writeFile(path.join(folder,'123_library_hero.jpg'),jpeg);
+  assert.equal(await findSteamBanner('123',{roots:[root],online:false}),null);
+ }finally{await fs.rm(root,{recursive:true,force:true})}
+});

@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
+const {EventEmitter}=require('node:events');
 const { createRequire } = require('node:module');
 const { LibraryDatabase } = require('../src/core/database.cjs');
 
@@ -26,6 +27,12 @@ function fixture(t) {
   const handlers = new Map(), events = [];
   const main = path.join(__dirname, '../src/main.cjs'), realRequire = createRequire(main);
   const electron = {
+    BrowserWindow:class extends EventEmitter {
+      constructor(){super();this.webContents=new EventEmitter();this.webContents.send=(_channel,event)=>events.push(structuredClone(event));this.webContents.setWindowOpenHandler=()=>{};}
+      isDestroyed(){return false;}
+      loadFile(){}
+      show(){}
+    },
     app:{
       requestSingleInstanceLock:()=>true, getPath:()=>root, getVersion:()=> 'fixture',
       whenReady:()=>new Promise(()=>{}), on() {},
@@ -37,10 +44,10 @@ function fixture(t) {
     require:name=>name==='electron' ? electron : realRequire(name),
     __dirname:path.dirname(main), process, Buffer, setImmediate,
     fixtureDb:database,
-    fixtureWin:{isDestroyed:()=>false, webContents:{send:(channel, event)=>{
+    fixtureWin:Object.assign(new EventEmitter(),{fullscreen:false,isFullScreen(){return this.fullscreen;},setFullScreen(value){this.fullscreen=value;this.emit(value?'enter-full-screen':'leave-full-screen');},isDestroyed:()=>false, webContents:{send:(channel, event)=>{
       assert.equal(channel, 'orbit:event');
       events.push(structuredClone(event));
-    }}},
+    }}}),
   });
   vm.runInContext(fs.readFileSync(main, 'utf8'), context, {filename:main});
   vm.runInContext('db=fixtureDb; win=fixtureWin; handlers();', context);
@@ -50,6 +57,35 @@ function fixture(t) {
   };
 }
 const manual = name => ({name,source:'manual',launch_uri:'steam://rungameid/'+name.length});
+
+test('fullscreen IPC accepts booleans, reports state and rejects malformed requests',async t=>{
+ const f=fixture(t);
+ assert.deepEqual(structuredClone(await f.invoke('getWindowState')),{fullscreen:false});
+ await f.invoke('setFullscreen',true);
+ assert.deepEqual(structuredClone(await f.invoke('getWindowState')),{fullscreen:true});
+ for(const invalid of ['true',1,null,{},undefined])await assert.rejects(f.invoke('setFullscreen',invalid),/boolean/i);
+ assert.equal((await f.invoke('getWindowState')).fullscreen,true);
+ await f.invoke('setFullscreen',false);
+ assert.equal((await f.invoke('getWindowState')).fullscreen,false);
+ assert.equal(f.listReads(),0);
+});
+
+test('fullscreen IPC fails cleanly if the window has closed',async t=>{
+ const f=fixture(t);vm.runInContext('win.isDestroyed=()=>true;',f.context);
+ await assert.rejects(f.invoke('setFullscreen',true),/window/i);
+ await assert.rejects(f.invoke('getWindowState'),/window/i);
+});
+
+test('native F11 overrides the menu accelerator once and ignores held repeats and modifiers',t=>{
+ const f=fixture(t);vm.runInContext('createWindow();',f.context);
+ const prevented=vm.runInContext(`(()=>{let prevented=0;const event={preventDefault(){prevented++;}};
+ win.webContents.emit('before-input-event',event,{type:'keyDown',key:'F11',isAutoRepeat:false});
+ win.webContents.emit('before-input-event',event,{type:'keyDown',key:'F11',isAutoRepeat:true});
+ win.webContents.emit('before-input-event',event,{type:'keyDown',key:'F11',control:true});
+ win.webContents.emit('before-input-event',event,{type:'keyUp',key:'F11'});
+ return prevented;})()`,f.context);
+ assert.equal(prevented,2);assert.deepEqual(f.events.map(event=>event.type),['toggleControllerMode']);
+});
 
 test('single-game IPC mutations publish records and removals without reading the collection', async t => {
   const f=fixture(t);
@@ -101,4 +137,13 @@ test('bulk import publishes one versioned invalidation for a shared snapshot', a
   const snapshot=await f.invoke('librarySnapshot');
   assert.equal(snapshot.revision,1);
   assert.equal(snapshot.games.length,1);
+});
+
+test('additional detected storefronts import as real library games',async t=>{
+ const f=fixture(t);
+ const games=['ea','ubisoft','battlenet'].map((source,i)=>({name:`Detected ${source}`,source,source_id:String(800+i),executable:path.join(os.tmpdir(),`game-${source}.exe`),install_path:os.tmpdir()}));
+ const result=await f.invoke('importGames',games);
+ assert.equal(result.imported,3);assert.equal(result.errors.length,0);
+ const snapshot=await f.invoke('librarySnapshot');
+ assert.deepEqual(snapshot.games.map(game=>game.source).sort(),['battlenet','ea','ubisoft']);
 });

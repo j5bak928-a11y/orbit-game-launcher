@@ -110,7 +110,7 @@ npm run dist:linux
 
 The optional renderer suite needs Playwright and an installed Chrome. It accepts `ORBIT_PLAYWRIGHT_PATH`, `ORBIT_BROWSER_CHANNEL`, `ORBIT_BROWSER_EXECUTABLE` and `ORBIT_QA_OUTPUT` for existing/shared installations. Its IPC is mocked; it does not launch real games. The extended interactive regression suite is `npm run test:experience` and uses the same browser variables.
 
-Build on the target OS. GitHub pull requests run a Windows installer/portable build, verify both EXEs exist, and attempt an artifact upload; PR builds do not publish releases. Artifact storage quotas can prevent downloads even when tests and packaging pass; the job summary reports this separately. Existing main-branch/manual Windows builds retain private prereleases, with a rebuild fallback if artifact storage is unavailable. Unsigned installers may be subject to the OS's normal verification prompts.
+Build on the target OS. GitHub pull requests run a Windows installer/portable build, verify both EXEs exist, and attempt an artifact upload; PR builds do not publish releases. Artifact storage quotas can prevent downloads even when tests and packaging pass; the job summary reports this separately. Publishing a private prerelease requires a manual workflow run with **Publish a Windows prerelease** explicitly enabled; merges, pushes and ordinary manual build checks do not publish releases. Explicit release builds retain a rebuild fallback if artifact storage is unavailable. Unsigned installers may be subject to the OS's normal verification prompts.
 
 ## Troubleshooting
 

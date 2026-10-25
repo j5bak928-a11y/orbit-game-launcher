@@ -44,6 +44,10 @@ jobs:
         run: npm run test:experience
         env:
           ORBIT_QA_OUTPUT: ${{ runner.temp }}/orbit-browser
+      - name: Check fullscreen controller navigation
+        run: npm run test:controller
+        env:
+          ORBIT_QA_OUTPUT: ${{ runner.temp }}/orbit-browser
       - uses: actions/upload-artifact@v4
         id: browser_artifacts
         if: always()

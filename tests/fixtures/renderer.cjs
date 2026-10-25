@@ -13,6 +13,7 @@ function installFixture({ count }) {
   let revision = 0;
   let nextId = count;
   let runningIds = [];
+  let fullscreen = false;
   let settings = { theme:'dark', accent:'#8b7aff', reduceMotion:true, autoScan:false,
     useSteamArtwork:false, libraryFolders:[], view:'grid', sort:'name', onboardingDone:true };
   const listeners = [];
@@ -29,6 +30,8 @@ function installFixture({ count }) {
     games.push(game); changed([game]); return { game:copy(game), added:true };
   };
   window.orbit = {
+    getWindowState:async () => ({ fullscreen }),
+    setFullscreen:async enabled => { fullscreen=enabled;emit({type:'windowState',fullscreen});return {fullscreen}; },
     bootstrap:async () => ({ ...snapshot(), settings:copy(settings), platform:'win32', version:'test' }),
     librarySnapshot:async () => { counts.snapshot++; return snapshot(); },
     listGames:async () => { counts.listGames++; return copy(games); },
@@ -57,6 +60,7 @@ function installFixture({ count }) {
     onEvent:callback => { listeners.push(callback); return () => {}; },
   };
   window.fixture = {
+    nativeFullscreen(value) { fullscreen=value;emit({type:'windowState',fullscreen}); },
     counts, id:n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`,
     resetMetrics() { for (const key of Object.keys(counts)) counts[key] = 0; },
     patch(id, patch) { const game = games.find(g => g.id === id); Object.assign(game, patch); changed([game]); },

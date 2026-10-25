@@ -32,6 +32,8 @@ class FakeWindow extends EventEmitter {
   isDestroyed() {return false;}
   show() {}
   focus() {}
+  isFullScreen() {return !!this.fullscreen;}
+  setFullScreen(value) {this.fullscreen=value;this.emit(value?'enter-full-screen':'leave-full-screen');}
   isMinimized() {return false;}
   static getAllWindows() {return FakeWindow.windows;}
 }

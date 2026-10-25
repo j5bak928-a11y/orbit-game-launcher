@@ -35,13 +35,24 @@ const iconPaths={
  dots:'<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>'
 };
 const ic=(name,size=18)=>`<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">${iconPaths[name]||iconPaths.gamepad}</svg>`;
-const state={games:[],runningIds:[],settings:null,route:'home',query:'',filter:'all',tag:'all',genre:'all',view:'grid',sort:'name',modal:null,imports:[],importPage:0,selectedImports:new Set(),scanWarnings:[],scanning:false,busy:false,platform:'',version:'',viewGames:[]};
-const sourceNames={steam:'Steam',epic:'Epic Games',gog:'GOG',folder:'Local',manual:'Manual'};
+const state={games:[],runningIds:[],settings:null,route:'home',query:'',filter:'all',tag:'all',genre:'all',view:'grid',sort:'name',modal:null,imports:[],importPage:0,selectedImports:new Set(),scanWarnings:[],scanDiagnostics:[],pendingLaunches:new Set(),scanning:false,busy:false,platform:'',version:'',viewGames:[]};
+let controllerMode=null;
+function toggleControllerMode(){
+ if(state.modal)closeModal();
+ if(!controllerMode){
+  if(!window.OrbitControllerMode)throw Error('Controller mode is unavailable. Restart Orbit to load the latest files.');
+  controllerMode=window.OrbitControllerMode.create({api:window.orbit,
+   snapshot:()=>({games:state.games,runningIds:state.runningIds,pendingLaunches:state.pendingLaunches}),
+   launch:performLaunch,favorite,notify:toast,
+   onExit:()=>{refreshNavigation(true);document.querySelector('[data-action="controller-mode"]')?.focus();}
+  });
+ }
+ return controllerMode.toggle();
+}
+const sourceNames={steam:'Steam',epic:'Epic Games',gog:'GOG',ea:'EA app',ubisoft:'Ubisoft Connect',battlenet:'Battle.net',folder:'Local',manual:'Manual'};
 const palette=['#8b7aff','#5bafef','#fc8ca8','#53c5b3','#f3a65c','#bf87f5'];
 function artwork(token){return /^[a-f\d-]{36}\.(jpg|jpeg|png|webp)$/.test(token||'')?`orbit-art://file/${token}`:null}
-function paletteFor(name){let hash=0;for(const c of name||'')hash=(hash*31+c.charCodeAt(0))>>>0;return [hash%360,(hash*11+126)%360]}
-function coverStyle(g){const [hue,hue2]=paletteFor(g.name);return `--hue:${hue};--hue2:${hue2}`}
-function coverImage(g){const fallback=artwork(g.icon)?`<span class="cover-icon-frame"><img class="cover-icon" src="${artwork(g.icon)}" loading="lazy" alt="" /></span>`:'';const title=`<span class="cover-placeholder-title">${esc(g.name)}</span>`;const poster=artwork(g.cover)?`<img class="cover-image" src="${artwork(g.cover)}" loading="lazy" alt="" />`:'';return fallback+title+poster;}
+function coverImage(g){const fallback=artwork(g.icon)?`<span class="cover-icon-frame"><img class="cover-icon" src="${artwork(g.icon)}" loading="lazy" alt="" /></span>`:'';const title=`<span class="cover-placeholder-symbol">${ic('gamepad',29)}</span><span class="cover-placeholder-title">${esc(g.name)}</span><span class="cover-placeholder-note">${esc(sourceLabel(g))}</span>`;const poster=artwork(g.cover)?`<img class="cover-image" src="${artwork(g.cover)}" loading="lazy" alt="" />`:'';return fallback+title+poster;}
 function timeLabel(seconds){if(!seconds)return 'Not played yet';const hrs=Math.floor(seconds/3600),mins=Math.round((seconds%3600)/60);return hrs?`${hrs}h ${mins}m played`:`${Math.max(1,mins)}m played`}
 function sourceLabel(game){return sourceNames[game.source]||'Game'}
 function formatDate(date){if(!date)return 'Never';const d=new Date(date);return Number.isNaN(d.getTime())?'Unknown':new Intl.DateTimeFormat(undefined,{month:'short',day:'numeric',year:'numeric'}).format(d)}
@@ -56,61 +67,73 @@ function filtered(){const key=[state.games,state.route,state.filter,state.tag,st
   if(state.query.trim()){const q=state.query.trim().toLocaleLowerCase();a=a.filter(g=>[g.name,g.genre,g.source,...(g.tags||[])].some(v=>(v||'').toLocaleLowerCase().includes(q)));}
   const result=sortedGames(a);filterCache={key,value:result};return result;
 }
-function card(g){return `<article class="game-card" style="${coverStyle(g)}" data-action="detail" data-id="${esc(g.id)}" role="button" tabindex="0" aria-label="View details for ${esc(g.name)}">
+function card(g){return `<article class="game-card" data-action="detail" data-id="${esc(g.id)}" role="button" tabindex="0" aria-label="View details for ${esc(g.name)}">
   <div class="cover">${coverImage(g)}<span class="cover-letter">${esc(g.name.slice(0,2))}</span><span class="cover-source">${esc(sourceLabel(g))}</span>
   <button class="favorite-float ${g.favorite?'active':''}" data-action="favorite" data-id="${esc(g.id)}" aria-label="${g.favorite?'Remove favorite':'Add favorite'}">${ic('heart',16)}</button>
   <button class="cover-play" data-action="launch" data-id="${esc(g.id)}" aria-label="Launch ${esc(g.name)}">${ic('play',17)}</button></div>
   <div class="game-label"><div style="min-width:0"><span class="game-name" title="${esc(g.name)}">${esc(g.name)}</span><span class="game-meta">${state.runningIds?.includes(g.id)?'● Playing now':g.total_play_seconds?esc(timeLabel(g.total_play_seconds)):esc(sourceLabel(g))}</span></div>
   <button class="game-menu" data-action="detail" data-id="${esc(g.id)}" aria-label="More about ${esc(g.name)}">${ic('dots',18)}</button></div></article>`}
 function rowGame(g){return `<article class="game-row" data-action="detail" data-id="${esc(g.id)}" tabindex="0" role="button" aria-label="View ${esc(g.name)}">
-  <div class="row-cover" style="${coverStyle(g)}">${esc(g.name.slice(0,1))}${artwork(g.icon)?`<img src="${artwork(g.icon)}" alt="" loading="lazy" class="list-game-icon" />`:''}${artwork(g.cover)?`<img src="${artwork(g.cover)}" alt="" loading="lazy" />`:''}</div>
+  <div class="row-cover">${esc(g.name.slice(0,1))}${artwork(g.icon)?`<img src="${artwork(g.icon)}" alt="" loading="lazy" class="list-game-icon" />`:''}${artwork(g.cover)?`<img src="${artwork(g.cover)}" alt="" loading="lazy" />`:''}</div>
   <div class="row-info"><h3>${esc(g.name)}</h3><p>${esc(sourceLabel(g))}${g.tags?.length?' · '+esc(g.tags.slice(0,2).join(', ')):''}</p></div>
   <div class="row-right"><span class="playtime">${esc(timeLabel(g.total_play_seconds))}</span><button class="ghost-btn" data-action="favorite" data-id="${esc(g.id)}" aria-label="Toggle favorite" style="${g.favorite?'color:#ffc171':''}">${ic('heart',17)}</button><button class="ghost-btn row-play" data-action="launch" data-id="${esc(g.id)}">${ic('play',15)} Play</button></div></article>`}
-function sidebar(){const links=[['home','home','Overview'],['library','library','My library'],['favorites','heart','Favorites'],['recent','clock','Recently played']];return `<aside class="sidebar">
- <div class="brand"><div class="brand-mark" aria-hidden="true">O</div><div><div class="brand-name">orbit<span style="color:var(--accent)">.</span></div><div class="brand-sub">GAME LAUNCHER</div></div></div>
- <div class="side-label">YOUR SPACE</div><nav class="nav" aria-label="Main navigation">${links.map(([id,icon,name])=>`<button class="nav-item ${state.route===id?'active':''}" data-action="navigate" data-route="${id}" ${state.route===id?'aria-current="page"':''}>${ic(icon,18)}<span>${name}</span>${id==='library'?`<span class="count">${state.games.length}</span>`:''}</button>`).join('')}</nav>
- <div class="side-label" style="margin-top:25px">PREFERENCES</div><nav class="nav"><button class="nav-item ${state.route==='settings'?'active':''}" data-action="navigate" data-route="settings">${ic('settings',18)}<span>Settings</span></button></nav>
- <div class="side-bottom"><div class="side-tip"><strong>Discover your games</strong><p>Import titles from installed launchers and local folders.</p><button data-action="scan">${ic('refresh',13)} Scan library</button></div><div class="side-version"><span class="status-dot"></span><span>Ready to play · v${esc(state.version)}</span></div></div></aside>`}
-function topbar(){const name={home:'Dashboard',library:'My library',favorites:'Favorites',recent:'Recently played',settings:'Settings'}[state.route]||'Dashboard';return `<header class="topbar"><div class="breadcrumb">Orbit <span style="color:var(--soft);padding:0 9px">/</span>${name}</div>
- <div class="topbar-right"><label class="searchbox">${ic('search',18)}<input id="global-search" type="search" placeholder="Search your games..." value="${esc(state.query)}" autocomplete="off" aria-label="Search games"/><kbd>Ctrl K</kbd></label>
- <button class="top-icon" data-action="scan" title="Discover installed games" aria-label="Discover installed games">${ic('refresh',18)}</button>
+function sidebar(){const links=[['home','home','Overview'],['library','library','All games'],['favorites','heart','Favorites'],['recent','clock','Recently played']];return `<aside class="sidebar">
+ <div class="brand" role="img" aria-label="Orbit Launcher"><img class="brand-logo brand-logo-dark" src="../../assets/branding/orbit-logo-dark.png" alt="" width="512" height="145" /><img class="brand-logo brand-logo-light" src="../../assets/branding/orbit-logo-light.png" alt="" width="512" height="145" /><img class="brand-mark brand-mark-dark" src="../../assets/branding/orbit-mark-dark.png" alt="" width="256" height="256" /><img class="brand-mark brand-mark-light" src="../../assets/branding/orbit-mark-light.png" alt="" width="256" height="256" /></div>
+ <div class="side-label">LIBRARY</div><nav class="nav" aria-label="Main navigation">${links.map(([id,icon,name])=>`<button class="nav-item ${state.route===id?'active':''}" data-action="navigate" data-route="${id}" title="${name}" ${state.route===id?'aria-current="page"':''}>${ic(icon,18)}<span>${name}</span>${id==='library'?`<span class="count">${state.games.length}</span>`:''}</button>`).join('')}</nav>
+ <div class="side-divider"></div><nav class="nav"><button class="nav-item" data-action="shuffle" title="Choose a game" ${state.games.length?'':'disabled'}>${ic('sparkles',18)}<span>Choose a game</span></button><button class="nav-item ${state.route==='settings'?'active':''}" data-action="navigate" data-route="settings" title="Settings">${ic('settings',18)}<span>Settings</span></button></nav>
+ <div class="side-bottom"><div class="side-tip"><div class="side-tip-icon">${ic('folder',19)}</div><strong>Keep your library together.</strong><p>Find games from your launchers and selected folders.</p><button data-action="scan">${ic('plus',14)} Find installed games</button></div><div class="side-version"><span class="status-dot"></span><span>${state.scanning?'Scanning your games…':'Local library'} <span class="version-number">v${esc(state.version)}</span></span></div></div></aside>`}
+function topbar(){const name={home:'Overview',library:'My library',favorites:'Favorites',recent:'Recently played',settings:'Settings'}[state.route]||'Overview';return `<header class="topbar"><div class="breadcrumb">${name}</div>
+ <div class="topbar-right"><label class="searchbox">${ic('search',18)}<input id="global-search" type="search" placeholder="Search your library" value="${esc(state.query)}" autocomplete="off" aria-label="Search games"/><kbd>Ctrl K</kbd></label>
+ <button class="top-icon" data-action="controller-mode" title="Controller mode (F11)" aria-label="Enter controller mode">${ic('gamepad',18)}</button><button class="top-icon" data-action="scan" title="Discover installed games" aria-label="Discover installed games">${ic('refresh',18)}</button>
  <button class="primary-btn" data-action="add">${ic('plus',18)}<span>Add game</span></button></div></header>`}
 function headline(eyebrow,title,subtitle,buttons=''){return `<div class="page-heading"><div><div class="eyebrow"><i></i>${esc(eyebrow)}</div><h1 class="page-title">${esc(title)}</h1><p class="page-intro">${esc(subtitle)}</p></div>${buttons}</div>`}
+function platformFilters(){
+ const scope=state.route==='favorites'?state.games.filter(g=>g.favorite):state.route==='recent'?state.games.filter(g=>g.last_played_at):state.games;
+ const counts=new Map();for(const game of scope)counts.set(game.source,(counts.get(game.source)||0)+1);
+ return `<div class="platform-filters" role="group" aria-label="Filter by platform"><button class="platform-chip ${state.filter==='all'?'active':''}" data-action="platform" data-source="all" aria-pressed="${state.filter==='all'}">All games <span>${scope.length}</span></button>${Object.entries(sourceNames).filter(([key])=>counts.has(key)).map(([key,label])=>`<button class="platform-chip ${state.filter===key?'active':''}" data-action="platform" data-source="${key}" aria-pressed="${state.filter===key}"><i class="source-dot source-${key}"></i>${esc(label)}<span>${counts.get(key)}</span></button>`).join('')}</div>`;
+}
+function activeFilterSummary(){const active=[state.query.trim()&&`“${state.query.trim()}”`,state.filter!=='all'&&(sourceNames[state.filter]||state.filter),state.genre!=='all'&&state.genre,state.tag!=='all'&&state.tag].filter(Boolean);return active.length?`<span>Showing ${active.map(esc).join(' · ')}</span><button class="small-link" data-action="clear-filters">Clear filters ${ic('close',13)}</button>`:''}
+function continueCard(g){return `<article class="continue-card" data-action="detail" data-id="${esc(g.id)}" role="button" tabindex="0" aria-label="View details for ${esc(g.name)}"><div class="continue-art">${coverImage(g)}</div><div class="continue-copy"><strong>${esc(g.name)}</strong><span>${esc(timeLabel(g.total_play_seconds))}</span></div><button class="continue-play" data-action="launch" data-id="${esc(g.id)}" aria-label="Launch ${esc(g.name)}">${ic('play',16)}</button></article>`}
 function home(){
- const played=sortedGames(state.games.filter(g=>g.last_played_at)).sort((a,b)=>Date.parse(b.last_played_at)-Date.parse(a.last_played_at));
- const feature=played[0]||state.games[0];
- const recent=played.slice(0,6),collection=sortedGames(state.games).slice(0,6);
- const favs=state.games.filter(g=>g.favorite).length;
- return `<section class="page">${headline('Your command center','Welcome to Orbit','All your games. One beautiful place to play.')}
- <div class="hero">${feature&&artwork(feature.banner||feature.cover)?`<img class="hero-art" src="${artwork(feature.banner||feature.cover)}" alt="" />`:''}${feature&&!artwork(feature.banner||feature.cover)&&artwork(feature.icon)?`<img class="hero-game-icon" src="${artwork(feature.icon)}" alt=""/>`:''}<div class="hero-grid"></div><div class="hero-orbit"></div>
- <div class="hero-content"><span class="hero-eyebrow">${feature?'READY WHEN YOU ARE':'YOUR UNIVERSE STARTS HERE'}</span><h2>${feature?`Jump back into<br>${esc(feature.name)}`:'Every game.<br>One universe.'}</h2><p>${feature?'Your next adventure is a click away. Pick up right where you left off.':'Bring your Steam, Epic, GOG and local games together. Built for your collection.'}</p>
- <div class="hero-buttons">${feature?`<button class="primary-btn" data-action="launch" data-id="${esc(feature.id)}">${ic('play',17)} Play now</button><button class="secondary-btn" data-action="detail" data-id="${esc(feature.id)}">View game ${ic('arrow',16)}</button>`:`<button class="primary-btn" data-action="scan">${ic('sparkles',17)} Discover games</button><button class="secondary-btn" data-action="add">${ic('plus',17)} Add manually</button>`}</div></div></div>
- <div class="stat-grid"><div class="stat"><div class="stat-icon">${ic('gamepad',24)}</div><div><div class="stat-label">Total games</div><div class="stat-value">${state.games.length}</div></div></div><div class="stat"><div class="stat-icon">${ic('clock',24)}</div><div><div class="stat-label">Tracked play time</div><div class="stat-value">${totalHours()} <span class="stat-suffix">hours</span></div></div></div><div class="stat"><div class="stat-icon">${ic('heart',24)}</div><div><div class="stat-label">Favorites</div><div class="stat-value">${favs}</div></div></div></div>
- ${recent.length?`<div class="subheading"><h2>Continue playing</h2><button class="small-link" data-action="navigate" data-route="recent">View history ${ic('arrow',15)}</button></div><div class="games-grid">${recent.map(card).join('')}</div>`:''}
- <div class="subheading"><h2>${state.games.length?'Explore your library':'Your collection awaits'}</h2>${state.games.length?`<button class="small-link" data-action="navigate" data-route="library">View all games ${ic('arrow',15)}</button>`:''}</div>
- ${state.games.length?`<div class="games-grid">${collection.map(card).join('')}</div>`:emptyState('Ready for your first game?','Scan your installed launchers or add a game manually to start your collection.')}</section>`;
+ const played=state.games.filter(g=>g.last_played_at).sort((a,b)=>(Date.parse(b.last_played_at)||0)-(Date.parse(a.last_played_at)||0));
+ const feature=played[0]||state.games.find(g=>artwork(g.banner))||state.games[0];
+ const recent=played.slice(0,3),collection=sortedGames(state.games).slice(0,6);
+ const banner=feature&&artwork(feature.banner);
+ return `<section class="page home-page">${headline('YOUR PERSONAL LIBRARY','Ready to play.','A little less searching. A little more playing.',state.games.length?`<button class="secondary-btn shuffle-btn" data-action="shuffle">${ic('sparkles',16)} Choose for me</button>`:'')}
+ <div class="hero ${banner?'has-banner':''} ${feature?'':'hero-empty'}">
+ ${banner?`<img class="hero-art" src="${banner}" alt="" />`:feature?`<div class="hero-portrait"><div class="cover">${coverImage(feature)}</div></div>`:''}
+ <div class="hero-shade"></div><div class="hero-content"><span class="hero-eyebrow">${feature?(played.length?'PICK UP WHERE YOU LEFT OFF':'FROM YOUR LIBRARY'):'WELCOME TO ORBIT'}</span>
+ <h2>${feature?esc(feature.name):'Make room for play.'}</h2>
+ ${feature?`<div class="hero-metadata"><span>${esc(sourceLabel(feature))}</span>${feature.genre?`<i></i><span>${esc(feature.genre)}</span>`:''}<i></i><span>${esc(timeLabel(feature.total_play_seconds))}</span></div><p>${played.length?`Last played ${esc(formatDate(feature.last_played_at))}. Your next session starts here.`:'Installed, organized, and ready whenever you are.'}</p>`:'<p>Bring your installed games together in a library that feels like yours. Start with your launchers or a folder you choose.</p>'}
+ <div class="hero-buttons">${feature?`<button class="primary-btn" data-action="launch" data-id="${esc(feature.id)}">${ic('play',16)} Play now</button><button class="secondary-btn hero-detail" data-action="detail" data-id="${esc(feature.id)}">Game details ${ic('arrow',16)}</button>`:`<button class="primary-btn" data-action="scan">${ic('refresh',16)} Find my games</button><button class="secondary-btn" data-action="add">${ic('plus',16)} Add a game</button>`}</div></div>
+ ${feature?`<div class="hero-caption">${ic('gamepad',14)} IN YOUR COLLECTION</div>`:''}</div>
+ <div class="collection-summary"><span><strong>${state.games.length}</strong> ${state.games.length===1?'game':'games'} in your library</span><span><strong>${state.games.filter(g=>g.favorite).length}</strong> favorites</span><span><strong>${totalHours()}h</strong> tracked play time</span><button class="small-link" data-action="navigate" data-route="library">Open library ${ic('arrow',14)}</button></div>
+ ${recent.length?`<div class="subheading"><h2>Continue playing</h2><button class="small-link" data-action="navigate" data-route="recent">Recently played ${ic('arrow',14)}</button></div><div class="continue-grid">${recent.map(continueCard).join('')}</div>`:''}
+ <div class="subheading collection-heading"><div><h2>Your collection</h2><p>One home for everything you play.</p></div>${state.games.length?`<button class="small-link" data-action="navigate" data-route="library">View all ${state.games.length} ${ic('arrow',14)}</button>`:''}</div>
+ <div id="platform-filter-slot">${platformFilters()}</div>
+ ${state.games.length?`<div class="games-grid home-games">${collection.map(card).join('')}</div>`:emptyState('Your next favorite belongs here.','Find games from Steam, Epic, GOG, and other installed launchers, or add your own.')}</section>`;
 }
 function emptyState(title,body,extra=''){return `<div class="empty-state"><div class="empty-illustration">${ic('gamepad',47)}</div><h2>${esc(title)}</h2><p>${esc(body)}</p><div class="empty-actions">${extra||`<button class="primary-btn" data-action="scan">${ic('refresh',16)} Discover games</button><button class="secondary-btn" data-action="add">${ic('plus',16)} Add game</button>`}</div></div>`}
 function libraryView(){const subtitle={library:'A home for everything you play.',favorites:'The games you love, always one click away.',recent:'Pick up where you left off.'};const title={library:'Your game library',favorites:'Your favorites',recent:'Recently played'};const tags=[...new Set(state.games.flatMap(g=>g.tags||[]))].sort((a,b)=>a.localeCompare(b)).slice(0,100);const genres=[...new Set(state.games.map(g=>g.genre).filter(Boolean))].sort((a,b)=>a.localeCompare(b)).slice(0,100);
  return `<section class="page">${headline('Your collection',title[state.route],subtitle[state.route],`<button class="secondary-btn" data-action="scan">${ic('refresh',15)} Scan for games</button>`)}
- <div class="library-controls"><div class="control-left"><span class="library-count" id="game-result-count">${filtered().length} games</span><div class="select-wrap"><select id="source-filter" aria-label="Filter by platform"><option value="all" ${state.filter==='all'?'selected':''}>All platforms</option>${Object.entries(sourceNames).map(([value,label])=>`<option value="${value}" ${state.filter===value?'selected':''}>${esc(label)}</option>`).join('')}</select></div>
+ <div id="platform-filter-slot">${platformFilters()}</div><div class="library-controls"><div class="control-left"><span class="library-count" id="game-result-count">${filtered().length} games</span><div class="select-wrap"><select id="source-filter" aria-label="Filter by platform"><option value="all" ${state.filter==='all'?'selected':''}>All platforms</option>${Object.entries(sourceNames).map(([value,label])=>`<option value="${value}" ${state.filter===value?'selected':''}>${esc(label)}</option>`).join('')}</select></div>
  <div class="select-wrap"><select id="genre-filter" aria-label="Filter by category"><option value="all" ${state.genre==='all'?'selected':''}>All categories</option>${genres.map(g=>`<option value="${esc(g)}" ${state.genre===g?'selected':''}>${esc(g)}</option>`).join('')}</select></div>
  <div class="select-wrap"><select id="tag-filter" aria-label="Filter by tag"><option value="all" ${state.tag==='all'?'selected':''}>All tags</option>${tags.map(t=>`<option value="${esc(t)}" ${state.tag===t?'selected':''}>${esc(t)}</option>`).join('')}</select></div></div>
  <div class="control-right"><div class="select-wrap"><select id="sort-by" aria-label="Sort games"><option value="name" ${state.sort==='name'?'selected':''}>Name A–Z</option><option value="recent" ${state.sort==='recent'?'selected':''}>Recently played</option><option value="added" ${state.sort==='added'?'selected':''}>Recently added</option><option value="time" ${state.sort==='time'?'selected':''}>Play time</option></select></div>
  <div class="view-switch" aria-label="Library display"><button data-action="view" data-view="grid" class="${state.view==='grid'?'selected':''}" aria-label="Grid view" aria-pressed="${state.view==='grid'}">${ic('grid',16)}</button><button data-action="view" data-view="list" class="${state.view==='list'?'selected':''}" aria-label="List view" aria-pressed="${state.view==='list'}">${ic('list',16)}</button></div></div></div>
- <div id="library-area" class="virtual-area">${state.games.length?'<div id="virtual-games"></div>':emptyState('No games yet','Scan your installed launchers or add a game manually.')}</div></section>`;
+ <div id="active-filters" class="active-filters" aria-live="polite">${activeFilterSummary()}</div><div id="library-area" class="virtual-area">${state.games.length?'<div id="virtual-games"></div>':emptyState('No games yet','Scan your installed launchers or add a game manually.')}</div></section>`;
 }
 let virtualRangeKey=null,virtualGamesRef=null,virtualRunningRef=null,virtualItems=new Map();
 function captureGameFocus(host){
  const active=document.activeElement;
  if(!active||!host?.contains(active))return null;
- const item=active.closest('.game-card,.game-row');
+ const item=active.closest('.game-card,.game-row,.continue-card');
  if(!item)return null;
  return {id:item.dataset.id,action:active.dataset.action,root:active===item,index:[...item.parentElement.children].indexOf(item)};
 }
 function restoreGameFocus(host,focus){
  if(!focus||!host)return;
- const items=[...host.querySelectorAll('.game-card,.game-row')];
+ const items=[...host.querySelectorAll('.game-card,.game-row,.continue-card')];
  const item=items.find(node=>node.dataset.id===focus.id)||items[Math.min(focus.index,items.length-1)];
  const target=item?(focus.root?item:[...item.querySelectorAll('[data-action]')].find(node=>node.dataset.action===focus.action)||item):host.querySelector('button');
  if(target&&document.activeElement!==target)target.focus({preventScroll:true});
@@ -120,16 +143,23 @@ function renderVirtual(){
  const games=filtered();state.viewGames=games;
  const count=el('game-result-count'),label=`${games.length} ${games.length===1?'game':'games'}`;
  if(count&&count.textContent!==label)count.textContent=label;
+ const summary=el('active-filters'),filterSummary=activeFilterSummary();if(summary&&summary.innerHTML!==filterSummary)summary.innerHTML=filterSummary;
  const focus=captureGameFocus(host);
  if(!games.length){
   if(virtualRangeKey==='empty'&&virtualGamesRef===games)return;
   virtualRangeKey='empty';virtualGamesRef=games;virtualItems=new Map();
-  host.innerHTML=emptyState(state.query?'No matching games':state.route==='favorites'?'No favorites yet':state.route==='recent'?'No games played yet':'Nothing here yet',state.query?'Try another search or clear filters.':state.route==='favorites'?'Mark games with the heart icon to see them here.':state.route==='recent'?'Launch a game and it will appear here.':'Try changing the platform or tag filters.',`<button class="secondary-btn" data-action="clear-filters">Clear filters</button>`);
+  host.innerHTML=emptyState(state.query?'No matching games':state.route==='favorites'?'No favorites yet':state.route==='recent'?'No games played yet':'Nothing here yet',state.query?'Try another search or clear filters.':state.route==='favorites'?'Mark games with the heart icon to see them here.':state.route==='recent'?'Launch a game and it will appear here.':'Try changing the platform or tag filters.',(state.query||state.filter!=='all'||state.tag!=='all'||state.genre!=='all')?`<button class="secondary-btn" data-action="clear-filters">Clear filters</button>`:`<button class="secondary-btn" data-action="navigate" data-route="library">Browse library ${ic('arrow',15)}</button>`);
   restoreGameFocus(host,focus);return;
  }
  const scroll=el('main-scroll');if(!scroll)return;
- const isGrid=state.view==='grid',cols=isGrid?Math.max(1,Math.floor((host.clientWidth+18)/195)):1;
- const rowHeight=isGrid?(window.innerWidth<=1180?304:327):88;
+ const isGrid=state.view==='grid',layout=getComputedStyle(host);
+ const gap=parseFloat(layout.getPropertyValue(isGrid?'--grid-gap':'--list-gap'))||0;
+ const minimum=parseFloat(layout.getPropertyValue('--card-min'));
+ const cols=isGrid?Math.max(1,Math.floor((host.clientWidth+gap)/(minimum+gap))):1;
+ const width=(host.clientWidth-gap*(cols-1))/cols;
+ // Chromium lays out grid tracks at 1/64 CSS-pixel precision. Use the same
+ // quantization for spacers so fractional cover widths cannot accumulate drift.
+ const rowHeight=Math.floor((isGrid?width*1.5+parseFloat(layout.getPropertyValue('--card-label-height'))+gap:parseFloat(layout.getPropertyValue('--list-row-height'))+gap)*64)/64;
  const listTop=host.getBoundingClientRect().top-scroll.getBoundingClientRect().top+scroll.scrollTop;
  const totalRows=Math.ceil(games.length/cols),visible=Math.ceil(scroll.clientHeight/rowHeight)+7;
  const first=Math.min(Math.max(0,totalRows-visible),Math.max(0,Math.floor(Math.max(0,scroll.scrollTop-listTop)/rowHeight)-3));
@@ -143,6 +173,7 @@ function renderVirtual(){
  }
  container.className=isGrid?'games-grid':'game-list';
  container.style.gridTemplateColumns=isGrid?`repeat(${cols},minmax(0,1fr))`:'';
+ container.style.gridAutoRows=isGrid?`${rowHeight-gap}px`:'';
  host.firstElementChild.style.height=`${first*rowHeight}px`;
  host.lastElementChild.style.height=`${Math.max(0,(totalRows-last)*rowHeight)}px`;
  const slice=games.slice(first*cols,last*cols),nextItems=new Map(),running=new Set(state.runningIds);
@@ -159,7 +190,7 @@ function renderVirtual(){
   nextItems.set(game.id,{node,game,playing});
  }
  for(const node of [...container.children])if(!nextItems.has(node.dataset.id))node.remove();
- virtualItems=nextItems;restoreGameFocus(host,focus);
+ virtualItems=nextItems;syncActivity();restoreGameFocus(host,focus);
 }
 function settingsView(){const s=state.settings,folders=s.libraryFolders||[];return `<section class="page">${headline('Make it yours','Settings','Customize how Orbit looks, discovers games, and works for you.')}
  <div class="settings-layout"><div class="settings-stack">
@@ -183,7 +214,7 @@ let scrollFrame=null;
 function renderPage({keepScroll=false}={}){const slot=el('page-slot'),scroller=el('main-scroll');if(!slot)return;const old=keepScroll?scroller.scrollTop:0;
  virtualRangeKey=null;virtualGamesRef=null;virtualRunningRef=null;virtualItems=new Map();
  slot.innerHTML=state.route==='home'?home():state.route==='settings'?settingsView():libraryView();scroller.scrollTop=old;
- if(['library','favorites','recent'].includes(state.route))renderVirtual();}
+ if(['library','favorites','recent'].includes(state.route))renderVirtual();syncActivity();}
 function refreshNavigation(keepScroll=false){el('side-slot').innerHTML=sidebar();el('top-slot').innerHTML=topbar();renderPage({keepScroll});}
 function navigate(route){if(!['home','library','favorites','recent','settings'].includes(route))return;state.route=route;state.query='';state.filter='all';state.tag='all';state.genre='all';refreshNavigation();}
 function toast(message,error=false){const item=document.createElement('div');item.className=`toast ${error?'error':''}`;item.innerHTML=ic(error?'alert':'check',19)+`<p>${esc(message)}</p>`;const root=el('toast-root');root.appendChild(item);while(root.children.length>3)root.firstElementChild.remove();setTimeout(()=>item.remove(),4600)}
@@ -207,6 +238,7 @@ function refreshFilterOptions(id,values,label,active){
 function applyLibraryUpdate(change){
  const runningChanged=state.runningIds!==change.runningIds;
  state.games=change.games;state.runningIds=change.runningIds;
+ if(controllerMode?.active){controllerMode.update();return;}
  const count=el('side-slot')?.querySelector('[data-route="library"] .count');
  if(count&&count.textContent!==String(state.games.length))count.textContent=String(state.games.length);
  if(['library','favorites','recent'].includes(state.route)){
@@ -215,16 +247,20 @@ function applyLibraryUpdate(change){
   }else{
    refreshFilterOptions('genre-filter',state.games.map(game=>game.genre),'All categories',state.genre);
    refreshFilterOptions('tag-filter',state.games.flatMap(game=>game.tags||[]),'All tags',state.tag);
+   const platforms=el('platform-filter-slot');if(platforms)platforms.innerHTML=platformFilters();
    renderVirtual();
   }
  }else if(state.route==='home'){
   const focus=captureGameFocus(el('page-slot'));renderPage({keepScroll:true});restoreGameFocus(el('page-slot'),focus);
  }
+ syncActivity();
  if(state.modal?.type==='detail'&&(change.reset||runningChanged||change.changedIds.includes(state.modal.id)||change.removedIds.includes(state.modal.id)))renderModal();
 }
 function handleOrbitEvent(event){
  if(event.type==='gamesChanged')libraryUpdates.receive(event);
  if(event.type==='settingsChanged'){state.settings=event.settings;setupTheme();}
+ if(event.type==='windowState')controllerMode?.windowState(event);
+ if(event.type==='toggleControllerMode')Promise.resolve().then(toggleControllerMode).catch(error=>toast(error.message,true));
  if(event.type==='error')toast(event.message,true);
 }
 async function saveSettings(patch){state.settings=await window.orbit.saveSettings(patch);setupTheme();if(state.route==='settings')renderPage({keepScroll:true});}
@@ -246,7 +282,7 @@ function editor(g){const isEdit=!!g;const title=isEdit?'Edit game':'Add a game';
 }
 function detail(g){if(!g)return dialogFrame('Game unavailable','This game no longer exists.','<div class="dialog-body">Please refresh the library.</div>');
  const tags=(g.tags||[]).map(t=>`<span class="detail-tag">${esc(t)}</span>`).join('');
- return dialogFrame(g.name,`${sourceLabel(g)} · Added ${formatDate(g.created_at)}`,`<div class="dialog-body"><div class="detail-cover"><div class="cover" style="${coverStyle(g)}">${coverImage(g)}<span class="cover-letter">${esc(g.name.slice(0,2))}</span></div>
+ return dialogFrame(g.name,`${sourceLabel(g)} · Added ${formatDate(g.created_at)}`,`<div class="dialog-body"><div class="detail-cover"><div class="cover">${coverImage(g)}<span class="cover-letter">${esc(g.name.slice(0,2))}</span></div>
  <div><h2 class="detail-title">${esc(g.name)}</h2>${g.genre?`<span class="detail-tag">${esc(g.genre)}</span>`:''}${tags||'<span class="detail-tag">No tags yet</span>'}
  <div class="detail-stat">${ic('gamepad',15)} ${esc(sourceLabel(g))}${g.source_id?` · ${esc(g.source_id)}`:''}</div>
  <div class="detail-stat">${ic('clock',15)} ${esc(timeLabel(g.total_play_seconds))}</div><div class="detail-stat">${ic('clock',15)} Last played: ${esc(formatDate(g.last_played_at))}</div>
@@ -264,11 +300,12 @@ function importDialog(){
  state.importPage=Math.min(state.importPage,pageCount-1);
  const first=state.importPage*IMPORT_PAGE_SIZE;
  const description=`Found ${games.length} installed ${games.length===1?'game':'games'}. ${addable.length} new ${addable.length===1?'entry':'entries'} can be imported.`;
+ const diagnostics=scanDiagnostics();
  const warnings=state.scanWarnings.length?`<div class="warning-line">${ic('alert',15)} ${esc(state.scanWarnings.slice(0,3).join(' • '))}${state.scanWarnings.length>3?` · ${state.scanWarnings.length-3} more warnings`:''}</div>`:'';
  const rows=games.slice(first,first+IMPORT_PAGE_SIZE).map((g,offset)=>{const i=first+offset;return `<label class="import-item ${g.alreadyAdded?'added':''}"><input type="checkbox" data-import-index="${i}" ${state.selectedImports.has(i)?'checked':''} ${g.alreadyAdded?'disabled':''}/><div class="icon-box">${ic(g.source==='steam'?'gamepad':'folder',18)}</div><span style="min-width:0;flex:1"><strong>${esc(g.name)}</strong><small>${esc(sourceLabel(g))} · ${esc(g.install_path||g.executable||'Launcher entry')}${g.alreadyAdded?' · Already in library':''}</small></span></label>`}).join('');
  const paging=pageCount>1?`<div class="import-toolbar" aria-label="Import result pages"><span class="muted" style="font-size:12px">Showing ${first+1}–${Math.min(games.length,first+IMPORT_PAGE_SIZE)} of ${games.length} (page ${state.importPage+1} of ${pageCount})</span><div style="display:flex;gap:8px"><button class="secondary-btn" data-action="import-page" data-page="prev" ${state.importPage===0?'disabled':''}>Previous</button><button class="secondary-btn" data-action="import-page" data-page="next" ${state.importPage===pageCount-1?'disabled':''}>Next</button></div></div>`:'';
  const selectionHint=addable.length>MAX_IMPORT_SELECTION?`<p class="setting-help">Each import supports up to ${MAX_IMPORT_SELECTION.toLocaleString()} games. Import the selected games, then rescan to import the remaining titles.</p>`:'';
- return dialogFrame('Discover installed games',description,`<div class="dialog-body">${warnings}<div class="import-toolbar"><span class="muted" style="font-size:12px">${selected} selected across all pages</span><button class="small-link" data-action="toggle-all-import">${selected?'Deselect all':'Select all new'}</button></div>${games.length?`<div class="import-list">${rows}</div>${paging}${selectionHint}`:emptyState('No installed games found','Add your preferred library folders in Settings or add an executable manually.',`<button class="secondary-btn" data-action="add">${ic('plus',15)} Add manually</button>`)}</div>`,`<div class="dialog-footer"><button class="secondary-btn" data-action="close-modal">Cancel</button><button class="primary-btn" data-action="import" ${selected?'':'disabled'}>${ic('download',16)} Import ${selected} ${selected===1?'game':'games'}</button></div>`,true);
+ return dialogFrame('Discover installed games',description,`<div class="dialog-body">${warnings}${diagnostics}<div class="import-toolbar"><span class="muted" style="font-size:12px">${selected} selected across all pages</span><button class="small-link" data-action="toggle-all-import">${selected?'Deselect all':'Select all new'}</button></div>${games.length?`<div class="import-list">${rows}</div>${paging}${selectionHint}`:emptyState('No installed games found','Add your preferred library folders in Settings or add an executable manually.',`<button class="secondary-btn" data-action="add">${ic('plus',15)} Add manually</button>`)}</div>`,`<div class="dialog-footer"><button class="secondary-btn" data-action="close-modal">Cancel</button><button class="primary-btn" data-action="import" ${selected?'':'disabled'}>${ic('download',16)} Import ${selected} ${selected===1?'game':'games'}</button></div>`,true);
 }
 function renderModal(){const modal=state.modal;if(!modal){el('modal-root').innerHTML='';return}let html='';
  if(modal.type==='game')html=editor(modal.id?state.games.find(g=>g.id===modal.id):null);
@@ -277,20 +314,39 @@ function renderModal(){const modal=state.modal;if(!modal){el('modal-root').inner
  else if(modal.type==='import')html=importDialog();
  else if(modal.type==='remove'){const g=state.games.find(x=>x.id===modal.id);html=dialogFrame('Remove from library?',`Remove ${g?.name||'this game'} from Orbit. Installed files will remain untouched.`,`<div class="dialog-body"><p style="color:var(--muted)">This removes the library entry, custom metadata and tracked play time. It does not uninstall the game.</p></div>`,`<div class="dialog-footer"><button class="secondary-btn" data-action="close-modal">Keep game</button><button class="danger-btn" data-action="remove" data-id="${esc(modal.id)}">${ic('trash',15)} Remove game</button></div>`)}
  el('modal-root').innerHTML=html;
+ syncActivity();
  const dialog=el('modal-root').querySelector('.dialog');if(dialog){dialog.setAttribute('tabindex','-1');dialog.focus({preventScroll:true});}
 }
-async function performScan(){if(state.scanning)return toast('A scan is already running.');state.scanning=true;openModal('scan');
- try{const results=await window.orbit.discoverGames();if(state.modal?.type!=='scan')return;state.imports=results.games;state.importPage=0;state.scanWarnings=results.warnings||[];state.selectedImports=new Set(results.games.flatMap((g,i)=>g.alreadyAdded?[]:[i]).slice(0,MAX_IMPORT_SELECTION));openModal('import')}
- catch(e){if(state.modal?.type==='scan')closeModal();toast(e.message||'Scan failed',true)}finally{state.scanning=false}
+async function performScan(){if(state.scanning){openModal('scan');return;}state.scanning=true;syncActivity();openModal('scan');
+ try{const results=await window.orbit.discoverGames();if(state.modal?.type!=='scan')return;state.imports=results.games;state.importPage=0;state.scanWarnings=results.warnings||[];state.scanDiagnostics=results.diagnostics||[];state.selectedImports=new Set(results.games.flatMap((g,i)=>g.alreadyAdded?[]:[i]).slice(0,MAX_IMPORT_SELECTION));openModal('import')}
+ catch(e){if(state.modal?.type==='scan')closeModal();toast(e.message||'Scan failed',true)}finally{state.scanning=false;syncActivity();}
 }
 async function performImport(){const games=[...state.selectedImports].map(i=>state.imports[i]).filter(x=>x&&!x.alreadyAdded).map(({alreadyAdded,...rest})=>rest);if(!games.length)return;
  const button=el('modal-root').querySelector('[data-action=import]');if(button)button.disabled=true;
  try{const result=await window.orbit.importGames(games);closeModal();toast(`Imported ${result.imported} ${result.imported===1?'game':'games'}.${result.skipped?' '+result.skipped+' already in library.':''}`);if(result.errors.length)toast(result.errors.slice(0,3).join(' · '),true)}
  catch(e){toast(e.message||'Import failed.',true);if(button)button.disabled=false}
 }
-async function performLaunch(id){const game=state.games.find(g=>g.id===id);if(!game)return;
+function scanDiagnostics(){
+ if(!state.scanDiagnostics.length)return '';
+ const names={...sourceNames,'gog-registry':'GOG registry',heroic:'Heroic',legendary:'Legendary','windows-stores':'Windows launchers',folder:'Selected folders'};
+ return `<details class="scan-diagnostics"><summary>Scan report <span>${state.scanDiagnostics.length} locations checked</span></summary><div class="diagnostics-list">${state.scanDiagnostics.map(d=>`<div class="diagnostic ${['ok','warning','error'].includes(d.status)?d.status:'warning'}"><div><span class="diagnostic-status">${ic(d.status==='ok'?'check':d.status==='error'?'close':'alert',14)}</span><strong>${esc(names[d.provider]||d.provider)}</strong><span>${Number(d.games)||0} games · ${Math.max(0,Math.round(Number(d.durationMs)||0))} ms</span></div>${d.path?`<p title="${esc(d.path)}">${esc(d.path)}</p>`:''}${(Array.isArray(d.warnings)?d.warnings:[]).map(w=>`<p>${esc(w)}</p>`).join('')}</div>`).join('')}</div></details>`;
+}
+function syncActivity(){
+ for(const button of document.querySelectorAll('[data-action="launch"]')){
+  const pending=state.pendingLaunches.has(button.dataset.id),running=state.runningIds.includes(button.dataset.id);
+  if(pending||running){if(!button.dataset.restHtml)button.dataset.restHtml=button.innerHTML;button.innerHTML=ic(pending?'refresh':'check',16)+(button.matches('.cover-play,.continue-play')?'':pending?' Starting…':' Playing');button.disabled=true;button.setAttribute('aria-busy',String(pending));button.setAttribute('title',pending?'Starting game…':'Game is running');}
+  else if(button.dataset.restHtml){button.innerHTML=button.dataset.restHtml;delete button.dataset.restHtml;button.disabled=false;button.removeAttribute('aria-busy');button.removeAttribute('title');}
+ }
+ for(const button of document.querySelectorAll('[data-action="shuffle"]'))button.disabled=state.games.length===0;
+ for(const button of document.querySelectorAll('[data-action="scan"]')){button.setAttribute('aria-busy',String(state.scanning));button.classList.toggle('is-scanning',state.scanning);button.title=state.scanning?'Scanning installed games…':'Find installed games';}
+ const status=document.querySelector('.side-version>span:last-child');if(status)status.innerHTML=state.scanning?'Scanning your games…':`Local library <span class="version-number">v${esc(state.version)}</span>`;
+ controllerMode?.update();
+}
+async function performLaunch(id){const game=state.games.find(g=>g.id===id);if(!game||state.pendingLaunches.has(id)||state.runningIds.includes(id))return;
+ const started=performance.now();state.pendingLaunches.add(id);syncActivity();
  try{const result=await window.orbit.launchGame(id);toast(result.message||`Launched ${game.name}`);}
  catch(e){toast(e.message||`Could not launch ${game.name}`,true)}
+ finally{setTimeout(()=>{state.pendingLaunches.delete(id);syncActivity();},Math.max(0,650-(performance.now()-started)));}
 }
 async function favorite(id){try{await window.orbit.favoriteGame(id)}catch(e){toast(e.message,true)}}
 async function storeGame(form){const data=Object.fromEntries(new FormData(form));data.tags=String(data.tags||'').split(',').map(t=>t.trim()).filter(Boolean);
@@ -337,7 +393,10 @@ async function detectGameFile(file){
 }
 async function handleAction(button){const action=button.dataset.action,id=button.dataset.id;
  switch(action){
+  case 'controller-mode':await toggleControllerMode();break;
   case 'navigate':navigate(button.dataset.route);break;
+  case 'shuffle':{if(state.games.length){const game=state.games[Math.floor(Math.random()*state.games.length)];openModal('detail',{id:game.id});}else toast('Add a game to your library first.');break;}
+  case 'platform':{state.filter=button.dataset.source;if(state.route==='home'){state.route='library';el('side-slot').innerHTML=sidebar();el('top-slot').innerHTML=topbar();}renderPage();break;}
   case 'add':openModal('game');break;
   case 'edit':openModal('game',{id});break;
   case 'detail':openModal('detail',{id});break;
@@ -413,6 +472,7 @@ let searchTimer;document.addEventListener('input',event=>{if(event.target.id!=='
 });
 document.addEventListener('submit',event=>{if(event.target.id==='game-form'){event.preventDefault();storeGame(event.target)}});
 document.addEventListener('keydown',event=>{
+ if(event.key==='F11'&&!event.ctrlKey&&!event.metaKey&&!event.altKey){event.preventDefault();if(!event.repeat)Promise.resolve().then(toggleControllerMode).catch(error=>toast(error.message,true));return;}
  if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();el('global-search')?.focus();el('global-search')?.select()}
  if(event.key==='Escape'&&state.modal){event.preventDefault();closeModal()}
  if((event.key==='Enter'||event.key===' ')&&event.target.matches('[role=button][data-action=detail]')){event.preventDefault();openModal('detail',{id:event.target.dataset.id})}
@@ -431,14 +491,15 @@ document.addEventListener('keydown',event=>{
 // A wide header/banner is not a portrait cover. Let the icon or gradient
 // show until the user requests a proper portrait via Repair library covers.
 function checkCoverAspect(img){
-  if(!(img instanceof HTMLImageElement)||!img.matches('.cover-image,.row-cover img:not(.list-game-icon)'))return;
+  if(!(img instanceof HTMLImageElement))return;
+  if(img.matches('.hero-art,.detail-banner')){if(img.naturalWidth/img.naturalHeight<1.5)img.classList.add('bad-aspect');return;}
+  if(!img.matches('.cover-image,.row-cover img:not(.list-game-icon)'))return;
   const ratio=img.naturalHeight?img.naturalWidth/img.naturalHeight:0;
   img.classList.toggle('bad-aspect',ratio<0.5||ratio>0.85);
 }
 document.addEventListener('load',event=>checkCoverAspect(event.target),true);
 document.addEventListener('error',event=>{
-  if(event.target instanceof HTMLImageElement&&event.target.matches('.cover-image,.row-cover img:not(.list-game-icon)'))
-    event.target.classList.add('bad-aspect');
+  if(event.target instanceof HTMLImageElement)event.target.classList.add('bad-aspect');
 },true);
 window.addEventListener('resize',()=>{if(['library','recent','favorites'].includes(state.route))renderVirtual()});
 window.matchMedia?.('(prefers-color-scheme:light)')?.addEventListener('change',()=>{if(state.settings?.theme==='system')setupTheme()});

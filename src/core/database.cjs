@@ -38,7 +38,7 @@ function cleanGame(raw, previous = {}) {
   if (tags.some(t => t.length>36)) throw new Error('Tags must be 36 characters or shorter.');
   return {...result, name, source, tags, launch_args: launchArgs, favorite: raw.favorite !== undefined ? !!raw.favorite : !!previous.favorite};
 }
-function normalizedPath(value) {return process.platform === 'win32' ? path.normalize(value).toLowerCase() : path.normalize(value);}
+function normalizedPath(value, platform=process.platform) {return platform === 'win32' ? path.normalize(value).toLowerCase() : path.normalize(value);}
 function duplicateKey(game){
   if (game.source_id && game.source && game.source!=='manual' && game.source!=='folder') return `${game.source}:${game.source_id}`.toLowerCase();
   if (game.executable) return `file:${normalizedPath(game.executable)}`;
@@ -177,4 +177,4 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
     this.db.exec('BEGIN');try{this.db.prepare('UPDATE sessions SET finished_at=?, seconds=? WHERE id=?').run(now(),seconds,id);this.db.prepare('UPDATE games SET total_play_seconds=total_play_seconds+?,updated_at=? WHERE id=?').run(seconds,now(),session.game_id);this.db.exec('COMMIT');return true}catch(e){this.db.exec('ROLLBACK');throw e}
   }
 }
-module.exports={LibraryDatabase,cleanGame,duplicateKey,DEFAULT_SETTINGS};
+module.exports={LibraryDatabase,cleanGame,duplicateKey,normalizedPath,DEFAULT_SETTINGS};

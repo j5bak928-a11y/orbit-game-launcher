@@ -116,8 +116,15 @@ async function downloadSteamArtwork(appId,kind,{roots=steamRoots(),isRelevant=()
   return artworkWork.run(`${kind}:${appId}:${online?'online':'local'}:${JSON.stringify(roots)}`,async needed=>{
     if(!db||!needed())return ArtworkWork.CANCELLED;
     const lookup=kind==='banner'?findSteamBanner:findSteamCover;
-    const bytes=await lookup(appId,{roots,online:()=>online&&onlineArtwork()&&needed()});
+    let interrupted=false;
+    const networkAllowed=()=>{
+      const enabled=onlineArtwork();
+      if(online&&!enabled)interrupted=true;
+      return online&&enabled&&needed();
+    };
+    const bytes=await lookup(appId,{roots,online:networkAllowed});
     if(!needed())return ArtworkWork.CANCELLED;
+    if(!bytes&&(interrupted||(online&&!onlineArtwork())))return ArtworkWork.CANCELLED;
     if(!bytes)return '';
     const digest=crypto.createHash('sha256').update(bytes).digest('hex');
     const filename=`${digest.slice(0,8)}-${digest.slice(8,12)}-${digest.slice(12,16)}-${digest.slice(16,20)}-${digest.slice(20,32)}.jpg`;
@@ -177,10 +184,9 @@ async function cacheGameIcon(game,revision=artworkRevision(game)){
 }
 async function repairMissingSteamCovers({limit=100,replaceLandscape=false}={}){
   const online=db.getSettings().useSteamArtwork;
-  const candidates=[];
-  for(const game of db.list()){
+  const candidates=[],snapshot=artworkRequests(db.list());
+  for(const {game,revision} of snapshot){
     if(candidates.length>=limit)break;
-    const revision=artworkRevision(game);
     const needCover=!game.cover||(replaceLandscape&&await coverNeedsPortrait(game));
     const needIcon=!game.icon&&!!(game.executable||game.install_path);
     if((needCover||needIcon)&&currentArtworkGame(game,revision))candidates.push({game,needCover,needIcon,revision});

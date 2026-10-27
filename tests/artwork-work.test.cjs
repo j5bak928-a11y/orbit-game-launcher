@@ -76,3 +76,10 @@ test('a new subscriber can revive a shared lookup that became obsolete',async()=
  assert.equal(await second,'cover.jpg');
  assert.equal(calls,2);
 });
+
+test('a canceled lookup is not retried unless a new subscriber joins',async()=>{
+ const work=new ArtworkWork({concurrency:1});let calls=0;
+ const result=await work.run('cover',()=>{calls++;return calls===1?ArtworkWork.CANCELLED:'wrong.jpg';});
+ assert.equal(result,'');assert.equal(calls,1);
+ assert.equal(await work.run('cover',()=> 'fresh.jpg'),'fresh.jpg');
+});

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: Publish a Windows prerelease
+        description: Publish a Windows release
         type: boolean
         default: false
   pull_request:
@@ -73,7 +73,7 @@ jobs:
         run: |
           'The installer and portable EXE were built and verified, but their artifact upload failed. Inspect the upload log for the storage or network error; downloads are unavailable until upload succeeds.' >> $env:GITHUB_STEP_SUMMARY
 
-  prerelease:
+  release:
     name: Publish requested Windows build
     if: github.event_name == 'workflow_dispatch' && inputs.publish_release
     needs: windows
@@ -101,14 +101,14 @@ jobs:
         run: npm run dist:win -- --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      - name: Attach executables to a private prerelease
+      - name: Attach executables to the release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           $version = (Get-Content package.json | ConvertFrom-Json).version
-          $tag = "orbit-windows-$version-build-$env:GITHUB_RUN_NUMBER"
+          $tag = "v$version"
           $files = @(Get-ChildItem -Path release -Filter '*.exe' | ForEach-Object { $_.FullName })
           if ($files.Count -lt 2) { throw 'Expected both a Windows installer and portable EXE.' }
-          gh release create $tag @files --title "Orbit Windows $version (test build)" --notes "Unsigned Windows installer and portable executable from source commit $env:GITHUB_SHA. Native detection and installed-game launches require a Windows smoke test." --prerelease --latest=false --target $env:GITHUB_SHA
+          gh release create $tag @files --title "Orbit $version" --notes "Windows installer and portable executable. Includes fullscreen controller navigation, game detection and artwork fixes. These builds are unsigned. Native detection and installed-game launches require a Windows smoke test." --latest --target $env:GITHUB_SHA

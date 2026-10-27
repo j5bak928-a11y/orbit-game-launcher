@@ -27,7 +27,10 @@ function scoreExecutable(file,game,depth=0){
 async function findGameExecutable(game,{readDir=fs.readdir,stat=fs.stat,platform=process.platform,limit=1800,maxDepth=4}={}){
  const file=game?.executable;
  if(file&&path.isAbsolute(file)&&(/\.exe$/i.test(file)||platform!=='win32')){
-   try{if((await stat(file)).isFile())return file;}catch{}
+   try{
+     const info=await stat(file);
+     if(info.isFile()||(platform==='darwin'&&/\.app$/i.test(file)&&info.isDirectory()))return file;
+   }catch{}
  }
  const root=game?.install_path;
  if(platform!=='win32'||typeof root!=='string'||!path.isAbsolute(root))return '';

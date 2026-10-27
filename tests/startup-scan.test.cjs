@@ -53,7 +53,10 @@ test('startup scan gives every newly imported game an icon without replacing exi
    if(name==='electron')return electron;
    if(name==='./core/discovery.cjs'){
     const real=realRequire(name);
-    return {...real,discoverAll:settings=>real.discoverAll(settings,{providers:[]})};
+    // Keep these regular-file fixtures portable on macOS, whose native
+    // folder scanner discovers app bundles instead.
+    const platform=process.platform==='darwin'?'linux':process.platform;
+    return {...real,discoverAll:settings=>real.discoverAll(settings,{providers:[],platform})};
    }
    if(name==='./core/windows-activity.cjs')return {WindowsActivityTracker:class{start(){} stop(){} runningIds(){return [];} isRunning(){return false;}}};
    return realRequire(name);

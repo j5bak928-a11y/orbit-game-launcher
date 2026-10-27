@@ -11,7 +11,7 @@ const { LibraryDatabase } = require('../src/core/database.cjs');
 
 // Exercise the real IPC handlers and SQLite storage without native startup,
 // process enumeration, user data, artwork downloads or actual game launches.
-function fixture(t) {
+function fixture(t, {discoverAll, platform, getFileIcon} = {}) {
   const temporary = path.resolve(os.tmpdir());
   const root = fs.mkdtempSync(path.join(temporary, 'orbit-library-ipc-'));
   const database = new LibraryDatabase(path.join(root, 'library.sqlite'));
@@ -34,15 +34,18 @@ function fixture(t) {
       show(){}
     },
     app:{
-      requestSingleInstanceLock:()=>true, getPath:()=>root, getVersion:()=> 'fixture',
+      requestSingleInstanceLock:()=>true, getPath:()=>root, getVersion:()=> 'fixture', getFileIcon,
       whenReady:()=>new Promise(()=>{}), on() {},
     },
     protocol:{registerSchemesAsPrivileged() {}},
     ipcMain:{handle:(name, handler)=>handlers.set(name, handler)},
   };
+  const runtime = platform ? Object.create(process) : process;
+  if (platform) Object.defineProperty(runtime, 'platform', {value:platform});
   const context = vm.createContext({
-    require:name=>name==='electron' ? electron : realRequire(name),
-    __dirname:path.dirname(main), process, Buffer, setImmediate,
+    require:name=>name==='electron' ? electron : name==='./core/discovery.cjs' && discoverAll
+      ? {...realRequire(name), discoverAll} : realRequire(name),
+    __dirname:path.dirname(main), process:runtime, Buffer, setImmediate,
     fixtureDb:database,
     fixtureWin:Object.assign(new EventEmitter(),{fullscreen:false,isFullScreen(){return this.fullscreen;},setFullScreen(value){this.fullscreen=value;this.emit(value?'enter-full-screen':'leave-full-screen');},isDestroyed:()=>false, webContents:{send:(channel, event)=>{
       assert.equal(channel, 'orbit:event');
@@ -52,7 +55,7 @@ function fixture(t) {
   vm.runInContext(fs.readFileSync(main, 'utf8'), context, {filename:main});
   vm.runInContext('db=fixtureDb; win=fixtureWin; handlers();', context);
   return {
-    database, context, events, listReads:()=>listReads,
+    root, database, context, events, listReads:()=>listReads,
     invoke:(name,...args)=>handlers.get('orbit:'+name)(null,...args),
   };
 }
@@ -146,4 +149,57 @@ test('additional detected storefronts import as real library games',async t=>{
  assert.equal(result.imported,3);assert.equal(result.errors.length,0);
  const snapshot=await f.invoke('librarySnapshot');
  assert.deepEqual(snapshot.games.map(game=>game.source).sort(),['battlenet','ea','ubisoft']);
+});
+
+test('scan keeps distinct executables on a case-sensitive filesystem', {skip:process.platform==='win32'}, async t=>{
+ const discovery=require('../src/core/discovery.cjs');
+ const f=fixture(t,{discoverAll:settings=>discovery.discoverAll(settings,{providers:[]})});
+ const library=path.join(f.root,'games'),upper=path.join(library,'SpaceGame','Game.exe'),lower=path.join(library,'spacegame','game.exe');
+ fs.mkdirSync(path.dirname(upper),{recursive:true});fs.mkdirSync(path.dirname(lower),{recursive:true});
+ fs.writeFileSync(upper,'fixture');fs.writeFileSync(lower,'fixture');fs.chmodSync(upper,0o755);fs.chmodSync(lower,0o755);
+ if(fs.statSync(upper).ino===fs.statSync(lower).ino){t.skip('The filesystem is case-insensitive');return;}
+ f.database.saveSettings({libraryFolders:[library]});
+ f.database.upsert({name:'Existing',source:'manual',executable:upper});
+ const result=await f.invoke('discoverGames');
+ assert.equal(result.games.length,2);
+ assert.equal(result.games.find(game=>game.executable===upper).alreadyAdded,true);
+ const different=result.games.find(game=>game.executable===lower);
+ assert.equal(different.alreadyAdded,false,'A distinct executable must remain selectable for import');
+ const imported=await f.invoke('importGames',[different]);
+ assert.equal(imported.imported,1);
+});
+
+test('scan identifies case-insensitive storefront IDs already in the library',async t=>{
+ const candidate={name:'Epic game',source:'epic',source_id:'game-abc',launch_uri:'com.epicgames.launcher://apps/game-abc?action=launch'};
+ const f=fixture(t,{discoverAll:async()=>({games:[candidate],warnings:[],diagnostics:[]})});
+ f.database.upsert({name:'Existing Epic game',source:'epic',source_id:'Game-AbC',launch_uri:'heroic://launch?appName=Game-AbC'});
+ const result=await f.invoke('discoverGames');
+ assert.equal(result.games[0].alreadyAdded,true,'The scan should agree with the database duplicate key');
+});
+
+test('scan compares executable paths case-insensitively on Windows',async t=>{
+ const candidates=[];
+ const f=fixture(t,{platform:'win32',discoverAll:async()=>({games:candidates,warnings:[],diagnostics:[]})});
+ const file=path.join(f.root,'Example','Game.exe');
+ f.database.upsert({name:'Existing game',source:'manual',executable:file});
+ candidates.push({name:'Same game',source:'folder',executable:file.toLowerCase()});
+ const result=await f.invoke('discoverGames');
+ assert.equal(result.games[0].alreadyAdded,true);
+});
+
+test('a slow cover lookup does not prevent later imported games from showing local icons',async t=>{
+ const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==','base64');
+ const f=fixture(t,{getFileIcon:async()=>({isEmpty:()=>false,toPNG:()=>png})});
+ let release;const blocked=new Promise(resolve=>{release=resolve;});
+ f.context.downloadSteamCover=async()=>{await blocked;return '';};
+ const games=Array.from({length:4},(_,index)=>{
+  const executable=path.join(f.root,`fixture-${index}.exe`);fs.writeFileSync(executable,'fixture');
+  return {name:`Fixture ${index}`,source:'steam',source_id:String(201+index),install_path:f.root,executable};
+ });
+ const imported=await f.invoke('importGames',games);assert.equal(imported.imported,4);
+ const waitFor=async(predicate,timeout=2000)=>{const end=Date.now()+timeout;while(Date.now()<end){if(predicate())return true;await new Promise(resolve=>setTimeout(resolve,10));}return false;};
+ let fourthReady;
+ try{fourthReady=await waitFor(()=>!!f.database.list().find(game=>game.source_id==='204')?.icon);}
+ finally{release();await waitFor(()=>f.database.list().filter(game=>game.icon).length===4);await new Promise(resolve=>setImmediate(resolve));}
+ assert.equal(fourthReady,true,'A blocked cover request must not delay another game\'s local icon');
 });

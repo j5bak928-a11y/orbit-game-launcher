@@ -5,7 +5,7 @@ const fs=require('node:fs');
 const fsp=fs.promises;
 const crypto=require('node:crypto');
 const {pathToFileURL}=require('node:url');
-const {LibraryDatabase}=require('./core/database.cjs');
+const {LibraryDatabase,duplicateKey,normalizedPath}=require('./core/database.cjs');
 const {discoverAll,steamRoots}=require('./core/discovery.cjs');
 const {launchGame:executeGame,deferredExit}=require('./core/launch.cjs');
 const {findSteamCover,findSteamBanner,localSteamIcon}=require('./core/steam-cover.cjs');
@@ -213,10 +213,21 @@ async function cachedSteamBanner(game){
     const updated=db.update(game.id,{banner});gamesChanged({games:[updated],reason:'artwork'});
   }
 }
-async function enrichGameArtwork(game){
-  await Promise.allSettled([cachedSteamCover(game),cacheGameIcon(game)]);
+async function cacheCoverAndBanner(game){
+  await cachedSteamCover(game).catch(()=>{});
   // Banners support the hero without ever reusing a wide image as a cover.
   if(db&&(game.last_played_at||db.count()<=3))await cachedSteamBanner(game).catch(()=>{});
+}
+async function enrichGameArtwork(game){
+  await Promise.allSettled([cacheCoverAndBanner(game),cacheGameIcon(game)]);
+}
+function queueArtwork(games){
+  const run=async work=>{
+    for(let i=0;db&&i<games.length;i+=3)await Promise.allSettled(games.slice(i,i+3).map(work));
+  };
+  // Local icons stay responsive even when online cover requests are slow.
+  run(cacheGameIcon).catch(()=>{});
+  run(cacheCoverAndBanner).catch(()=>{});
 }
 
 async function discover(){
@@ -225,12 +236,13 @@ async function discover(){
   try{
     const result=await discoverAll(db.getSettings(),{downloadsPath:app.getPath('downloads')});
     const library=db.list();
-    const knownSources=new Set(library.filter(g=>g.source_id).map(g=>`${g.source}:${g.source_id}`));
-    const knownFiles=new Set(library.filter(g=>g.executable).map(g=>path.normalize(g.executable).toLowerCase()));
+    const hasStoreIdentity=g=>g.source_id&&g.source&&g.source!=='manual'&&g.source!=='folder';
+    const knownSources=new Set(library.filter(hasStoreIdentity).map(duplicateKey));
+    const knownFiles=new Set(library.filter(g=>g.executable).map(g=>normalizedPath(g.executable,process.platform)));
     const knownUris=new Set(library.filter(g=>g.launch_uri).map(g=>g.launch_uri.toLowerCase()));
     const games=result.games.map(g=>({...g,alreadyAdded:!!(
-      (g.source_id&&knownSources.has(`${g.source}:${g.source_id}`)) ||
-      (g.executable&&knownFiles.has(path.normalize(g.executable).toLowerCase())) ||
+      (hasStoreIdentity(g)&&knownSources.has(duplicateKey(g))) ||
+      (g.executable&&knownFiles.has(normalizedPath(g.executable,process.platform))) ||
       (g.launch_uri&&knownUris.has(g.launch_uri.toLowerCase())))}));
     broadcast({type:'scanFinished',count:games.length});return {games,warnings:result.warnings,diagnostics:result.diagnostics||[]};
   }finally{scanning=false;}
@@ -279,7 +291,7 @@ function handlers(){
       await new Promise(resolve=>setImmediate(resolve));
     }
     gamesChanged({reset:true,reason:'import'});
-    (async()=>{for(let i=0;i<artwork.length;i+=3)await Promise.allSettled(artwork.slice(i,i+3).map(enrichGameArtwork))})().catch(()=>{});
+    queueArtwork(artwork);
     return {imported,skipped,errors};
   });
   bind('launchGame',async id=>{
@@ -385,7 +397,22 @@ app.whenReady().then(async()=>{
     activityTracker.start();
   }
   setTimeout(async()=>{if(!db)return;await repairMissingSteamCovers({limit:30}).catch(()=>{});if(db)for(const game of db.list('recent').slice(0,3))await cachedSteamBanner(game).catch(()=>{});},2500);
-  if(db.getSettings().autoScan)setTimeout(async()=>{try{const result=await discover();const imported=[];for(const g of result.games)if(!g.alreadyAdded&&!g.downloadCandidate)imported.push(g);if(imported.length){for(let i=0;i<imported.length;i+=50){db.upsertBatch(imported.slice(i,i+50));await new Promise(resolve=>setImmediate(resolve));}gamesChanged({reset:true,reason:'autoScan'});}}catch(e){broadcast({type:'error',message:`Background scan failed: ${e.message}`})}},1000);
+  if(db.getSettings().autoScan)setTimeout(async()=>{
+    try{
+      if(!db)return;
+      const result=await discover();
+      const imported=result.games.filter(game=>!game.alreadyAdded&&!game.downloadCandidate),added=[];
+      if(!imported.length)return;
+      for(let i=0;i<imported.length;i+=50){
+        if(!db)return;
+        added.push(...db.upsertBatch(imported.slice(i,i+50)).addedGames);
+        await new Promise(resolve=>setImmediate(resolve));
+      }
+      if(!db)return;
+      gamesChanged({reset:true,reason:'autoScan'});
+      queueArtwork(added);
+    }catch(e){broadcast({type:'error',message:`Background scan failed: ${e.message}`})}
+  },1000);
   app.on('activate',()=>{if(BrowserWindow.getAllWindows().length===0)createWindow()});
 });
 app.on('before-quit',()=>{

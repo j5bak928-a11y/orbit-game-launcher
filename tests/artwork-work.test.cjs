@@ -44,3 +44,35 @@ test('an immediate retry after a rejected operation gets a fresh worker',async()
   .catch(()=>work.run('retry',()=>{calls++;return 'recovered.jpg'}));
  assert.equal(result,'recovered.jpg');assert.equal(calls,2);
 });
+
+test('obsolete queued work is skipped without caching a false miss',async()=>{
+ const work=new ArtworkWork({concurrency:1}),gate=defer();let interested=true,calls=0;
+ const busy=work.run('busy',()=>gate.promise);
+ const pending=work.run('cover',()=>{calls++;return 'old.jpg';},{isRelevant:()=>interested});
+ interested=false;gate.resolve('done');await busy;
+ assert.equal(await pending,'');assert.equal(calls,0);
+ assert.equal(await work.run('cover',()=>{calls++;return 'new.jpg';}),'new.jpg');
+ assert.equal(calls,1);
+});
+
+test('a shared queued lookup continues when another interested game still needs it',async()=>{
+ const work=new ArtworkWork({concurrency:1}),gate=defer();let first=true,second=true,calls=0;
+ const busy=work.run('busy',()=>gate.promise);
+ const left=work.run('shared',()=>{calls++;return 'cover.jpg';},{isRelevant:()=>first});
+ const right=work.run('shared',()=>{throw Error('shared lookup ran twice');},{isRelevant:()=>second});
+ first=false;gate.resolve('done');await busy;
+ assert.deepEqual(await Promise.all([left,right]),['cover.jpg','cover.jpg']);
+ assert.equal(calls,1);second=false;
+});
+
+test('a new subscriber can revive a shared lookup that became obsolete',async()=>{
+ const work=new ArtworkWork({concurrency:1}),gate=defer();let firstInterested=true,calls=0,second;
+ const first=work.run('shared',async needed=>{
+  calls++;await gate.promise;return needed()?'cover.jpg':ArtworkWork.CANCELLED;
+ },{isRelevant:()=>firstInterested});
+ await Promise.resolve();firstInterested=false;gate.resolve();
+ queueMicrotask(()=>{second=work.run('shared',()=>{throw Error('shared lookup ran twice');});});
+ assert.equal(await first,'cover.jpg');
+ assert.equal(await second,'cover.jpg');
+ assert.equal(calls,2);
+});

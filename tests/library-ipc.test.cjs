@@ -11,7 +11,7 @@ const { LibraryDatabase } = require('../src/core/database.cjs');
 
 // Exercise the real IPC handlers and SQLite storage without native startup,
 // process enumeration, user data, artwork downloads or actual game launches.
-function fixture(t, {discoverAll, platform, getFileIcon, findSteamCover, findSteamBanner, setImmediateFn} = {}) {
+function fixture(t, {discoverAll, platform, getFileIcon, findSteamCover, findSteamBanner, findExactSteamApp, setImmediateFn} = {}) {
   const temporary = path.resolve(os.tmpdir());
   const root = fs.mkdtempSync(path.join(temporary, 'orbit-library-ipc-'));
   const database = new LibraryDatabase(path.join(root, 'library.sqlite'));
@@ -49,6 +49,7 @@ function fixture(t, {discoverAll, platform, getFileIcon, findSteamCover, findSte
       if(name==='./core/steam-cover.cjs'&&(findSteamCover||findSteamBanner))return {
         ...realRequire(name),...(findSteamCover?{findSteamCover}:{}),...(findSteamBanner?{findSteamBanner}:{}),
       };
+      if(name==='./core/steam-search.cjs'&&findExactSteamApp)return {...realRequire(name),findExactSteamApp};
       return realRequire(name);
     },
     __dirname:path.dirname(main), process:runtime, Buffer, setImmediate:setImmediateFn||setImmediate,
@@ -324,4 +325,135 @@ test('macOS game bundles can receive a native icon using a supported size',async
  const game=f.database.upsert({name:'Sample',source:'folder',executable:bundle,install_path:bundle}).game;
  assert.equal(await f.context.cacheGameIcon(game),true);
  assert.match(f.database.get(game.id).icon,/^[a-f0-9-]{36}\.png$/);
+});
+
+test('startup repair does not replace artwork cleared while another batch is running',async t=>{
+ let release,started=0;const gate=new Promise(resolve=>{release=resolve;});
+ const f=fixture(t,{findSteamCover:async id=>{
+  if(Number(id)<604){started++;await gate;return null;}
+  return id==='604'?portrait:null;
+ }});
+ for(let i=0;i<7;i++)f.database.upsert({name:`Repair ${i}`,source:'steam',source_id:String(601+i)});
+ const game=f.database.list().find(item=>item.source_id==='604');
+ const repairing=f.context.repairMissingSteamCovers({limit:7});
+ assert(await waitUntil(()=>started===3),'The first repair batch should be in progress');
+ try{
+  await f.invoke('updateGame',game.id,{cover:'66666666-6666-4666-8666-666666666666.jpg'});
+  await f.invoke('updateGame',game.id,{cover:''});
+ }finally{release();}
+ await repairing;
+ assert.equal(f.database.get(game.id).cover,'');
+});
+
+test('deleting a game waiting inside the icon worker does not save an orphan icon',async t=>{
+ const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==','base64');
+ let release,started=0;const gate=new Promise(resolve=>{release=resolve;});
+ const f=fixture(t,{getFileIcon:async file=>{
+  const index=Number(path.basename(file).match(/\d+/)[0]);
+  if(index<2){started++;await gate;}
+  return {isEmpty:()=>false,toPNG:()=>Buffer.concat([png,Buffer.from([index])])};
+ }});
+ const games=Array.from({length:4},(_,index)=>{
+  const executable=path.join(f.root,`pool-${index}.exe`);fs.writeFileSync(executable,'fixture');
+  return {name:`Pool ${index}`,source:'folder',executable};
+ });
+ assert.equal((await f.invoke('importGames',games)).imported,4);
+ assert(await waitUntil(()=>started===2),'Both native-icon workers should be busy');
+ const removed=f.database.list().find(game=>game.name==='Pool 2');
+ try{assert.equal(await f.invoke('removeGame',removed.id),true);}
+ finally{release();}
+ assert(await waitUntil(()=>!!f.database.list().find(game=>game.name==='Pool 3')?.icon),'Later icon work should finish');
+ assert.equal(fs.readdirSync(path.join(f.root,'artwork')).length,3,'Only the three remaining games should save icons');
+});
+
+for(const kind of ['cover','banner'])test(`deleting a game during title lookup prevents a later ${kind} download`,async t=>{
+ let release,started=false;const gate=new Promise(resolve=>{release=resolve;});
+ const f=fixture(t,{
+  findExactSteamApp:async()=>{started=true;await gate;return {steamId:'9300'};},
+  findSteamCover:async()=>portrait,findSteamBanner:async()=>landscape,
+ });
+ f.database.saveSettings({useSteamArtwork:true});
+ const game=f.database.upsert({name:'Unusual fixture game',source:'manual'}).game;
+ const lookup=kind==='cover'?f.context.cachedSteamCover(game):f.context.cachedSteamBanner(game);
+ assert(await waitUntil(()=>started),'The title lookup should be in flight');
+ try{assert.equal(await f.invoke('removeGame',game.id),true);}
+ finally{release();}
+ await lookup;
+ const artDir=path.join(f.root,'artwork');
+ assert.deepEqual(fs.existsSync(artDir)?fs.readdirSync(artDir):[],[],'No artwork should be saved for the removed game');
+});
+
+test('deleting a game waiting inside the cover worker prevents an orphaned download',async t=>{
+ let release,started=0;const gate=new Promise(resolve=>{release=resolve;});
+ const f=fixture(t,{findSteamCover:async id=>{
+  if(Number(id)<704){started++;await gate;return null;}
+  return portrait;
+ },findSteamBanner:async()=>null});
+ const pending=[],enrich=f.context.enrichGameArtwork;
+ f.context.enrichGameArtwork=game=>{const task=enrich(game);pending.push(task);return task;};
+ let victim;
+ for(let i=0;i<4;i++){
+  const {game}=await f.invoke('addGame',{name:`Pool cover ${i}`,source:'steam',source_id:String(701+i)});
+  if(i===3)victim=game;
+ }
+ assert(await waitUntil(()=>started===3),'The first cover workers should be busy');
+ try{assert.equal(await f.invoke('removeGame',victim.id),true);}
+ finally{release();}
+ await Promise.allSettled(pending);
+ const artDir=path.join(f.root,'artwork');
+ assert.deepEqual(fs.existsSync(artDir)?fs.readdirSync(artDir):[],[]);
+});
+
+test('shared artwork remains available to another game when one subscriber is deleted',async t=>{
+ let release,started=0;const gate=new Promise(resolve=>{release=resolve;});
+ const f=fixture(t,{findExactSteamApp:async()=>{started++;await gate;return {steamId:'9300'};},findSteamCover:async()=>portrait});
+ f.database.saveSettings({useSteamArtwork:true});
+ const first=f.database.upsert({name:'Unusual shared game',source:'manual'}).game;
+ const second=f.database.upsert({name:'Unusual shared game',source:'manual'}).game;
+ const left=f.context.cachedSteamCover(first),right=f.context.cachedSteamCover(second);
+ assert(await waitUntil(()=>started===1),'The title search should be shared');
+ try{assert.equal(await f.invoke('removeGame',first.id),true);}
+ finally{release();}
+ await Promise.all([left,right]);
+ assert.match(f.database.get(second.id).cover,/^[a-f0-9-]{36}\.jpg$/);
+ assert.equal(started,1);
+});
+
+test('toggling online artwork while a search is queued does not block a later retry',async t=>{
+ let release,started=0;const gate=new Promise(resolve=>{release=resolve;});
+ const f=fixture(t,{findExactSteamApp:async name=>{
+  if(name.startsWith('Waiting')){started++;await gate;return null;}
+  return {steamId:'9300'};
+ },findSteamCover:async()=>portrait});
+ f.database.saveSettings({useSteamArtwork:true});
+ const games=['Waiting one','Waiting two','Waiting three','Unusual queued title'].map(name=>f.database.upsert({name,source:'manual'}).game);
+ const pending=games.map(game=>f.context.cachedSteamCover(game));
+ assert(await waitUntil(()=>started===3),'The first title searches should be in flight');
+ try{f.database.saveSettings({useSteamArtwork:false});}
+ finally{release();}
+ await Promise.all(pending);
+ f.database.saveSettings({useSteamArtwork:true});
+ await f.context.cachedSteamCover(games[3]);
+ assert.match(f.database.get(games[3].id).cover,/^[a-f0-9-]{36}\.jpg$/);
+});
+
+test('renaming a game while an icon search is queued uses the new title',async t=>{
+ const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==','base64');
+ let release,started=0;const gate=new Promise(resolve=>{release=resolve;});
+ const f=fixture(t,{platform:'win32',getFileIcon:async file=>{
+  const name=path.basename(file);if(name.startsWith('hold-')){started++;await gate;}
+  return {isEmpty:()=>false,toPNG:()=>Buffer.concat([png,Buffer.from(name)])};
+ }});
+ for(const name of ['hold-0.exe','hold-1.exe','OldGame.exe','NewGame.exe'])fs.writeFileSync(path.join(f.root,name),'fixture');
+ const holders=[0,1].map(i=>f.database.upsert({name:`Holder ${i}`,source:'manual',executable:path.join(f.root,`hold-${i}.exe`)}).game);
+ const busy=holders.map(game=>f.context.cacheGameIcon(game));
+ assert(await waitUntil(()=>started===2),'The icon workers should be occupied');
+ const original=f.database.upsert({name:'Old Game',source:'steam',source_id:'8300',install_path:f.root}).game;
+ const oldLookup=f.context.cacheGameIcon(original);
+ const renamed=await f.invoke('updateGame',original.id,{name:'New Game'});
+ const newLookup=f.context.cacheGameIcon(renamed);
+ release();await Promise.all([...busy,oldLookup,newLookup]);
+ const game=f.database.get(original.id);
+ assert(game.icon);
+ assert.deepEqual(fs.readFileSync(path.join(f.root,'artwork',game.icon)),Buffer.concat([png,Buffer.from('NewGame.exe')]));
 });

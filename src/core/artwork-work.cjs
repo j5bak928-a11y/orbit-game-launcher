@@ -25,9 +25,13 @@ class ArtworkWork {
     while(this.active<this.concurrency&&this.queue.length) {
       const job=this.queue.shift();this.active++;
       const needed=()=>job.interests.some(check=>{try{return !!check();}catch{return false;}});
-      Promise.resolve().then(()=>needed()?job.operation(needed):CANCELLED).then(value=>{
+      let subscribersAtStart=0;
+      Promise.resolve().then(()=>{
+        subscribersAtStart=job.interests.length;
+        return needed()?job.operation(needed):CANCELLED;
+      }).then(value=>{
         // A new subscriber may arrive after an obsolete operation completes.
-        if(value===CANCELLED&&needed()){
+        if(value===CANCELLED&&job.interests.length>subscribersAtStart&&needed()){
           this.active--;this.queue.push(job);this.pump();return;
         }
         if(value!==CANCELLED){

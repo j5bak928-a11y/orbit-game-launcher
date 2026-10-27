@@ -345,6 +345,23 @@ test('startup repair does not replace artwork cleared while another batch is run
  assert.equal(f.database.get(game.id).cover,'');
 });
 
+test('a repair scan preserves edits made while an earlier cover is being inspected',async t=>{
+ let release,started=false;const gate=new Promise(resolve=>{release=resolve;});
+ const f=fixture(t);
+ f.database.upsert({name:'A first',source:'steam',source_id:'810',cover:'77777777-7777-4777-8777-777777777777.jpg'});
+ const victim=f.database.upsert({name:'Z later',source:'steam',source_id:'811'}).game;
+ f.context.coverNeedsPortrait=async()=>{started=true;await gate;return true;};
+ f.context.downloadSteamCover=async()=> '88888888-8888-4888-8888-888888888888.jpg';
+ const repairing=f.context.repairMissingSteamCovers({limit:10,replaceLandscape:true});
+ assert(await waitUntil(()=>started),'The first existing cover should be under inspection');
+ try{
+  await f.invoke('updateGame',victim.id,{cover:'99999999-9999-4999-8999-999999999999.jpg'});
+  await f.invoke('updateGame',victim.id,{cover:''});
+ }finally{release();}
+ await repairing;
+ assert.equal(f.database.get(victim.id).cover,'');
+});
+
 test('deleting a game waiting inside the icon worker does not save an orphan icon',async t=>{
  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==','base64');
  let release,started=0;const gate=new Promise(resolve=>{release=resolve;});
@@ -435,6 +452,24 @@ test('toggling online artwork while a search is queued does not block a later re
  f.database.saveSettings({useSteamArtwork:true});
  await f.context.cachedSteamCover(games[3]);
  assert.match(f.database.get(games[3].id).cover,/^[a-f0-9-]{36}\.jpg$/);
+});
+
+test('a cover lookup interrupted by disabling online artwork can be retried',async t=>{
+ let release,started=false;const gate=new Promise(resolve=>{release=resolve;});
+ const f=fixture(t,{findSteamCover:async(_id,{online})=>{
+  started=true;await gate;return online()?portrait:null;
+ }});
+ f.database.saveSettings({useSteamArtwork:true});
+ const game=f.database.upsert({name:'Fixture game',source:'steam',source_id:'9400'}).game;
+ const lookup=f.context.cachedSteamCover(game);
+ assert(await waitUntil(()=>started),'The first cover lookup should be in flight');
+ try{f.database.saveSettings({useSteamArtwork:false});}
+ finally{release();}
+ await lookup;
+ assert.equal(f.database.get(game.id).cover,'');
+ f.database.saveSettings({useSteamArtwork:true});
+ await f.context.cachedSteamCover(game);
+ assert.match(f.database.get(game.id).cover,/^[a-f0-9-]{36}\.jpg$/);
 });
 
 test('renaming a game while an icon search is queued uses the new title',async t=>{

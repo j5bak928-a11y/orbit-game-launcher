@@ -30,6 +30,13 @@ const iconWork=new ArtworkWork({concurrency:2});
 const artworkEditRevisions=new Map();
 const onlineArtwork=()=>!!db?.getSettings().useSteamArtwork;
 const artIdentity=game=>JSON.stringify([game.name,game.source,game.source_id,game.executable,game.install_path]);
+const artworkRevision=game=>artworkEditRevisions.get(game.id)||0;
+function currentArtworkGame(game,revision){
+  if(!db||artworkRevision(game)!==revision)return null;
+  const current=db.get(game.id);
+  return current&&artIdentity(current)===artIdentity(game)?current:null;
+}
+const artworkRequests=games=>games.map(game=>({game,revision:artworkRevision(game)}));
 const artworkDir=()=>path.join(app.getPath('userData'),'artwork');
 const broadcast=payload=>{if(win&&!win.isDestroyed())win.webContents.send('orbit:event',payload)};
 const runningGameIds=()=>[...new Set([...sessions.keys(),...(activityTracker?.runningIds()||[])])];
@@ -83,7 +90,7 @@ async function saveArtwork(file){
 }
 async function extractNativeIcon(executable){
   if(typeof app.getFileIcon!=='function')return '';
-  const image=await app.getFileIcon(executable,{size:'large'});
+  const image=await app.getFileIcon(executable,{size:process.platform==='darwin'?'normal':'large'});
   if(!image||image.isEmpty())return '';
   const bytes=image.toPNG();
   if(bytes.length<8||bytes.length>2*1024*1024||!bytes.subarray(0,8).equals(Buffer.from('89504e470d0a1a0a','hex')))return '';
@@ -141,7 +148,7 @@ async function cacheGameIcon(game){
   if(game.icon||(!game.executable&&!game.install_path))return false;
   const revision=artworkEditRevisions.get(game.id)||0;
   const icon=await iconWork.run(`icon:${game.source}:${game.source_id}:${game.executable}:${game.install_path}`,async()=>{
-    const executable=await findGameExecutable(game);
+    const executable=await findGameExecutable(game,{platform:process.platform});
     let token='';
     if(executable)try{token=await extractNativeIcon(executable)}catch{}
     if(!token&&game.source==='steam'){
@@ -213,17 +220,23 @@ async function cachedSteamBanner(game){
     const updated=db.update(game.id,{banner});gamesChanged({games:[updated],reason:'artwork'});
   }
 }
-async function cacheCoverAndBanner(game){
+async function cacheCoverAndBanner(game,revision=artworkRevision(game)){
+  if(!currentArtworkGame(game,revision))return;
   await cachedSteamCover(game).catch(()=>{});
   // Banners support the hero without ever reusing a wide image as a cover.
-  if(db&&(game.last_played_at||db.count()<=3))await cachedSteamBanner(game).catch(()=>{});
+  const current=currentArtworkGame(game,revision);
+  if(current&&(current.last_played_at||db.count()<=3))await cachedSteamBanner(current).catch(()=>{});
 }
 async function enrichGameArtwork(game){
   await Promise.allSettled([cacheCoverAndBanner(game),cacheGameIcon(game)]);
 }
-function queueArtwork(games){
+function queueArtwork(requests){
   const run=async work=>{
-    for(let i=0;db&&i<games.length;i+=3)await Promise.allSettled(games.slice(i,i+3).map(work));
+    for(let i=0;db&&i<requests.length;i+=3){
+      await Promise.allSettled(requests.slice(i,i+3).map(({game,revision})=>{
+        return currentArtworkGame(game,revision)?work(game,revision):null;
+      }));
+    }
   };
   // Local icons stay responsive even when online cover requests are slow.
   run(cacheGameIcon).catch(()=>{});
@@ -287,7 +300,7 @@ function handlers(){
     for(let i=0;i<games.length;i+=50){
       const batch=db.upsertBatch(games.slice(i,i+50));
       imported+=batch.imported;skipped+=batch.skipped;errors.push(...batch.errors);
-      artwork.push(...batch.addedGames);
+      artwork.push(...artworkRequests(batch.addedGames));
       await new Promise(resolve=>setImmediate(resolve));
     }
     gamesChanged({reset:true,reason:'import'});
@@ -405,7 +418,7 @@ app.whenReady().then(async()=>{
       if(!imported.length)return;
       for(let i=0;i<imported.length;i+=50){
         if(!db)return;
-        added.push(...db.upsertBatch(imported.slice(i,i+50)).addedGames);
+        added.push(...artworkRequests(db.upsertBatch(imported.slice(i,i+50)).addedGames));
         await new Promise(resolve=>setImmediate(resolve));
       }
       if(!db)return;

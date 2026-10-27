@@ -11,7 +11,7 @@ const { LibraryDatabase } = require('../src/core/database.cjs');
 
 // Exercise the real IPC handlers and SQLite storage without native startup,
 // process enumeration, user data, artwork downloads or actual game launches.
-function fixture(t, {discoverAll, platform, getFileIcon} = {}) {
+function fixture(t, {discoverAll, platform, getFileIcon, findSteamCover, findSteamBanner, setImmediateFn} = {}) {
   const temporary = path.resolve(os.tmpdir());
   const root = fs.mkdtempSync(path.join(temporary, 'orbit-library-ipc-'));
   const database = new LibraryDatabase(path.join(root, 'library.sqlite'));
@@ -43,9 +43,15 @@ function fixture(t, {discoverAll, platform, getFileIcon} = {}) {
   const runtime = platform ? Object.create(process) : process;
   if (platform) Object.defineProperty(runtime, 'platform', {value:platform});
   const context = vm.createContext({
-    require:name=>name==='electron' ? electron : name==='./core/discovery.cjs' && discoverAll
-      ? {...realRequire(name), discoverAll} : realRequire(name),
-    __dirname:path.dirname(main), process:runtime, Buffer, setImmediate,
+    require:name=>{
+      if(name==='electron')return electron;
+      if(name==='./core/discovery.cjs'&&discoverAll)return {...realRequire(name),discoverAll};
+      if(name==='./core/steam-cover.cjs'&&(findSteamCover||findSteamBanner))return {
+        ...realRequire(name),...(findSteamCover?{findSteamCover}:{}),...(findSteamBanner?{findSteamBanner}:{}),
+      };
+      return realRequire(name);
+    },
+    __dirname:path.dirname(main), process:runtime, Buffer, setImmediate:setImmediateFn||setImmediate,
     fixtureDb:database,
     fixtureWin:Object.assign(new EventEmitter(),{fullscreen:false,isFullScreen(){return this.fullscreen;},setFullScreen(value){this.fullscreen=value;this.emit(value?'enter-full-screen':'leave-full-screen');},isDestroyed:()=>false, webContents:{send:(channel, event)=>{
       assert.equal(channel, 'orbit:event');
@@ -60,6 +66,13 @@ function fixture(t, {discoverAll, platform, getFileIcon} = {}) {
   };
 }
 const manual = name => ({name,source:'manual',launch_uri:'steam://rungameid/'+name.length});
+const portrait=Buffer.from([255,216,255,192,0,11,8,3,132,2,88,1,1,17,0,255,217]);
+const landscape=Buffer.from([255,216,255,192,0,11,8,1,97,2,104,1,1,17,0,255,217]);
+const waitUntil=async(predicate,timeout=4000)=>{
+ const end=Date.now()+timeout;
+ while(Date.now()<end){if(predicate())return true;await new Promise(resolve=>setTimeout(resolve,10));}
+ return false;
+};
 
 test('fullscreen IPC accepts booleans, reports state and rejects malformed requests',async t=>{
  const f=fixture(t);
@@ -153,7 +166,10 @@ test('additional detected storefronts import as real library games',async t=>{
 
 test('scan keeps distinct executables on a case-sensitive filesystem', {skip:process.platform==='win32'}, async t=>{
  const discovery=require('../src/core/discovery.cjs');
- const f=fixture(t,{discoverAll:settings=>discovery.discoverAll(settings,{providers:[]})});
+ // Exercise case-sensitive regular-file paths on macOS, where native folder
+ // discovery only looks for app bundles.
+ const scanPlatform=process.platform==='darwin'?'linux':process.platform;
+ const f=fixture(t,{discoverAll:settings=>discovery.discoverAll(settings,{providers:[],platform:scanPlatform})});
  const library=path.join(f.root,'games'),upper=path.join(library,'SpaceGame','Game.exe'),lower=path.join(library,'spacegame','game.exe');
  fs.mkdirSync(path.dirname(upper),{recursive:true});fs.mkdirSync(path.dirname(lower),{recursive:true});
  fs.writeFileSync(upper,'fixture');fs.writeFileSync(lower,'fixture');fs.chmodSync(upper,0o755);fs.chmodSync(lower,0o755);
@@ -202,4 +218,110 @@ test('a slow cover lookup does not prevent later imported games from showing loc
  try{fourthReady=await waitFor(()=>!!f.database.list().find(game=>game.source_id==='204')?.icon);}
  finally{release();await waitFor(()=>f.database.list().filter(game=>game.icon).length===4);await new Promise(resolve=>setImmediate(resolve));}
  assert.equal(fourthReady,true,'A blocked cover request must not delay another game\'s local icon');
+});
+
+async function delayedArtworkFixture(t){
+ let release,started=0,finished=false;
+ const gate=new Promise(resolve=>{release=resolve;});
+ const f=fixture(t,{findSteamCover:async id=>{
+  if(Number(id)<304){started++;await gate;return null;}
+  if(id==='304')return portrait;
+  if(id==='307')finished=true;
+  return null;
+ }});
+ const games=Array.from({length:7},(_,i)=>({name:`Queued ${i}`,source:'steam',source_id:String(301+i)}));
+ const imported=await f.invoke('importGames',games);assert.equal(imported.imported,7);
+ assert(await waitUntil(()=>started===3),'The first lookups must reach the controlled delay');
+ return {f,release,finished:()=>finished,victim:f.database.list().find(game=>game.source_id==='304')};
+}
+
+test('a queued lookup does not restore artwork the user deliberately cleared',async t=>{
+ const queued=await delayedArtworkFixture(t),custom='22222222-2222-4222-8222-222222222222.jpg';
+ try{
+  await queued.f.invoke('updateGame',queued.victim.id,{cover:custom});
+  await queued.f.invoke('updateGame',queued.victim.id,{cover:''});
+ }finally{queued.release();}
+ assert(await waitUntil(queued.finished),'Later artwork jobs must complete');
+ assert.equal(queued.f.database.get(queued.victim.id).cover,'');
+});
+
+test('deleting a queued game prevents its deferred artwork from being saved',async t=>{
+ const queued=await delayedArtworkFixture(t);
+ try{assert.equal(await queued.f.invoke('removeGame',queued.victim.id),true);}
+ finally{queued.release();}
+ assert(await waitUntil(queued.finished),'Later artwork jobs must complete');
+ const artDir=path.join(queued.f.root,'artwork');
+ assert.deepEqual(fs.existsSync(artDir)?fs.readdirSync(artDir):[],[],'Deleted games must not create orphaned artwork');
+});
+
+test('a delayed icon lookup respects an icon the user cleared',async t=>{
+ const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==','base64');
+ let release,started=0;
+ const gate=new Promise(resolve=>{release=resolve;});
+ const f=fixture(t,{getFileIcon:async file=>{
+  const index=Number(path.basename(file).match(/\d+/)[0]);
+  if(index<3){started++;await gate;}
+  return {isEmpty:()=>false,toPNG:()=>png};
+ }});
+ const games=Array.from({length:7},(_,index)=>{
+  const executable=path.join(f.root,`game-${index}.exe`);fs.writeFileSync(executable,'fixture');
+  return {name:`Icon ${index}`,source:'folder',executable};
+ });
+ assert.equal((await f.invoke('importGames',games)).imported,7);
+ assert(await waitUntil(()=>started===2),'The first icon lookups must be delayed');
+ const game=f.database.list().find(item=>item.name==='Icon 3');
+ try{
+  await f.invoke('updateGame',game.id,{icon:'55555555-5555-4555-8555-555555555555.png'});
+  await f.invoke('updateGame',game.id,{icon:''});
+ }finally{release();}
+ assert(await waitUntil(()=>!!f.database.list().find(item=>item.name==='Icon 6')?.icon),'Later icon jobs must complete');
+ assert.equal(f.database.get(game.id).icon,'');
+});
+
+test('an edit made during an earlier import batch is not overwritten by later artwork',async t=>{
+ let releaseBatch,held=false,finished=false;
+ const immediate=callback=>{if(!held){held=true;releaseBatch=callback;}else setImmediate(callback);};
+ const f=fixture(t,{setImmediateFn:immediate,findSteamCover:async id=>{
+  if(id==='504')return portrait;
+  if(id==='551')finished=true;
+  return null;
+ }});
+ const importing=f.invoke('importGames',Array.from({length:51},(_,i)=>({name:`Batch ${i}`,source:'steam',source_id:String(501+i)})));
+ assert(await waitUntil(()=>typeof releaseBatch==='function'),'The first batch should pause before artwork starts');
+ const game=f.database.list().find(item=>item.source_id==='504');
+ try{
+  await f.invoke('updateGame',game.id,{cover:'33333333-3333-4333-8333-333333333333.jpg'});
+  await f.invoke('updateGame',game.id,{cover:''});
+ }finally{releaseBatch();}
+ assert.equal((await importing).imported,51);
+ assert(await waitUntil(()=>finished),'The final artwork batch should complete');
+ assert.equal(f.database.get(game.id).cover,'');
+});
+
+test('clearing a banner while its cover is loading prevents a stale banner lookup',async t=>{
+ let release,started=false,pending;
+ const gate=new Promise(resolve=>{release=resolve;});
+ const f=fixture(t,{findSteamCover:async()=>{started=true;await gate;return null;},findSteamBanner:async()=>landscape});
+ const enrich=f.context.enrichGameArtwork;
+ f.context.enrichGameArtwork=game=>{pending=enrich(game);return pending;};
+ const {game}=await f.invoke('addGame',{name:'Edited game',source:'steam',source_id:'901'});
+ assert(await waitUntil(()=>started),'The cover lookup should be in flight');
+ try{
+  await f.invoke('updateGame',game.id,{banner:'44444444-4444-4444-8444-444444444444.jpg'});
+  await f.invoke('updateGame',game.id,{banner:''});
+ }finally{release();}
+ await pending;
+ assert.equal(f.database.get(game.id).banner,'');
+});
+
+test('macOS game bundles can receive a native icon using a supported size',async t=>{
+ const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==','base64');
+ const f=fixture(t,{platform:'darwin',getFileIcon:async(_file,options)=>{
+  if(options.size!=='normal')throw Error('Unsupported macOS icon size');
+  return {isEmpty:()=>false,toPNG:()=>png};
+ }});
+ const bundle=path.join(f.root,'Sample.app');fs.mkdirSync(bundle);
+ const game=f.database.upsert({name:'Sample',source:'folder',executable:bundle,install_path:bundle}).game;
+ assert.equal(await f.context.cacheGameIcon(game),true);
+ assert.match(f.database.get(game.id).icon,/^[a-f0-9-]{36}\.png$/);
 });

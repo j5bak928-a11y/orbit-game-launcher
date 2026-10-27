@@ -33,6 +33,13 @@ test('explicit executable wins and Steam launch path is never mutated',async t=>
  assert.equal(await findGameExecutable(game,{platform:'win32'}),exe);
  assert.equal(game.launch_uri,'steam://rungameid/123');
 });
+test('macOS app bundles can be used as icon sources',async t=>{
+ const root=await fixture(t),bundle=path.join(root,'Example.app');
+ await fs.mkdir(bundle);
+ const game={name:'Example',executable:bundle,install_path:bundle};
+ assert.equal(await findGameExecutable(game,{platform:'darwin'}),bundle);
+ assert.equal(await findGameExecutable(game,{platform:'linux'}),'');
+});
 test('missing roots and folders with only setup executables return no icon candidate',async t=>{
  const root=await fixture(t);
  await fs.writeFile(path.join(root,'uninstall.exe'),'remove');

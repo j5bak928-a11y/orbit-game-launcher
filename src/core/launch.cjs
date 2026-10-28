@@ -29,7 +29,7 @@ async function launchGame(game, openExternal, onExit){
   const info=validateLaunch(game);
   if(info.kind==='uri'){
     await openExternal(info.uri);
-    return {mode:'external',tracked:false,message:'Opened in the linked game launcher. Play-time tracking is unavailable for launch links.'};
+    return {mode:'external',tracked:false,message:'Opened in the linked game launcher.'};
   }
   if(info.kind==='app'){
     return await new Promise((resolve,reject)=>{

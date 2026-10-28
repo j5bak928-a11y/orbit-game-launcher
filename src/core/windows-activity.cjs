@@ -26,7 +26,10 @@ function matchRunningGames(games, executables) {
  }
  const found = new Set();
  for (const game of games) {
-  if (!game || !['steam', 'epic'].includes(game.source)) continue;
+  if (!game) continue;
+  const executable=normalizeWindowsPath(game.executable);
+  if(executable&&path.win32.isAbsolute(executable)&&processes.has(executable)&&!SKIP_EXECUTABLE.test(path.win32.basename(executable))){found.add(game.id);continue;}
+  if(!['steam','epic'].includes(game.source)&&(!game.launch_uri||executable))continue;
   const folder = normalizeWindowsPath(game.install_path);
   if (folder && path.win32.isAbsolute(folder) && directories.has(folder)) {
    found.add(game.id);
@@ -64,7 +67,8 @@ class WindowsActivityTracker{
     try{const sessionId=this.startSession(id);this.active.set(id,{sessionId,startedAt:this.now(),misses:0});changed.add(id);}catch{}
    }
    for(const [id,info] of this.active){
-    if(running.has(id)&&ids.has(id)){info.misses=0;continue;}
+   if(running.has(id)&&ids.has(id)){info.misses=0;info.firstMissAt=null;continue;}
+   if(!info.misses)info.firstMissAt=this.now();
     if(++info.misses<2&&ids.has(id))continue;
     this.finalize(id,info);changed.add(id);
    }
@@ -72,7 +76,7 @@ class WindowsActivityTracker{
   }finally{this.polling=false;}
  }
  finalize(id,info){
-  try{this.finishSession(info.sessionId,Math.max(0,Math.floor((this.now()-info.startedAt)/1000)));}catch{}
+  try{this.finishSession(info.sessionId,Math.max(0,Math.floor(((info.firstMissAt??this.now())-info.startedAt)/1000)));}catch{}
   this.active.delete(id);
  }
  stop(){

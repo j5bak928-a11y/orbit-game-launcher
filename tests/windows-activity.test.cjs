@@ -98,3 +98,8 @@ test('tracking reports only IDs whose sessions changed',async()=>{
  assert.deepEqual(notifications,[['fc27'],['fc27']]);
  tracker.stop();
 });
+
+test('empty libraries skip process enumeration',async()=>{
+ let count=0;const t=new WindowsActivityTracker({listGames:()=>[],isDirectSession:()=>false,start:()=>'',finish:()=>{},enumerate:async()=>{count++;return [];}});
+ await t.poll();assert.equal(count,0);
+});

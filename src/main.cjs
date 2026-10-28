@@ -1,5 +1,5 @@
 'use strict';
-const {app,BrowserWindow,dialog,ipcMain,shell,protocol,net,nativeTheme,nativeImage}=require('electron');
+const {app,BrowserWindow,dialog,ipcMain,shell,protocol,net,nativeTheme,nativeImage,Tray,Menu}=require('electron');
 const path=require('node:path');
 const fs=require('node:fs');
 const fsp=fs.promises;
@@ -17,12 +17,14 @@ const {findGameExecutable}=require('./core/game-executable.cjs');
 const {findExactSteamApp}=require('./core/steam-search.cjs');
 const {findLocalPortrait,findEpicPortrait}=require('./core/nonsteam-artwork.cjs');
 const {WindowsActivityTracker}=require('./core/windows-activity.cjs');
+const {backgroundWindow}=require('./core/background-window.cjs');
 const {catalogMatch}=require('./core/game-identity.cjs');
 const {createPortableBackup,decodePortableBackup,installBackupArtwork,writeAtomic,MAX_ARCHIVE}=require('./core/backup.cjs');
 
 protocol.registerSchemesAsPrivileged([{scheme:'orbit-art',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true}}]);
 if(!app.requestSingleInstanceLock())app.quit();
-let win,db,scanning=false,activityTracker=null,libraryRevision=0;
+let win,db,scanning=false,activityTracker=null,libraryRevision=0,tray=null,initialized=false;
+const background=backgroundWindow({close:()=>win?.destroy(),show:()=>{if(!win||win.isDestroyed())createWindow();else {if(win.isMinimized())win.restore();win.show();win.focus();}}});
 const fullscreenController=new FullscreenController(()=>win);
 const sessions=new Map();
 const pendingLaunches=new Set();
@@ -59,6 +61,8 @@ function createWindow(){
     autoHideMenuBar:true,
     webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,devTools:process.argv.includes('--dev')}
   });
+  win.on('close',event=>background.onClose(event,!!tray));
+  win.on('closed',()=>{win=null;});
   win.once('ready-to-show',()=>win.show());
   win.loadFile(path.join(__dirname,'ui/index.html'));
   win.webContents.setWindowOpenHandler(()=>({action:'deny'}));
@@ -441,7 +445,7 @@ function handlers(){
   });
   bind('getAppInfo',()=>({platform:process.platform,version:app.getVersion(),dataPath:app.getPath('userData')}));
 }
-app.on('second-instance',()=>{if(win){if(win.isMinimized())win.restore();win.focus()}});
+app.on('second-instance',()=>{if(initialized)background.open();});
 app.whenReady().then(async()=>{
   try{db=new LibraryDatabase(path.join(app.getPath('userData'),'library.sqlite'));}
   catch(error){dialog.showErrorBox('Cannot open game library',`The database could not be opened: ${error.message}\n\nYour existing data has not been deleted. Location: ${app.getPath('userData')}`);app.quit();return}
@@ -453,6 +457,11 @@ app.whenReady().then(async()=>{
     }catch{return new Response('Not found',{status:404})}
   });
   handlers();nativeTheme.themeSource=db.getSettings().theme;
+  if(process.platform==='win32'&&typeof Tray==='function'&&Menu){
+    try{tray=new Tray(path.join(__dirname,'../assets/icon.ico'));tray.setToolTip('Orbit — tracking playtime');tray.setContextMenu(Menu.buildFromTemplate([{label:'Open Orbit',click:()=>background.open()},{label:'Quit Orbit',click:()=>{background.quit();app.quit();}}]));tray.on('click',()=>background.open());}
+    catch{tray=null;}
+  }
+  initialized=true;
   createWindow();
   if(process.platform==='win32'){
     activityTracker=new WindowsActivityTracker({
@@ -482,7 +491,8 @@ app.whenReady().then(async()=>{
   app.on('activate',()=>{if(BrowserWindow.getAllWindows().length===0)createWindow()});
 });
 app.on('before-quit',()=>{
+  background.quit();
   activityTracker?.stop();activityTracker=null;
   if(db){for(const session of sessions.values()){try{const started=db.db.prepare('SELECT started_at FROM sessions WHERE id=?').get(session);if(started)db.finishSession(session,Math.floor((Date.now()-Date.parse(started.started_at))/1000))}catch{}}db.close();db=null;}
 });
-app.on('window-all-closed',()=>{if(process.platform!=='darwin')app.quit()});
+app.on('window-all-closed',()=>{if(process.platform!=='darwin'&&!tray)app.quit()});

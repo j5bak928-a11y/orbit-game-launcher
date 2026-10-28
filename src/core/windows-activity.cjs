@@ -55,6 +55,7 @@ class WindowsActivityTracker{
   if(this.polling||this.stopped)return;
   this.polling=true;
   try{
+   if(!this.active.size&&!this.listGames().length)return;
    const processes=await this.enumerate();
    if(this.stopped)return;
    const games=this.listGames(),running=new Set(matchRunningGames(games,processes));

@@ -11,6 +11,15 @@ test('Windows monitoring maps game processes to storefront install folders',()=>
  assert.deepEqual(matchRunningGames(games,['C:\\Epic Games\\rocketleague\\unins000.exe',
  'C:\\Epic Games\\rocketleague2\\RocketLeague.exe']),[]);
 });
+test('matches exact executables for linked games without treating shared folders as games',()=>{
+ const list=[{id:'manual',source:'manual',executable:'C:\\Games\\My Game.exe',install_path:''},{id:'other',source:'gog',executable:'C:\\Games\\Other.exe',install_path:'C:\\Games'}];
+ assert.deepEqual(matchRunningGames(list,['c:\\games\\my game.exe']),['manual']);
+});
+test('does not count the confirmation delay after a monitored process exits',async()=>{
+ let clock=1000,running=true,finish=[];
+ const t=new WindowsActivityTracker({listGames:()=>games,isDirectSession:()=>false,start:id=>id,finish:(id,seconds)=>finish.push(seconds),enumerate:async()=>running?['D:\\SteamLibrary\\steamapps\\common\\EA SPORTS FC 27\\FC27.exe']:[],now:()=>clock});
+ await t.poll();clock=61000;running=false;await t.poll();clock=76000;await t.poll();assert.deepEqual(finish,[60]);
+});
 test('a monitored session starts once and finishes after two misses',async()=>{
  let running=true,clock=1000;const starts=[],ends=[];
  const tracker=new WindowsActivityTracker({

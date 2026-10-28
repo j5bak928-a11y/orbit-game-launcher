@@ -9,7 +9,7 @@ async function findLocalPortrait(game,{validate=()=>true}={}){
  const dirs=[];
  if(typeof game.install_path==='string'&&path.isAbsolute(game.install_path))dirs.push(game.install_path);
  if(typeof game.executable==='string'&&path.isAbsolute(game.executable))dirs.push(path.dirname(game.executable));
- for(const dir of [...new Set(dirs)].slice(0,2))for(const name of ['cover.jpg','cover.png','cover.webp','folder.jpg','folder.png','folder.webp','poster.jpg','poster.png','poster.webp']){
+ for(const dir of [...new Set(dirs)].slice(0,2))for(const name of ['cover.jpg','cover.png','folder.jpg','folder.png','poster.jpg','poster.png']){
   const file=path.join(dir,name);
   try{const stat=await fs.lstat(file);if(!stat.isFile()||stat.size<24||stat.size>MAX)continue;
    const bytes=await fs.readFile(file);if(bytes.length===stat.size&&isPortraitArtwork(bytes)&&validate(bytes))return file;
@@ -29,7 +29,7 @@ function trustedImage(url){try{const u=new URL(url);return u.protocol==='https:'
 async function imageBytes(response,validate){
  if(!response?.ok||!response.body||Number(response.headers.get('content-length')||0)>MAX)return null;
  const type=(response.headers.get('content-type')||'').split(';')[0].toLowerCase();
- const ext={'image/png':'.png','image/jpeg':'.jpg','image/webp':'.webp'}[type];if(!ext)return null;
+ const ext={'image/png':'.png','image/jpeg':'.jpg'}[type];if(!ext)return null;
  const reader=response.body.getReader(),chunks=[];let size=0;
  try{for(;;){const {value,done}=await reader.read();if(done)break;size+=value.byteLength;if(size>MAX)return null;chunks.push(value);}}
  finally{await reader.cancel().catch(()=>{});}

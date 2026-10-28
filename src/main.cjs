@@ -19,12 +19,13 @@ const {findLocalPortrait,findEpicPortrait}=require('./core/nonsteam-artwork.cjs'
 const {WindowsActivityTracker}=require('./core/windows-activity.cjs');
 const {backgroundWindow}=require('./core/background-window.cjs');
 const {sessionClock}=require('./core/session-clock.cjs');
+const {createUpdateService}=require('./core/updates.cjs');
 const {catalogMatch}=require('./core/game-identity.cjs');
 const {createPortableBackup,decodePortableBackup,installBackupArtwork,writeAtomic,MAX_ARCHIVE}=require('./core/backup.cjs');
 
 protocol.registerSchemesAsPrivileged([{scheme:'orbit-art',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true}}]);
 if(!app.requestSingleInstanceLock())app.quit();
-let win,db,scanning=false,activityTracker=null,libraryRevision=0,tray=null,initialized=false;
+let win,db,scanning=false,activityTracker=null,libraryRevision=0,tray=null,initialized=false,updateService=null;
 const background=backgroundWindow({close:()=>win?.destroy(),show:()=>{if(!win||win.isDestroyed())createWindow();else {if(win.isMinimized())win.restore();win.show();win.focus();}}});
 const fullscreenController=new FullscreenController(()=>win);
 const sessions=new Map(),sessionClocks=new Map();
@@ -340,6 +341,9 @@ async function discover(){
 function handlers(){
   const bind=(name,fn)=>ipcMain.handle('orbit:'+name,async(event, ...args)=>{try{if(!authorizedSender(event))throw Error('Untrusted IPC sender.');return await fn(...args)}catch(e){throw new Error(e?.message||'Unexpected error.')}});
   bind('getWindowState',()=>fullscreenController.get());
+  bind('getUpdateStatus',()=>updateService?.getStatus()||{state:'idle'});
+  bind('checkForUpdates',()=>updateService?.check({manual:true})||{state:'unsupported'});
+  bind('installUpdate',()=>updateService?.install());
   bind('setFullscreen',enabled=>fullscreenController.set(enabled));
   bind('bootstrap',()=>({...librarySnapshot(),settings:db.getSettings(),platform:process.platform,version:app.getVersion()}));
   bind('librarySnapshot',librarySnapshot);
@@ -482,6 +486,8 @@ app.whenReady().then(async()=>{
     }catch{return new Response('Not found',{status:404})}
   });
   handlers();nativeTheme.themeSource=db.getSettings().theme;
+  updateService=createUpdateService({app,emit:broadcast,getSettings:()=>db.getSettings(),hasRunningGames:()=>runningGameIds().length>0});
+  updateService.initialize();
   if(process.platform==='win32'&&typeof Tray==='function'&&Menu){
     try{tray=new Tray(path.join(__dirname,'../assets/icon.ico'));tray.setToolTip('Orbit — tracking playtime');tray.setContextMenu(Menu.buildFromTemplate([{label:'Open Orbit',click:()=>background.open()},{label:'Quit Orbit',click:()=>{background.quit();app.quit();}}]));tray.on('click',()=>background.open());}
     catch{tray=null;}
@@ -497,6 +503,7 @@ app.whenReady().then(async()=>{
     });
     activityTracker.start();
   }
+  setTimeout(()=>{if(db?.getSettings().autoUpdates)updateService?.check().catch(()=>{});},20000).unref?.();
   checkpointTimer=setInterval(checkpointPlaytime,60000);checkpointTimer.unref?.();
   powerMonitor?.on?.('suspend',()=>{checkpointPlaytime();for(const clock of sessionClocks.values())clock.pause();activityTracker?.suspend();});
   powerMonitor?.on?.('resume',()=>{for(const clock of sessionClocks.values())clock.resume();activityTracker?.resume();});
@@ -521,6 +528,7 @@ app.whenReady().then(async()=>{
 });
 app.on('before-quit',()=>{
   background.quit();
+  updateService?.dispose();
   if(checkpointTimer)clearInterval(checkpointTimer);
   if(guardTimer)clearTimeout(guardTimer);
   checkpointPlaytime();

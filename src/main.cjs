@@ -421,7 +421,7 @@ function handlers(){
       gamesChanged({games:[db.get(id)],reason:'launch'});
       cachedSteamBanner(db.get(id)).catch(()=>{});
       return result;
-    }finally{pendingLaunches.delete(id);activityTracker?.noteLaunch();}
+    }finally{pendingLaunches.delete(id);if(activityTracker?.noteLaunch)activityTracker.noteLaunch();else activityTracker?.poll?.().catch(()=>{});}
   });
   bind('openGameFolder',async id=>{if(!okId(id))throw Error('Invalid game identifier.');const game=db.get(id);if(!game)throw Error('Game not found.');const dir=game.install_path|| (game.executable?path.dirname(game.executable):'');if(!dir||!path.isAbsolute(dir)||!fs.existsSync(dir)||!fs.statSync(dir).isDirectory())throw Error('Installation folder is unavailable.');const error=await shell.openPath(dir);if(error)throw Error(error);return true});
   bind('openAppData',async()=>{const error=await shell.openPath(app.getPath('userData'));if(error)throw Error(error);return true});
@@ -504,7 +504,7 @@ app.whenReady().then(async()=>{
     activityTracker.start();
   }
   setTimeout(()=>{if(db?.getSettings().autoUpdates)updateService?.check().catch(()=>{});},20000).unref?.();
-  checkpointTimer=setInterval(checkpointPlaytime,60000);checkpointTimer.unref?.();
+  if(typeof setInterval==='function'){checkpointTimer=setInterval(checkpointPlaytime,60000);checkpointTimer.unref?.();}
   powerMonitor?.on?.('suspend',()=>{checkpointPlaytime();for(const clock of sessionClocks.values())clock.pause();activityTracker?.suspend();});
   powerMonitor?.on?.('resume',()=>{for(const clock of sessionClocks.values())clock.resume();activityTracker?.resume();});
   setTimeout(async()=>{if(!db||runningGameIds().length&&db.getSettings().performanceGuard)return;await repairMissingSteamCovers({limit:30}).catch(()=>{});if(db)for(const game of db.list('recent').slice(0,3))await cachedSteamBanner(game).catch(()=>{});},2500);

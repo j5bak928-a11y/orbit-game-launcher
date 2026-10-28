@@ -74,7 +74,7 @@ A scan is bounded. If a folder hits its entry limit, choose a smaller game-libra
 
 Portrait covers and landscape banners are kept separate. Wide store headers never become stretched portrait covers; missing/broken art falls back to a small game icon and readable title.
 
-Orbit reads local Steam cache images and executable icons without requiring a network connection. When **Steam artwork** is enabled, public Steam metadata/art and exact-title matching can fill missing artwork, including recognized games from other stores. No API key is needed. The setting controls online requests, not local cache access. Artwork requests send app IDs or title searches to Steam, never executable files or installation paths.
+Orbit reads local Steam cache images and executable icons without requiring a network connection. When **Online artwork** is enabled, public Steam metadata/art and exact-title matching can fill missing artwork, and Epic catalog identifiers can be used to look up Epic covers. No API key is needed. The setting controls online requests, not local cache access. Artwork requests send app IDs or title searches to Steam and Epic catalog identifiers to Epic, never executable files or installation paths.
 
 Use **Settings → Repair library covers** to explicitly retry missing or malformed art. Valid portraits are preserved. Add/Edit Game also lets you choose or clear a cover, banner and icon, or find a cover by its exact title. A delisted or unmatched title may still require manually selected artwork.
 
@@ -92,7 +92,7 @@ Use **Enter/Space** to open a focused game, **Tab** to move between controls, **
 
 Export a portable **`.orbit` backup** to include metadata, settings and local artwork, or choose **JSON** for metadata only. Restore preserves favorites, tags, dates and tracked time; existing duplicates are skipped. It does not uninstall games or overwrite existing entries. Paths still refer to the original machine and may need editing after a move. Portable backups cap embedded artwork at 100 MB and the compressed archive at 128 MB.
 
-No account, analytics, credential scraping or game-binary upload is used. Games remain in their original locations. Steam artwork is optional; the local library and direct-game launch paths work offline, subject to each game's own requirements.
+No account, analytics, credential scraping or game-binary upload is used. Games remain in their original locations. Online artwork is optional; the local library and direct-game launch paths work offline, subject to each game's own requirements.
 
 ## Build and check
 

@@ -62,7 +62,7 @@ function performanceGuard(){
  if(guardTimer)clearTimeout(guardTimer);
  guardTimer=setTimeout(()=>{
   guardTimer=null;
-  if(runningGameIds().length&&db?.getSettings().performanceGuard&&tray&&win&&!win.isDestroyed())win.close();
+  if(runningGameIds().length&&db?.getSettings().performanceGuard&&tray&&win&&!win.isDestroyed())win.hide();
  },1200);
  guardTimer.unref?.();
 }

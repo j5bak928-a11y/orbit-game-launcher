@@ -4,7 +4,7 @@ const path=require('node:path');
 const {isPortraitArtwork}=require('./cover-shape.cjs');
 const {readSmallJson}=require('./steam-search.cjs');
 const MAX=5*1024*1024;
-async function findLocalPortrait(game){
+async function findLocalPortrait(game,{validate=()=>true}={}){
  if(game.source==='steam')return null;
  const dirs=[];
  if(typeof game.install_path==='string'&&path.isAbsolute(game.install_path))dirs.push(game.install_path);
@@ -12,7 +12,7 @@ async function findLocalPortrait(game){
  for(const dir of [...new Set(dirs)].slice(0,2))for(const name of ['cover.jpg','cover.png','cover.webp','folder.jpg','folder.png','folder.webp','poster.jpg','poster.png','poster.webp']){
   const file=path.join(dir,name);
   try{const stat=await fs.lstat(file);if(!stat.isFile()||stat.size<24||stat.size>MAX)continue;
-   const bytes=await fs.readFile(file);if(bytes.length===stat.size&&isPortraitArtwork(bytes))return file;
+   const bytes=await fs.readFile(file);if(bytes.length===stat.size&&isPortraitArtwork(bytes)&&validate(bytes))return file;
   }catch{}
  }
  return null;
@@ -26,7 +26,7 @@ function epicIdentity(game){
  }catch{return null;}
 }
 function trustedImage(url){try{const u=new URL(url);return u.protocol==='https:'&&!u.username&&!u.password&&!u.port&&/^(?:cdn1|cdn2)\.epicgames\.com$/i.test(u.hostname);}catch{return false;}}
-async function imageBytes(response){
+async function imageBytes(response,validate){
  if(!response?.ok||!response.body||Number(response.headers.get('content-length')||0)>MAX)return null;
  const type=(response.headers.get('content-type')||'').split(';')[0].toLowerCase();
  const ext={'image/png':'.png','image/jpeg':'.jpg','image/webp':'.webp'}[type];if(!ext)return null;
@@ -35,9 +35,9 @@ async function imageBytes(response){
  finally{await reader.cancel().catch(()=>{});}
  const bytes=Buffer.concat(chunks,size);
  const magic=ext==='.png'?bytes.subarray(0,8).equals(Buffer.from('89504e470d0a1a0a','hex')):ext==='.jpg'?bytes.subarray(0,3).equals(Buffer.from('ffd8ff','hex')):bytes.toString('ascii',0,4)==='RIFF'&&bytes.toString('ascii',8,12)==='WEBP';
- return magic&&isPortraitArtwork(bytes)?{bytes,ext}:null;
+ return magic&&isPortraitArtwork(bytes)&&validate(bytes)?{bytes,ext}:null;
 }
-async function findEpicPortrait(game,{fetchImpl=globalThis.fetch,online=()=>true}={}){
+async function findEpicPortrait(game,{fetchImpl=globalThis.fetch,online=()=>true,validate=()=>true}={}){
  const identity=epicIdentity(game);if(!identity||!online())return null;
  const query='query OrbitItem($namespace:String!,$id:String!){Catalog{catalogItem(namespace:$namespace,id:$id,locale:"en-US"){id namespace keyImages{type url}}}}';
  const url='https://www.epicgames.com/graphql?'+new URLSearchParams({query,variables:JSON.stringify(identity)});
@@ -48,7 +48,7 @@ async function findEpicPortrait(game,{fetchImpl=globalThis.fetch,online=()=>true
   for(const image of item.keyImages.slice(0,30)){
    if(!online())return null;
    if(!['DieselGameBoxTall','OfferImageTall','Thumbnail'].includes(image?.type)||!trustedImage(image.url))continue;
-   try{const bytes=await imageBytes(await fetchImpl(image.url,{signal:AbortSignal.timeout(3500),redirect:'error'}));if(bytes)return bytes;}catch{}
+   try{const bytes=await imageBytes(await fetchImpl(image.url,{signal:AbortSignal.timeout(3500),redirect:'error'}),validate);if(bytes)return bytes;}catch{}
   }
  }catch{}
  return null;

@@ -27,3 +27,10 @@ test('Epic lookup rejects mismatched identity and untrusted image hosts',async()
   assert.equal(out,null);assert.equal(count,1);
  }
 });
+test('local finder skips a corrupt candidate when image decoding fails',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'orbit-broken-art-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const bad=png(600,900),good=Buffer.concat([png(600,900),Buffer.from('valid')]);
+ await fs.writeFile(path.join(root,'cover.png'),bad);await fs.writeFile(path.join(root,'folder.png'),good);
+ const found=await findLocalPortrait({source:'manual',install_path:root},{validate:bytes=>bytes.length>32});
+ assert.equal(found,path.join(root,'folder.png'));
+});

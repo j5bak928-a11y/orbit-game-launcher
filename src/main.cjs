@@ -1,5 +1,5 @@
 'use strict';
-const {app,BrowserWindow,dialog,ipcMain,shell,protocol,net,nativeTheme}=require('electron');
+const {app,BrowserWindow,dialog,ipcMain,shell,protocol,net,nativeTheme,nativeImage}=require('electron');
 const path=require('node:path');
 const fs=require('node:fs');
 const fsp=fs.promises;
@@ -11,7 +11,7 @@ const {launchGame:executeGame,deferredExit}=require('./core/launch.cjs');
 const {findSteamCover,findSteamBanner,localSteamIcon}=require('./core/steam-cover.cjs');
 const {ArtworkWork}=require('./core/artwork-work.cjs');
 const {FullscreenController}=require('./core/window-state.cjs');
-const {isPortraitArtwork}=require('./core/cover-shape.cjs');
+const {isPortraitArtwork,imageDimensions}=require('./core/cover-shape.cjs');
 const {inspectGameFile}=require('./core/game-file.cjs');
 const {findGameExecutable}=require('./core/game-executable.cjs');
 const {findExactSteamApp}=require('./core/steam-search.cjs');
@@ -39,6 +39,11 @@ function currentArtworkGame(game,revision){
 }
 const artworkRequests=games=>games.map(game=>({game,revision:artworkRevision(game)}));
 const artworkDir=()=>path.join(app.getPath('userData'),'artwork');
+function decodableArtwork(bytes){
+  const dims=imageDimensions(bytes);
+  if(!dims||dims.width>4096||dims.height>4096)return false;
+  try{return !!nativeImage&&!nativeImage.createFromBuffer(bytes).isEmpty();}catch{return false;}
+}
 const broadcast=payload=>{if(win&&!win.isDestroyed())win.webContents.send('orbit:event',payload)};
 const runningGameIds=()=>[...new Set([...sessions.keys(),...(activityTracker?.runningIds()||[])])];
 const librarySnapshot=()=>({games:db.list(),runningIds:runningGameIds(),revision:libraryRevision});
@@ -219,14 +224,14 @@ async function cachedSteamCover(game,{replaceLandscape=false,revision=artworkRev
   if(!currentArtworkGame(game,revision))return;
   let filename='';
   if(game.source!=='steam'){
-    const local=await findLocalPortrait(game);
+    const local=await findLocalPortrait(game,{validate:decodableArtwork});
     if(local&&currentArtworkGame(game,revision))try{filename=await saveArtwork(local)}catch{}
     if(!filename&&game.source==='epic'&&onlineArtwork()&&currentArtworkGame(game,revision)){
       filename=await artworkWork.run(`epic-cover:${JSON.stringify([game.source_id,game.launch_uri])}`,async needed=>{
         if(!onlineArtwork())return ArtworkWork.CANCELLED;
         let interrupted=false;
         const online=()=>{if(!onlineArtwork())interrupted=true;return onlineArtwork()&&needed();};
-        const result=await findEpicPortrait(game,{online});
+        const result=await findEpicPortrait(game,{online,validate:decodableArtwork});
         if(!needed()||interrupted||!onlineArtwork())return ArtworkWork.CANCELLED;
         if(!result)return '';
         const hash=crypto.createHash('sha256').update(result.bytes).digest('hex');

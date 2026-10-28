@@ -61,7 +61,7 @@ async function findEpicPortrait(game,{fetchImpl=globalThis.fetch,online=()=>true
    const result=await tryImages(item?.keyImages);if(result)return result;
   }catch{}
  }
- if(!online()||key.length<4||title.length>140||/[\x00-\x1f]/.test(title))return null;
+ if(!online()||key.length<4||title.length>140||Array.from(title).some(c=>c.charCodeAt(0)<32))return null;
  try{
   const query='query OrbitSearch($keywords:String!){Catalog{searchStore(keywords:$keywords,country:"US",locale:"en-US",count:20,start:0){elements{title id namespace keyImages{type url}}}}}';
   const url='https://store.epicgames.com/graphql?'+new URLSearchParams({query,variables:JSON.stringify({keywords:title})});

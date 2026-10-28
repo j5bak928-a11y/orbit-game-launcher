@@ -34,3 +34,19 @@ test('local finder skips a corrupt candidate when image decoding fails',async t=
  const found=await findLocalPortrait({source:'manual',install_path:root},{validate:bytes=>bytes.length>32});
  assert.equal(found,path.join(root,'folder.png'));
 });
+
+test('finds Fortnite by exact store title if no catalog identity exists',async()=>{
+ const game={source:'epic',name:'Fortnite',source_id:'Fortnite',launch_uri:'com.epicgames.launcher://apps/Fortnite?action=launch'};
+ const calls=[];const fetchImpl=async url=>{calls.push(url);return calls.length===1?new Response(JSON.stringify({data:{Catalog:{searchStore:{elements:[{title:'Fortnite Save the World',keyImages:[]},{title:'Fortnite',keyImages:[{type:'OfferImageTall',url:'https://cdn1.epicgames.com/offer/fn/image'}]}]}}}})):new Response(png(600,900),{headers:{'content-type':'image/png'}});};
+ const result=await findEpicPortrait(game,{fetchImpl});assert.deepEqual(result.bytes,png(600,900));assert.equal(calls.length,2);
+});
+test('does not select a similar Epic title',async()=>{
+ const game={source:'epic',name:'Fortnite',source_id:'Fortnite'};let count=0;
+ const result=await findEpicPortrait(game,{fetchImpl:async()=>{count++;return new Response(JSON.stringify({data:{Catalog:{searchStore:{elements:[{title:'Fortnite Save the World',keyImages:[{type:'OfferImageTall',url:'https://cdn1.epicgames.com/wrong'}]}]}}}}));}});
+ assert.equal(result,null);assert.equal(count,1);
+});
+test('falls back to exact title when Epic item has no portrait image',async()=>{
+ const game={source:'epic',name:'Fortnite',source_id:'game1',launch_uri:'com.epicgames.launcher://apps/namespace1%3Aitem1%3Agame1?action=launch'};let calls=0;
+ const fetchImpl=async()=>{calls++;if(calls===1)return new Response(JSON.stringify({data:{Catalog:{catalogItem:{id:'item1',namespace:'namespace1',keyImages:[]}}}}));if(calls===2)return new Response(JSON.stringify({data:{Catalog:{searchStore:{elements:[{title:'Fortnite',keyImages:[{type:'OfferImageTall',url:'https://cdn2.unrealengine.com/fn.jpg'}]}]}}}}));return new Response(png(600,900),{headers:{'content-type':'image/png'}});};
+ assert.deepEqual((await findEpicPortrait(game,{fetchImpl})).bytes,png(600,900));assert.equal(calls,3);
+});

@@ -119,7 +119,6 @@ async function saveArtwork(file){
   if(bytes.length!==stat.size)throw Error('Artwork changed while it was being read. Try again.');
   const hash=crypto.createHash('sha256').update(bytes).digest('hex');
   const target=`${hash.slice(0,8)}-${hash.slice(8,12)}-${hash.slice(12,16)}-${hash.slice(16,20)}-${hash.slice(20,32)}${ext}`;
-  try{db.recoverInterruptedSessions();}catch(error){dialog.showErrorBox('Playtime recovery warning',`Orbit could not finish interrupted playtime records: ${error.message}`);}
   await fsp.mkdir(artworkDir(),{recursive:true});
   try{await fsp.writeFile(path.join(artworkDir(),target),bytes,{flag:'wx'});}
   catch(e){if(e.code!=='EEXIST')throw e;}
@@ -478,6 +477,7 @@ app.on('second-instance',()=>{if(initialized)background.open();});
 app.whenReady().then(async()=>{
   try{db=new LibraryDatabase(path.join(app.getPath('userData'),'library.sqlite'));}
   catch(error){dialog.showErrorBox('Cannot open game library',`The database could not be opened: ${error.message}\n\nYour existing data has not been deleted. Location: ${app.getPath('userData')}`);app.quit();return}
+  try{db.recoverInterruptedSessions();}catch(error){dialog.showErrorBox('Playtime recovery warning',`Orbit could not finish interrupted playtime records: ${error.message}`);}
   await fsp.mkdir(artworkDir(),{recursive:true});
   protocol.handle('orbit-art',request=>{
     try{const url=new URL(request.url);const filename=decodeURIComponent(url.pathname).replace(/^\//,'');

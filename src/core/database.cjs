@@ -11,7 +11,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   performanceGuard: true, autoUpdates: true, libraryDensity: 'comfortable',
 });
 const SORTS = {name: 'name COLLATE NOCASE ASC', recent: 'last_played_at DESC, name COLLATE NOCASE ASC', added: 'created_at DESC', time: 'total_play_seconds DESC, name COLLATE NOCASE ASC'};
-const COLUMNS = ['id','name','source','source_id','executable','launch_uri','install_path','cover','banner','icon','genre','tags','favorite','total_play_seconds','last_played_at','created_at','updated_at','launch_args','working_dir'];
+const COLUMNS = ['id','name','source','source_id','executable','launch_uri','install_path','cover','banner','icon','genre','tags','favorite','total_play_seconds','last_played_at','created_at','updated_at','launch_args','working_dir','cover_fit','cover_position'];
 const json = (value, fallback) => { try {return JSON.parse(value)} catch {return fallback} };
 const encode = x => JSON.stringify(x);
 const now = () => new Date().toISOString();
@@ -37,7 +37,10 @@ function cleanGame(raw, previous = {}) {
   if (!Array.isArray(tags) || tags.length > 40) throw new Error('Invalid tags.');
   tags = [...new Set(tags.map(t => String(t).trim()).filter(Boolean))];
   if (tags.some(t => t.length>36)) throw new Error('Tags must be 36 characters or shorter.');
-  return {...result, name, source, tags, launch_args: launchArgs, favorite: raw.favorite !== undefined ? !!raw.favorite : !!previous.favorite};
+  const coverFit=raw.cover_fit??previous.cover_fit??'cover';
+  const coverPosition=raw.cover_position??previous.cover_position??'center';
+  if(!['cover','contain'].includes(coverFit)||!['top','center','bottom'].includes(coverPosition))throw Error('Invalid cover presentation.');
+  return {...result,cover_fit:coverFit,cover_position:coverPosition, name, source, tags, launch_args: launchArgs, favorite: raw.favorite !== undefined ? !!raw.favorite : !!previous.favorite};
 }
 function normalizedPath(value, platform=process.platform) {return platform === 'win32' ? path.normalize(value).toLowerCase() : path.normalize(value);}
 function duplicateKey(game){
@@ -59,7 +62,7 @@ CREATE TABLE IF NOT EXISTS games (
  cover TEXT NOT NULL DEFAULT '', banner TEXT NOT NULL DEFAULT '', icon TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
  tags TEXT NOT NULL DEFAULT '[]', favorite INTEGER NOT NULL DEFAULT 0, total_play_seconds INTEGER NOT NULL DEFAULT 0,
  last_played_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
- launch_args TEXT NOT NULL DEFAULT '[]', working_dir TEXT NOT NULL DEFAULT '', duplicate_key TEXT NOT NULL DEFAULT ''
+ launch_args TEXT NOT NULL DEFAULT '[]', working_dir TEXT NOT NULL DEFAULT '', cover_fit TEXT NOT NULL DEFAULT 'cover', cover_position TEXT NOT NULL DEFAULT 'center', duplicate_key TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_games_duplicate ON games(duplicate_key) WHERE duplicate_key != '';
 CREATE INDEX IF NOT EXISTS idx_games_name ON games(name);
@@ -73,6 +76,9 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
     if (!this.db.prepare('PRAGMA table_info(games)').all().some(column=>column.name==='icon')) {
       this.db.exec("ALTER TABLE games ADD COLUMN icon TEXT NOT NULL DEFAULT ''");
     }
+    const gameColumns=new Set(this.db.prepare('PRAGMA table_info(games)').all().map(c=>c.name));
+    if(!gameColumns.has('cover_fit'))this.db.exec("ALTER TABLE games ADD COLUMN cover_fit TEXT NOT NULL DEFAULT 'cover'");
+    if(!gameColumns.has('cover_position'))this.db.exec("ALTER TABLE games ADD COLUMN cover_position TEXT NOT NULL DEFAULT 'center'");
     const sessionColumns=new Set(this.db.prepare('PRAGMA table_info(sessions)').all().map(c=>c.name));
     if(!sessionColumns.has('heartbeat_seconds'))this.db.exec('ALTER TABLE sessions ADD COLUMN heartbeat_seconds INTEGER NOT NULL DEFAULT 0');
     if(!sessionColumns.has('last_seen_at'))this.db.exec('ALTER TABLE sessions ADD COLUMN last_seen_at TEXT');

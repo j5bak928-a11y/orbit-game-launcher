@@ -110,8 +110,10 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
     if(!['grid','list'].includes(next.view)||!Object.hasOwn(SORTS,next.sort)||!['comfortable','compact'].includes(next.libraryDensity))throw Error('Invalid library preferences.');
     if(!Array.isArray(next.libraryFolders)||next.libraryFolders.length>60||next.libraryFolders.some(x=>!assertString(x,4000)))throw Error('Invalid library folders.');
     for(const key of ['reduceMotion','autoScan','useSteamArtwork','onboardingDone','performanceGuard','autoUpdates'])next[key]=!!next[key];
+    const changes=allowed.filter(key=>encode(current[key])!==encode(next[key]));
+    if(!changes.length)return current;
     const set=this.db.prepare('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value');
-    this.db.exec('BEGIN');try{for(const key of allowed)set.run(key,encode(next[key]));this.db.exec('COMMIT')}catch(e){this.db.exec('ROLLBACK');throw e}
+    this.db.exec('BEGIN');try{for(const key of changes)set.run(key,encode(next[key]));this.db.exec('COMMIT')}catch(e){this.db.exec('ROLLBACK');throw e}
     return next;
   }
   list(sort='name'){const order=Object.hasOwn(SORTS,sort)?SORTS[sort]:SORTS.name;return this.db.prepare(`SELECT ${COLUMNS.join(',')} FROM games ORDER BY ${order}`).all().map(deserialize);}

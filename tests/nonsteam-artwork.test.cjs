@@ -15,7 +15,7 @@ test('finds portrait artwork in the installed game folder while rejecting landsc
 });
 test('Epic catalog item identity retrieves portrait artwork from a trusted host',async()=>{
  const game={source:'epic',source_id:'game1',launch_uri:'com.epicgames.launcher://apps/namespace1%3Aitem1%3Agame1?action=launch'};
- let calls=[];
+ const calls=[];
  const fetchImpl=async url=>{calls.push(url);return calls.length===1?new Response(JSON.stringify({data:{Catalog:{catalogItem:{id:'item1',namespace:'namespace1',keyImages:[{type:'DieselGameBoxTall',url:'https://cdn1.epicgames.com/game/cover.png'}]}}}})) : new Response(png(600,900),{headers:{'content-type':'image/png'}});};
  const result=await findEpicPortrait(game,{fetchImpl});
  assert.equal(result.ext,'.png');assert.deepEqual(result.bytes,png(600,900));assert.equal(calls.length,2);

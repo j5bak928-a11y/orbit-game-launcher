@@ -38,6 +38,7 @@ function fixture(t, {discoverAll, platform, getFileIcon, findSteamCover, findSte
       whenReady:()=>new Promise(()=>{}), on() {},
     },
     protocol:{registerSchemesAsPrivileged() {}},
+    shell:{openExternal:async()=>{}},
     ipcMain:{handle:(name, handler)=>handlers.set(name, handler)},
   };
   const runtime = platform ? Object.create(process) : process;
@@ -74,6 +75,15 @@ const waitUntil=async(predicate,timeout=4000)=>{
  while(Date.now()<end){if(predicate())return true;await new Promise(resolve=>setTimeout(resolve,10));}
  return false;
 };
+
+test('linked launch checks for a game process after releasing the pending launch',async t=>{
+ const f=fixture(t,{platform:'win32'});
+ const game=f.database.upsert({name:'Linked game',source:'steam',source_id:'123',install_path:'C:\\Games\\Game',launch_uri:'steam://rungameid/123'}).game;
+ f.context.fixtureTracker={poll:async()=>{f.context.pendingWhenPolled=vm.runInContext('pendingLaunches.has(fixtureId)',f.context);},isRunning:()=>false,runningIds:()=>[]};
+ f.context.fixtureId=game.id;vm.runInContext('activityTracker=fixtureTracker',f.context);
+ const result=await f.invoke('launchGame',game.id);
+ assert.match(result.message,/detects the game process/);assert.equal(f.context.pendingWhenPolled,false);
+});
 
 test('fullscreen IPC accepts booleans, reports state and rejects malformed requests',async t=>{
  const f=fixture(t);

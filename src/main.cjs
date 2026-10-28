@@ -378,11 +378,17 @@ function handlers(){
           broadcast({type:'error',message:`Game launched, but play time could not be tracked: ${e.message}`});
           return {...result,tracked:false,message:'Game launched. Play-time tracking could not start.'};
         }
-      }else db.db.prepare('UPDATE games SET last_played_at=?,updated_at=? WHERE id=?').run(new Date().toISOString(),new Date().toISOString(),id);
+      }else{
+        db.db.prepare('UPDATE games SET last_played_at=?,updated_at=? WHERE id=?').run(new Date().toISOString(),new Date().toISOString(),id);
+        if(result.mode==='external'&&activityTracker){
+          const watchable=!!(game.executable||(['steam','epic'].includes(game.source)&&game.install_path));
+          result.message=watchable?'Opened in the launcher. Orbit will track play time when it detects the game process.':'Opened in the launcher. Add the actual game executable to track play time.';
+        }else if(result.mode==='external')result.message='Opened in the launcher. Play-time tracking is unavailable for this launch on this platform.';
+      }
       gamesChanged({games:[db.get(id)],reason:'launch'});
       cachedSteamBanner(db.get(id)).catch(()=>{});
       return result;
-    }finally{pendingLaunches.delete(id);}
+    }finally{pendingLaunches.delete(id);if(activityTracker)activityTracker.poll().catch(()=>{});}
   });
   bind('openGameFolder',async id=>{if(!okId(id))throw Error('Invalid game identifier.');const game=db.get(id);if(!game)throw Error('Game not found.');const dir=game.install_path|| (game.executable?path.dirname(game.executable):'');if(!dir||!path.isAbsolute(dir)||!fs.existsSync(dir)||!fs.statSync(dir).isDirectory())throw Error('Installation folder is unavailable.');const error=await shell.openPath(dir);if(error)throw Error(error);return true});
   bind('openAppData',async()=>{const error=await shell.openPath(app.getPath('userData'));if(error)throw Error(error);return true});
@@ -450,7 +456,7 @@ app.whenReady().then(async()=>{
   createWindow();
   if(process.platform==='win32'){
     activityTracker=new WindowsActivityTracker({
-      listGames:()=>db.listActivityGames(),isDirectSession:id=>sessions.has(id),
+      listGames:()=>db.listActivityGames(),isDirectSession:id=>sessions.has(id)||pendingLaunches.has(id),
       start:id=>db.startSession(id),finish:(sessionId,seconds)=>db.finishSession(sessionId,seconds),
       onChange:ids=>gamesChanged({games:ids.map(id=>db.get(id)),reason:'playtime'})
     });

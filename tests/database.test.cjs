@@ -101,15 +101,17 @@ test('batched imports tolerate invalid games while keeping valid entries atomic 
   }finally{db.close();fs.rmSync(dir,{recursive:true,force:true})}
 });
 
-test('tracking projection selects only storefront folders and omits all library metadata',()=>withDb(db=>{
+test('tracking projection includes identifiable games and omits unrelated metadata',()=>withDb(db=>{
  const steam=db.upsert({name:'Steam',source:'steam',source_id:'1',install_path:'D:\\Games\\Steam'}).game;
  const epic=db.upsert({name:'Epic',source:'epic',source_id:'2',install_path:'D:\\Games\\Epic'}).game;
  db.upsert({name:'GOG',source:'gog',source_id:'3',install_path:'D:\\Games\\GOG'});
  db.upsert({name:'Manual',install_path:'D:\\Games\\Manual'});
  db.upsert({name:'No installation',source:'steam',source_id:'4'});
+ const linked=db.upsert({name:'Linked',source:'manual',executable:'D:\\Games\\Linked\\game.exe',launch_uri:'steam://rungameid/4'}).game;
  const rows=db.listActivityGames();
- assert.deepEqual(rows.map(g=>g.id).sort(),[steam.id,epic.id].sort());
- for(const row of rows)assert.deepEqual(Object.keys(row).sort(),['id','install_path','source']);
+ assert.deepEqual(rows.map(g=>g.id).sort(),[steam.id,epic.id,linked.id].sort());
+ for(const row of rows)assert.deepEqual(Object.keys(row).sort(),['executable','id','install_path','launch_uri','source']);
+ db.remove(linked.id);
  db.update(epic.id,{install_path:''});
  assert.deepEqual(db.listActivityGames().map(g=>g.id),[steam.id]);
  db.remove(steam.id);

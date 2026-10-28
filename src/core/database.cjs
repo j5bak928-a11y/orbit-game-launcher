@@ -8,9 +8,10 @@ const DEFAULT_SETTINGS = Object.freeze({
   theme: 'dark', accent: '#8b7aff', reduceMotion: false,
   autoScan: false, useSteamArtwork: true, scanDownloads: false, libraryFolders: [],
   view: 'grid', sort: 'name', onboardingDone: false,
+  performanceGuard: true, autoUpdates: true, libraryDensity: 'comfortable',
 });
 const SORTS = {name: 'name COLLATE NOCASE ASC', recent: 'last_played_at DESC, name COLLATE NOCASE ASC', added: 'created_at DESC', time: 'total_play_seconds DESC, name COLLATE NOCASE ASC'};
-const COLUMNS = ['id','name','source','source_id','executable','launch_uri','install_path','cover','banner','icon','genre','tags','favorite','total_play_seconds','last_played_at','created_at','updated_at','launch_args','working_dir'];
+const COLUMNS = ['id','name','source','source_id','executable','launch_uri','install_path','cover','banner','icon','genre','tags','favorite','total_play_seconds','last_played_at','created_at','updated_at','launch_args','working_dir','cover_fit','cover_position'];
 const json = (value, fallback) => { try {return JSON.parse(value)} catch {return fallback} };
 const encode = x => JSON.stringify(x);
 const now = () => new Date().toISOString();
@@ -36,7 +37,10 @@ function cleanGame(raw, previous = {}) {
   if (!Array.isArray(tags) || tags.length > 40) throw new Error('Invalid tags.');
   tags = [...new Set(tags.map(t => String(t).trim()).filter(Boolean))];
   if (tags.some(t => t.length>36)) throw new Error('Tags must be 36 characters or shorter.');
-  return {...result, name, source, tags, launch_args: launchArgs, favorite: raw.favorite !== undefined ? !!raw.favorite : !!previous.favorite};
+  const coverFit=raw.cover_fit??previous.cover_fit??'cover';
+  const coverPosition=raw.cover_position??previous.cover_position??'center';
+  if(!['cover','contain'].includes(coverFit)||!['top','center','bottom'].includes(coverPosition))throw Error('Invalid cover presentation.');
+  return {...result,cover_fit:coverFit,cover_position:coverPosition, name, source, tags, launch_args: launchArgs, favorite: raw.favorite !== undefined ? !!raw.favorite : !!previous.favorite};
 }
 function normalizedPath(value, platform=process.platform) {return platform === 'win32' ? path.normalize(value).toLowerCase() : path.normalize(value);}
 function duplicateKey(game){
@@ -58,7 +62,7 @@ CREATE TABLE IF NOT EXISTS games (
  cover TEXT NOT NULL DEFAULT '', banner TEXT NOT NULL DEFAULT '', icon TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
  tags TEXT NOT NULL DEFAULT '[]', favorite INTEGER NOT NULL DEFAULT 0, total_play_seconds INTEGER NOT NULL DEFAULT 0,
  last_played_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
- launch_args TEXT NOT NULL DEFAULT '[]', working_dir TEXT NOT NULL DEFAULT '', duplicate_key TEXT NOT NULL DEFAULT ''
+ launch_args TEXT NOT NULL DEFAULT '[]', working_dir TEXT NOT NULL DEFAULT '', cover_fit TEXT NOT NULL DEFAULT 'cover', cover_position TEXT NOT NULL DEFAULT 'center', duplicate_key TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_games_duplicate ON games(duplicate_key) WHERE duplicate_key != '';
 CREATE INDEX IF NOT EXISTS idx_games_name ON games(name);
@@ -67,11 +71,17 @@ CREATE INDEX IF NOT EXISTS idx_games_uri ON games(launch_uri COLLATE NOCASE) WHE
 CREATE INDEX IF NOT EXISTS idx_games_executable_nocase ON games(executable COLLATE NOCASE) WHERE executable != '';
 CREATE INDEX IF NOT EXISTS idx_games_recent ON games(last_played_at);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE, started_at TEXT NOT NULL, finished_at TEXT, seconds INTEGER NOT NULL DEFAULT 0);`);
+CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE, started_at TEXT NOT NULL, finished_at TEXT, seconds INTEGER NOT NULL DEFAULT 0, heartbeat_seconds INTEGER NOT NULL DEFAULT 0, last_seen_at TEXT);`);
     // Existing user libraries predate the optional icon column. Migrate in place.
     if (!this.db.prepare('PRAGMA table_info(games)').all().some(column=>column.name==='icon')) {
       this.db.exec("ALTER TABLE games ADD COLUMN icon TEXT NOT NULL DEFAULT ''");
     }
+    const gameColumns=new Set(this.db.prepare('PRAGMA table_info(games)').all().map(c=>c.name));
+    if(!gameColumns.has('cover_fit'))this.db.exec("ALTER TABLE games ADD COLUMN cover_fit TEXT NOT NULL DEFAULT 'cover'");
+    if(!gameColumns.has('cover_position'))this.db.exec("ALTER TABLE games ADD COLUMN cover_position TEXT NOT NULL DEFAULT 'center'");
+    const sessionColumns=new Set(this.db.prepare('PRAGMA table_info(sessions)').all().map(c=>c.name));
+    if(!sessionColumns.has('heartbeat_seconds'))this.db.exec('ALTER TABLE sessions ADD COLUMN heartbeat_seconds INTEGER NOT NULL DEFAULT 0');
+    if(!sessionColumns.has('last_seen_at'))this.db.exec('ALTER TABLE sessions ADD COLUMN last_seen_at TEXT');
   }
   close(){this.db.close();}
   getSettings(){
@@ -83,24 +93,27 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
       if(key==='accent'&&(typeof parsed!=='string'||!/^#[0-9a-fA-F]{6}$/.test(parsed)))continue;
       if(key==='view'&&!['grid','list'].includes(parsed))continue;
       if(key==='sort'&&!Object.hasOwn(SORTS,parsed))continue;
+      if(key==='libraryDensity'&&!['comfortable','compact'].includes(parsed))continue;
       if(key==='libraryFolders'&&(!Array.isArray(parsed)||parsed.length>60||parsed.some(p=>!assertString(p,4000))))continue;
-      if(['reduceMotion','autoScan','useSteamArtwork','scanDownloads','onboardingDone'].includes(key)&&typeof parsed!=='boolean')continue;
+      if(['reduceMotion','autoScan','useSteamArtwork','scanDownloads','onboardingDone','performanceGuard','autoUpdates'].includes(key)&&typeof parsed!=='boolean')continue;
       settings[key]=parsed;
     }
     settings.scanDownloads=false; // Legacy opt-in is ignored.
     return settings;
   }
   saveSettings(input){
-    const allowed=['theme','accent','reduceMotion','autoScan','useSteamArtwork','libraryFolders','view','sort','onboardingDone'];
+    const allowed=['theme','accent','reduceMotion','autoScan','useSteamArtwork','libraryFolders','view','sort','onboardingDone','performanceGuard','autoUpdates','libraryDensity'];
     const current=this.getSettings();const next={...current};
     for(const key of allowed)if(Object.hasOwn(input,key))next[key]=input[key];
     if(!['dark','light','system'].includes(next.theme))throw Error('Invalid theme.');
     if(!/^#[0-9a-fA-F]{6}$/.test(next.accent))throw Error('Invalid accent color.');
-    if(!['grid','list'].includes(next.view)||!Object.hasOwn(SORTS,next.sort))throw Error('Invalid library preferences.');
+    if(!['grid','list'].includes(next.view)||!Object.hasOwn(SORTS,next.sort)||!['comfortable','compact'].includes(next.libraryDensity))throw Error('Invalid library preferences.');
     if(!Array.isArray(next.libraryFolders)||next.libraryFolders.length>60||next.libraryFolders.some(x=>!assertString(x,4000)))throw Error('Invalid library folders.');
-    for(const key of ['reduceMotion','autoScan','useSteamArtwork','onboardingDone'])next[key]=!!next[key];
+    for(const key of ['reduceMotion','autoScan','useSteamArtwork','onboardingDone','performanceGuard','autoUpdates'])next[key]=!!next[key];
+    const changes=allowed.filter(key=>encode(current[key])!==encode(next[key]));
+    if(!changes.length)return current;
     const set=this.db.prepare('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value');
-    this.db.exec('BEGIN');try{for(const key of allowed)set.run(key,encode(next[key]));this.db.exec('COMMIT')}catch(e){this.db.exec('ROLLBACK');throw e}
+    this.db.exec('BEGIN');try{for(const key of changes)set.run(key,encode(next[key]));this.db.exec('COMMIT')}catch(e){this.db.exec('ROLLBACK');throw e}
     return next;
   }
   list(sort='name'){const order=Object.hasOwn(SORTS,sort)?SORTS[sort]:SORTS.name;return this.db.prepare(`SELECT ${COLUMNS.join(',')} FROM games ORDER BY ${order}`).all().map(deserialize);}
@@ -173,6 +186,34 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
   toggleFavorite(id){const old=this.get(id);if(!old)throw Error('Game not found.');return this.update(id,{favorite:!old.favorite});}
   remove(id){const result=this.db.prepare('DELETE FROM games WHERE id=?').run(id);return result.changes>0;}
   startSession(gameId){if(!this.get(gameId))throw Error('Game not found.');const id=crypto.randomUUID();this.db.prepare('INSERT INTO sessions(id,game_id,started_at) VALUES (?,?,?)').run(id,gameId,now());this.db.prepare('UPDATE games SET last_played_at=?, updated_at=? WHERE id=?').run(now(),now(),gameId);return id;}
+  checkpointSessions(entries){
+    if(!Array.isArray(entries)||!entries.length)return 0;
+    const update=this.db.prepare('UPDATE sessions SET heartbeat_seconds=?,last_seen_at=? WHERE id=? AND finished_at IS NULL AND heartbeat_seconds<=?');
+    let changed=0;const stamped=now();
+    this.db.exec('BEGIN');try{
+      for(const entry of entries){
+        if(typeof entry?.id!=='string'||!Number.isFinite(entry.seconds))continue;
+        const elapsed=Math.min(7*86400,Math.max(0,Math.floor(entry.seconds)));
+        changed+=update.run(elapsed,stamped,entry.id,elapsed).changes;
+      }
+      this.db.exec('COMMIT');return changed;
+    }catch(e){this.db.exec('ROLLBACK');throw e}
+  }
+  recoverInterruptedSessions(){
+    // Never guess play time beyond the last durable checkpoint after a crash.
+    const stale=this.db.prepare('SELECT id,game_id,heartbeat_seconds FROM sessions WHERE finished_at IS NULL').all();
+    if(!stale.length)return 0;
+    const close=this.db.prepare('UPDATE sessions SET finished_at=?,seconds=? WHERE id=? AND finished_at IS NULL');
+    const credit=this.db.prepare('UPDATE games SET total_play_seconds=total_play_seconds+?,updated_at=? WHERE id=?');
+    const date=now();let recovered=0;
+    this.db.exec('BEGIN');try{
+      for(const row of stale){
+        const seconds=Math.min(7*86400,Math.max(0,Number(row.heartbeat_seconds)||0));
+        if(close.run(date,seconds,row.id).changes){credit.run(seconds,date,row.game_id);recovered++;}
+      }
+      this.db.exec('COMMIT');return recovered;
+    }catch(e){this.db.exec('ROLLBACK');throw e}
+  }
   finishSession(id,seconds){const session=this.db.prepare('SELECT * FROM sessions WHERE id=?').get(id);if(!session||session.finished_at)return false;seconds=Math.max(0,Math.min(7*24*3600,Math.floor(Number(seconds)||0)));
     this.db.exec('BEGIN');try{this.db.prepare('UPDATE sessions SET finished_at=?, seconds=? WHERE id=?').run(now(),seconds,id);this.db.prepare('UPDATE games SET total_play_seconds=total_play_seconds+?,updated_at=? WHERE id=?').run(seconds,now(),session.game_id);this.db.exec('COMMIT');return true}catch(e){this.db.exec('ROLLBACK');throw e}
   }

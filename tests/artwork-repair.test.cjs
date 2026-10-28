@@ -129,7 +129,9 @@ test('offline repair uses a portrait in an Epic game folder before online lookup
  fs.writeFileSync(path.join(dir,'cover.png'),bytes);f.game.install_path=dir;
  f.context.fixtureDb.getSettings=()=>({useSteamArtwork:false});
  await f.context.cachedSteamCover({...f.game});
- assert.match(f.game.cover,/\.png$/);assert.equal(f.downloads(),0);
+ const local=await f.context.findLocalPortrait({...f.game},{validate:f.context.decodableArtwork});
+ let save='';if(local)try{save=await f.context.saveArtwork(local)}catch(e){save=e.message}
+ assert.match(f.game.cover,/\.png$/,JSON.stringify({local,save,download:f.downloads()}));assert.equal(f.downloads(),0);
 });
 
 test('artwork looks in the actual Steam installation root for non-default libraries',async t=>{

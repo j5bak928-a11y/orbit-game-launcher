@@ -103,3 +103,23 @@ test('empty libraries skip process enumeration',async()=>{
  let count=0;const t=new WindowsActivityTracker({listGames:()=>[],isDirectSession:()=>false,start:()=>'',finish:()=>{},enumerate:async()=>{count++;return [];}});
  await t.poll();assert.equal(count,0);
 });
+
+test('native inventory parses absolute Windows process paths',async()=>{
+ const {listWindowsExecutables,parseNativeInventory}=require('../src/core/windows-activity.cjs');
+ assert.deepEqual(parseNativeInventory('C:\\Games\\One\\Game.exe\nnot-a-path\nD:\\Steam\\Bin\\Player.EXE\n'),
+  ['C:\\Games\\One\\Game.exe','D:\\Steam\\Bin\\Player.EXE']);
+ const calls=[];
+ const data=await listWindowsExecutables({helperPath:'C:\\Orbit\\bin\\orbit-process-list.exe',exists:()=>true,run:async(command,args)=>{
+  calls.push(command);return {stdout:'C:\\Games\\One\\Game.exe\n'};
+ }});
+ assert.deepEqual(data,['C:\\Games\\One\\Game.exe']);assert.equal(calls.length,1);
+});
+test('failed native inventory falls back to bounded PowerShell',async()=>{
+ const {listWindowsExecutables}=require('../src/core/windows-activity.cjs');
+ const commands=[];
+ const data=await listWindowsExecutables({helperPath:'C:\\Orbit\\bin\\orbit-process-list.exe',exists:()=>true,run:async command=>{
+  commands.push(command);if(command.endsWith('orbit-process-list.exe'))throw Error('helper unavailable');
+  return {stdout:JSON.stringify(['C:\\Games\\One\\Game.exe'])};
+ }});
+ assert.deepEqual(data,['C:\\Games\\One\\Game.exe']);assert.deepEqual(commands,['C:\\Orbit\\bin\\orbit-process-list.exe','powershell.exe']);
+});

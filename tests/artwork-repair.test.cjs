@@ -34,6 +34,7 @@ function fixture(t, width, height, { missing = false, cover = crypto.randomUUID(
   const main = path.join(__dirname, '../src/main.cjs');
   const realRequire = createRequire(main);
   const electron = {
+    nativeImage: { createFromBuffer: () => ({ isEmpty: () => false }) },
     app: {
       requestSingleInstanceLock: () => true,
       getPath: () => root,
@@ -117,6 +118,18 @@ test('offline artwork settings still allow the local Steam cache',async t=>{
  f.context.fixtureDb.getSettings=()=>({useSteamArtwork:false});
  await f.context.cachedSteamCover({...f.game});
  assert.equal(f.downloads(),1,'local artwork lookup must run with online disabled');
+});
+
+test('offline repair uses a portrait in an Epic game folder before online lookup',async t=>{
+ const f=fixture(t,600,900,{missing:true});
+ f.game.source='epic';f.game.source_id='game';f.game.cover='';
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'orbit-game-art-'));
+ t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const bytes=Buffer.alloc(24);Buffer.from('89504e470d0a1a0a','hex').copy(bytes);bytes.writeUInt32BE(600,16);bytes.writeUInt32BE(900,20);
+ fs.writeFileSync(path.join(dir,'cover.png'),bytes);f.game.install_path=dir;
+ f.context.fixtureDb.getSettings=()=>({useSteamArtwork:false});
+ await f.context.cachedSteamCover({...f.game});
+ assert.match(f.game.cover,/\.png$/);assert.equal(f.downloads(),0);
 });
 
 test('artwork looks in the actual Steam installation root for non-default libraries',async t=>{

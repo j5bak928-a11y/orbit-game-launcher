@@ -34,6 +34,7 @@ function fixture(t, width, height, { missing = false, cover = crypto.randomUUID(
   const main = path.join(__dirname, '../src/main.cjs');
   const realRequire = createRequire(main);
   const electron = {
+    nativeImage: { createFromBuffer: () => ({ isEmpty: () => false }) },
     app: {
       requestSingleInstanceLock: () => true,
       getPath: () => root,

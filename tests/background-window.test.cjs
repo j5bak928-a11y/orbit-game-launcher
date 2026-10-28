@@ -19,3 +19,12 @@ test('closing the last window keeps the process alive when a tray exists',()=>{
  app.emit('window-all-closed');assert.equal(quits,0);
  vm.runInContext('tray=null',context);app.emit('window-all-closed');assert.equal(quits,1);
 });
+
+test('second launch while startup is still running does not create an early window',()=>{
+ const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),{EventEmitter}=require('node:events'),{createRequire}=require('node:module');
+ const file=path.join(__dirname,'../src/main.cjs'),realRequire=createRequire(file),app=new EventEmitter();let created=0;
+ app.requestSingleInstanceLock=()=>true;app.quit=()=>{};app.whenReady=()=>new Promise(()=>{});
+ const electron={app,BrowserWindow:class {constructor(){created++;}},protocol:{registerSchemesAsPrivileged(){}}};
+ const context=vm.createContext({require:name=>name==='electron'?electron:realRequire(name),__dirname:path.dirname(file),process,Buffer});
+ vm.runInContext(fs.readFileSync(file,'utf8'),context);app.emit('second-instance');assert.equal(created,0);
+});

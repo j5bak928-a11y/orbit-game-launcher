@@ -56,7 +56,4 @@ body[data-density=compact]{--card-min:138px;--grid-gap:14px;--card-label-height:
 .setting-help,.detail-note,.detail-playtime-caption{font-size:12px;line-height:1.55}
 .detail-actions .primary-btn{min-height:44px;padding-inline:25px}
 .dialog .secondary-btn,.dialog .danger-btn{min-height:38px}
-button:focus-visible,[role=button]:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 @media(pointer:coarse){.game-card .cover-play,.favorite-float{opacity:1;transform:none}.top-icon,.primary-btn,.secondary-btn,.nav-item{min-height:40px}}
-@media(prefers-reduced-motion:reduce){.game-card:hover .cover,.continue-card:hover{transform:none!important}}
-body[data-reduce-motion=true] .game-card:hover .cover,body[data-reduce-motion=true] .continue-card:hover{transform:none!important}

@@ -109,7 +109,7 @@ test('native inventory parses absolute Windows process paths',async()=>{
  assert.deepEqual(parseNativeInventory('C:\\Games\\One\\Game.exe\nnot-a-path\nD:\\Steam\\Bin\\Player.EXE\n'),
   ['C:\\Games\\One\\Game.exe','D:\\Steam\\Bin\\Player.EXE']);
  const calls=[];
- const data=await listWindowsExecutables({helperPath:'C:\\Orbit\\bin\\orbit-process-list.exe',exists:()=>true,run:async(command,args)=>{
+ const data=await listWindowsExecutables({helperPath:'C:\\Orbit\\bin\\orbit-process-list.exe',exists:()=>true,run:async(command)=>{
   calls.push(command);return {stdout:'C:\\Games\\One\\Game.exe\n'};
  }});
  assert.deepEqual(data,['C:\\Games\\One\\Game.exe']);assert.equal(calls.length,1);

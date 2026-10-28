@@ -15,7 +15,7 @@ function matchRunningGames(games, executables) {
   const executable=normalizeWindowsPath(game.executable);
   if(executable&&path.win32.isAbsolute(executable)&&!SKIP_EXECUTABLE.test(path.win32.basename(executable)))add(exact,executable,game.id);
   const folder=normalizeWindowsPath(game.install_path);
-  if(!folder||!path.win32.isAbsolute(folder)||(!['steam','epic'].includes(game.source)&&!game.launch_uri))continue;
+  if(!folder||!path.win32.isAbsolute(folder)||!['steam','epic'].includes(game.source))continue;
   if(path.win32.dirname(folder)===folder||/^(?:games|program files(?: \(x86\))?|users|downloads|steamapps|common|epic games)$/i.test(path.win32.basename(folder)))continue;
   add(folders,folder,game.id);
  }

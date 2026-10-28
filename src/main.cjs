@@ -381,8 +381,8 @@ function handlers(){
       }else{
         db.db.prepare('UPDATE games SET last_played_at=?,updated_at=? WHERE id=?').run(new Date().toISOString(),new Date().toISOString(),id);
         if(result.mode==='external'&&activityTracker){
-          const watchable=!!(game.executable||game.install_path);
-          result.message=watchable?'Opened in the launcher. Orbit will track play time when it detects the game process.':'Opened in the launcher. Add the game executable or installation folder to track play time.';
+          const watchable=!!(game.executable||(['steam','epic'].includes(game.source)&&game.install_path));
+          result.message=watchable?'Opened in the launcher. Orbit will track play time when it detects the game process.':'Opened in the launcher. Add the actual game executable to track play time.';
         }else if(result.mode==='external')result.message='Opened in the launcher. Play-time tracking is unavailable for this launch on this platform.';
       }
       gamesChanged({games:[db.get(id)],reason:'launch'});

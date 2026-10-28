@@ -15,6 +15,14 @@ test('matches exact executables for linked games without treating shared folders
  const list=[{id:'manual',source:'manual',executable:'C:\\Games\\My Game.exe',install_path:''},{id:'other',source:'gog',executable:'C:\\Games\\Other.exe',install_path:'C:\\Games'}];
  assert.deepEqual(matchRunningGames(list,['c:\\games\\my game.exe']),['manual']);
 });
+test('matches a linked game launched by a wrapper using its dedicated installation folder',()=>{
+ const list=[{id:'gog',source:'gog',launch_uri:'goggalaxy://openGame/1',executable:'D:\\Games\\Example\\Launcher.exe',install_path:'D:\\Games\\Example'}];
+ assert.deepEqual(matchRunningGames(list,['D:\\Games\\Example\\Bin\\Game.exe']),['gog']);
+});
+test('does not attribute a shared installation folder to multiple linked games',()=>{
+ const list=[{id:'one',source:'gog',launch_uri:'goggalaxy://openGame/1',install_path:'D:\\Games\\Shared'},{id:'two',source:'manual',launch_uri:'steam://rungameid/2',install_path:'D:\\Games\\Shared'}];
+ assert.deepEqual(matchRunningGames(list,['D:\\Games\\Shared\\Game.exe']),[]);
+});
 test('does not count the confirmation delay after a monitored process exits',async()=>{
  let clock=1000,running=true,finish=[];
  const t=new WindowsActivityTracker({listGames:()=>games,isDirectSession:()=>false,start:id=>id,finish:(id,seconds)=>finish.push(seconds),enumerate:async()=>running?['D:\\SteamLibrary\\steamapps\\common\\EA SPORTS FC 27\\FC27.exe']:[],now:()=>clock});
@@ -42,7 +50,7 @@ test('matching retains library order, duplicate IDs and nested installation sema
   {id:'manual',source:'manual',install_path:'D:\\Games\\Outer'},
  ];
  const processes = ['D:/GAMES/Outer/Inner/Bin/Game.exe', 'd:\\Games\\Outer\\Inner\\Bin\\Game.exe'];
- assert.deepEqual(matchRunningGames(nested, processes), ['inner','outer']);
+ assert.deepEqual(matchRunningGames(nested, processes), ['inner']);
 });
 
 test('matching handles UNC roots while rejecting sibling and relative paths', () => {
@@ -53,7 +61,7 @@ test('matching handles UNC roots while rejecting sibling and relative paths', ()
   {id:'relative',source:'steam',install_path:'Games\\One'},
   {id:'drive-root',source:'steam',install_path:'D:\\'},
  ];
- assert.deepEqual(matchRunningGames(library, ['\\\\SERVER\\SHARE\\Games\\One\\Bin\\GAME.exe']), ['share','game']);
+ assert.deepEqual(matchRunningGames(library, ['\\\\SERVER\\SHARE\\Games\\One\\Bin\\GAME.exe']), ['game']);
  assert.deepEqual(matchRunningGames(library, ['Games\\One\\Game.exe']), []);
 });
 

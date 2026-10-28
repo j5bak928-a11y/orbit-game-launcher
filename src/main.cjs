@@ -23,7 +23,7 @@ const {createPortableBackup,decodePortableBackup,installBackupArtwork,writeAtomi
 
 protocol.registerSchemesAsPrivileged([{scheme:'orbit-art',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true}}]);
 if(!app.requestSingleInstanceLock())app.quit();
-let win,db,scanning=false,activityTracker=null,libraryRevision=0,tray=null;
+let win,db,scanning=false,activityTracker=null,libraryRevision=0,tray=null,initialized=false;
 const background=backgroundWindow({close:()=>win?.destroy(),show:()=>{if(!win||win.isDestroyed())createWindow();else {if(win.isMinimized())win.restore();win.show();win.focus();}}});
 const fullscreenController=new FullscreenController(()=>win);
 const sessions=new Map();
@@ -445,7 +445,7 @@ function handlers(){
   });
   bind('getAppInfo',()=>({platform:process.platform,version:app.getVersion(),dataPath:app.getPath('userData')}));
 }
-app.on('second-instance',()=>background.open());
+app.on('second-instance',()=>{if(initialized)background.open();});
 app.whenReady().then(async()=>{
   try{db=new LibraryDatabase(path.join(app.getPath('userData'),'library.sqlite'));}
   catch(error){dialog.showErrorBox('Cannot open game library',`The database could not be opened: ${error.message}\n\nYour existing data has not been deleted. Location: ${app.getPath('userData')}`);app.quit();return}
@@ -461,6 +461,7 @@ app.whenReady().then(async()=>{
     try{tray=new Tray(path.join(__dirname,'../assets/icon.ico'));tray.setToolTip('Orbit — tracking playtime');tray.setContextMenu(Menu.buildFromTemplate([{label:'Open Orbit',click:()=>background.open()},{label:'Quit Orbit',click:()=>{background.quit();app.quit();}}]));tray.on('click',()=>background.open());}
     catch{tray=null;}
   }
+  initialized=true;
   createWindow();
   if(process.platform==='win32'){
     activityTracker=new WindowsActivityTracker({

@@ -59,8 +59,8 @@ async function listWindowsExecutables({run=execFileAsync,helperPath=nativeInvent
  return (Array.isArray(data)?data:[data]).filter(x=>typeof x==='string').slice(0,10000);
 }
 class WindowsActivityTracker{
- constructor({listGames,isDirectSession,start,finish,onChange,enumerate=listWindowsExecutables,now=Date.now}){
-  Object.assign(this,{listGames,isDirectSession,startSession:start,finishSession:finish,onChange,enumerate,now});
+ constructor({listGames,isDirectSession,start,finish,onChange,onError,enumerate=listWindowsExecutables,now=Date.now}){
+  Object.assign(this,{listGames,isDirectSession,startSession:start,finishSession:finish,onChange,onError,enumerate,now});
   this.active=new Map();this.timer=null;this.polling=false;this.stopped=false;this.suspended=false;
   this.launchUntil=0;this.consecutiveFailures=0;
  }

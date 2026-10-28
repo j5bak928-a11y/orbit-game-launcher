@@ -25,3 +25,7 @@ test('enumeration failures must not mark games as stopped',async()=>{
  await tracker.poll();fail=true;now=31000;await tracker.poll();await tracker.poll();
  assert.equal(count,3);assert.deepEqual(finished,[]);tracker.stop();
 });
+test('enumeration errors are reported to the supplied error handler',async()=>{
+ const errors=[];const tracker=new WindowsActivityTracker({listGames:()=>[{id:'game'}],isDirectSession:()=>false,start:()=>'',finish:()=>{},enumerate:async()=>{throw Error('inventory unavailable')},onError:error=>errors.push(error.message)});
+ await tracker.poll();tracker.stop();assert.deepEqual(errors,['inventory unavailable']);
+});

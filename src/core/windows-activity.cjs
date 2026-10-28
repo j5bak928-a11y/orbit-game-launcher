@@ -7,35 +7,34 @@ const POLL_MS=15000;
 const SKIP_EXECUTABLE=/^(?:unins\w*|uninstall\w*|setup\w*|install\w*|launcher|updater|update|crash(?:reporter|handler)?\w*|easyanticheat\w*|eac\w*|eanticheat\w*|easteam\w*|ue4prereq\w*|vcredist\w*|dxsetup\w*|epicgameslauncher\w*)\.exe$/i;
 function normalizeWindowsPath(input){return typeof input==='string'?path.win32.normalize(input).toLowerCase().replace(/[\\/]+$/,''):'';}
 function matchRunningGames(games, executables) {
- const directories = new Set();
  const processes = new Set(executables.map(normalizeWindowsPath).filter(Boolean));
+ const folders=new Map(),exact=new Map(),found=new Set();
+ const add=(map,key,id)=>{if(!map.has(key))map.set(key,new Set());map.get(key).add(id);};
+ for(const game of games){
+  if(!game)continue;
+  const executable=normalizeWindowsPath(game.executable);
+  if(executable&&path.win32.isAbsolute(executable)&&!SKIP_EXECUTABLE.test(path.win32.basename(executable)))add(exact,executable,game.id);
+  const folder=normalizeWindowsPath(game.install_path);
+  if(!folder||!path.win32.isAbsolute(folder)||(!['steam','epic'].includes(game.source)&&!game.launch_uri))continue;
+  if(path.win32.dirname(folder)===folder||/^(?:games|program files(?: \(x86\))?|users|downloads|steamapps|common|epic games)$/i.test(path.win32.basename(folder)))continue;
+  add(folders,folder,game.id);
+ }
  for (const exe of processes) {
   if (!path.win32.isAbsolute(exe) || !exe.endsWith('.exe') ||
       SKIP_EXECUTABLE.test(path.win32.basename(exe))) continue;
+  const direct=exact.get(exe);
+  if(direct){if(direct.size===1)found.add([...direct][0]);continue;}
   let directory = path.win32.dirname(exe);
-  // Index each containing folder once, including parents for nested installs.
-  // An indexed ancestor already has all of its parents in the set.
   while (true) {
    const folder = directory.replace(/[\\/]+$/, '');
-   if (directories.has(folder)) break;
-   directories.add(folder);
+   const candidates=folders.get(folder);
+   if(candidates){if(candidates.size===1)found.add([...candidates][0]);break;}
    const parent = path.win32.dirname(directory);
    if (parent === directory) break;
    directory = parent;
   }
  }
- const found = new Set();
- for (const game of games) {
-  if (!game) continue;
-  const executable=normalizeWindowsPath(game.executable);
-  if(executable&&path.win32.isAbsolute(executable)&&processes.has(executable)&&!SKIP_EXECUTABLE.test(path.win32.basename(executable))){found.add(game.id);continue;}
-  if(!['steam','epic'].includes(game.source)&&(!game.launch_uri||executable))continue;
-  const folder = normalizeWindowsPath(game.install_path);
-  if (folder && path.win32.isAbsolute(folder) && directories.has(folder)) {
-   found.add(game.id);
-  }
- }
- return [...found];
+ return [...new Set(games.filter(game=>game&&found.has(game.id)).map(game=>game.id))];
 }
 async function listWindowsExecutables({run=execFileAsync}={}){
  const script='Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.EndsWith(".exe") } | Select-Object -ExpandProperty ExecutablePath | ConvertTo-Json -Compress';

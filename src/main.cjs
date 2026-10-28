@@ -1,5 +1,5 @@
 'use strict';
-const {app,BrowserWindow,dialog,ipcMain,shell,protocol,net,nativeTheme,nativeImage,Tray,Menu}=require('electron');
+const {app,BrowserWindow,dialog,ipcMain,shell,protocol,net,nativeTheme,nativeImage,Tray,Menu,powerMonitor}=require('electron');
 const path=require('node:path');
 const fs=require('node:fs');
 const fsp=fs.promises;
@@ -18,6 +18,7 @@ const {findExactSteamApp}=require('./core/steam-search.cjs');
 const {findLocalPortrait,findEpicPortrait}=require('./core/nonsteam-artwork.cjs');
 const {WindowsActivityTracker}=require('./core/windows-activity.cjs');
 const {backgroundWindow}=require('./core/background-window.cjs');
+const {sessionClock}=require('./core/session-clock.cjs');
 const {catalogMatch}=require('./core/game-identity.cjs');
 const {createPortableBackup,decodePortableBackup,installBackupArtwork,writeAtomic,MAX_ARCHIVE}=require('./core/backup.cjs');
 
@@ -26,12 +27,13 @@ if(!app.requestSingleInstanceLock())app.quit();
 let win,db,scanning=false,activityTracker=null,libraryRevision=0,tray=null,initialized=false;
 const background=backgroundWindow({close:()=>win?.destroy(),show:()=>{if(!win||win.isDestroyed())createWindow();else {if(win.isMinimized())win.restore();win.show();win.focus();}}});
 const fullscreenController=new FullscreenController(()=>win);
-const sessions=new Map();
+const sessions=new Map(),sessionClocks=new Map();
+let checkpointTimer=null,guardTimer=null;
 const pendingLaunches=new Set();
 const artworkWork=new ArtworkWork();
 const iconWork=new ArtworkWork({concurrency:2});
 const artworkEditRevisions=new Map();
-const onlineArtwork=()=>!!db?.getSettings().useSteamArtwork;
+const onlineArtwork=()=>!!db?.getSettings().useSteamArtwork && !(db?.getSettings().performanceGuard&&runningGameIds().length>0);
 const artIdentity=game=>JSON.stringify([game.name,game.source,game.source_id,game.executable,game.install_path,game.launch_uri]);
 const artworkRevision=game=>artworkEditRevisions.get(game.id)||0;
 function currentArtworkGame(game,revision){
@@ -48,6 +50,29 @@ function decodableArtwork(bytes){
 }
 const broadcast=payload=>{if(win&&!win.isDestroyed())win.webContents.send('orbit:event',payload)};
 const runningGameIds=()=>[...new Set([...sessions.keys(),...(activityTracker?.runningIds()||[])])];
+function checkpointPlaytime(){
+ if(!db)return;
+ const records=[...sessions].map(([id,sessionId])=>({id:sessionId,seconds:sessionClocks.get(id)?.seconds()||0}));
+ records.push(...(activityTracker?.checkpoints()||[]));
+ if(records.length)try{db.checkpointSessions(records);}catch(error){broadcast({type:'error',message:'Playtime checkpoint could not be saved: '+error.message});}
+}
+function performanceGuard(){
+ if(process.platform!=='win32'||!tray||!db?.getSettings().performanceGuard||!win||win.isDestroyed())return;
+ if(guardTimer)clearTimeout(guardTimer);
+ guardTimer=setTimeout(()=>{
+  guardTimer=null;
+  if(runningGameIds().length&&db?.getSettings().performanceGuard&&tray&&win&&!win.isDestroyed())win.close();
+ },1200);
+ guardTimer.unref?.();
+}
+function authorizedSender(event){
+ // Real Electron IPC always includes a sender and frame. Stand-in harnesses
+ // omit them; never permit their omission in a packaged build.
+ if(!event?.sender)return !app.isPackaged;
+ if(!win||win.isDestroyed()||event.sender!==win.webContents)return false;
+ if(!event.senderFrame)return !app.isPackaged;
+ return event.senderFrame===win.webContents.mainFrame;
+}
 const librarySnapshot=()=>({games:db.list(),runningIds:runningGameIds(),revision:libraryRevision});
 function gamesChanged({games=[],removedIds=[],reason='',reset=false}={}){
   const event={type:'gamesChanged',reason,revision:++libraryRevision,runningIds:runningGameIds()};
@@ -93,6 +118,7 @@ async function saveArtwork(file){
   if(bytes.length!==stat.size)throw Error('Artwork changed while it was being read. Try again.');
   const hash=crypto.createHash('sha256').update(bytes).digest('hex');
   const target=`${hash.slice(0,8)}-${hash.slice(8,12)}-${hash.slice(12,16)}-${hash.slice(16,20)}-${hash.slice(20,32)}${ext}`;
+  try{db.recoverInterruptedSessions();}catch(error){dialog.showErrorBox('Playtime recovery warning',`Orbit could not finish interrupted playtime records: ${error.message}`);}
   await fsp.mkdir(artworkDir(),{recursive:true});
   try{await fsp.writeFile(path.join(artworkDir(),target),bytes,{flag:'wx'});}
   catch(e){if(e.code!=='EEXIST')throw e;}
@@ -312,7 +338,7 @@ async function discover(){
   }finally{scanning=false;}
 }
 function handlers(){
-  const bind=(name,fn)=>ipcMain.handle('orbit:'+name,async(_, ...args)=>{try{return await fn(...args)}catch(e){throw new Error(e?.message||'Unexpected error.')}});
+  const bind=(name,fn)=>ipcMain.handle('orbit:'+name,async(event, ...args)=>{try{if(!authorizedSender(event))throw Error('Untrusted IPC sender.');return await fn(...args)}catch(e){throw new Error(e?.message||'Unexpected error.')}});
   bind('getWindowState',()=>fullscreenController.get());
   bind('setFullscreen',enabled=>fullscreenController.set(enabled));
   bind('bootstrap',()=>({...librarySnapshot(),settings:db.getSettings(),platform:process.platform,version:app.getVersion()}));
@@ -365,17 +391,16 @@ function handlers(){
     if(sessions.has(id)||pendingLaunches.has(id)||activityTracker?.isRunning(id))throw Error('This game is already launching or has a tracked session running.');
     pendingLaunches.add(id);
     try{
-      let sessionId=null,startTime=0;
+      let sessionId=null;
       const exit=deferredExit(()=>{
         if(!sessionId||!db)return;
-        try{db.finishSession(sessionId,Math.floor((Date.now()-startTime)/1000));}
+        try{db.finishSession(sessionId,sessionClocks.get(id)?.seconds()||0);}
         catch(e){broadcast({type:'error',message:`Could not save play time: ${e.message}`})}
-        sessions.delete(id);gamesChanged({games:[db.get(id)],reason:'playtime'});
+        sessions.delete(id);sessionClocks.delete(id);gamesChanged({games:[db.get(id)],reason:'playtime'});
       });
       const result=await executeGame(game,url=>shell.openExternal(url),exit.onExit);
       if(result.tracked){
-        startTime=Date.now();
-        try{sessionId=db.startSession(id);sessions.set(id,sessionId);exit.ready();}
+        try{sessionId=db.startSession(id);sessions.set(id,sessionId);sessionClocks.set(id,sessionClock());exit.ready();performanceGuard();}
         catch(e){
           // Launch succeeded; never report it as a failed launch if recording
           // play time fails after the process has already started.
@@ -392,7 +417,7 @@ function handlers(){
       gamesChanged({games:[db.get(id)],reason:'launch'});
       cachedSteamBanner(db.get(id)).catch(()=>{});
       return result;
-    }finally{pendingLaunches.delete(id);if(activityTracker)activityTracker.poll().catch(()=>{});}
+    }finally{pendingLaunches.delete(id);activityTracker?.noteLaunch();}
   });
   bind('openGameFolder',async id=>{if(!okId(id))throw Error('Invalid game identifier.');const game=db.get(id);if(!game)throw Error('Game not found.');const dir=game.install_path|| (game.executable?path.dirname(game.executable):'');if(!dir||!path.isAbsolute(dir)||!fs.existsSync(dir)||!fs.statSync(dir).isDirectory())throw Error('Installation folder is unavailable.');const error=await shell.openPath(dir);if(error)throw Error(error);return true});
   bind('openAppData',async()=>{const error=await shell.openPath(app.getPath('userData'));if(error)throw Error(error);return true});
@@ -467,11 +492,15 @@ app.whenReady().then(async()=>{
     activityTracker=new WindowsActivityTracker({
       listGames:()=>db.listActivityGames(),isDirectSession:id=>sessions.has(id)||pendingLaunches.has(id),
       start:id=>db.startSession(id),finish:(sessionId,seconds)=>db.finishSession(sessionId,seconds),
-      onChange:ids=>gamesChanged({games:ids.map(id=>db.get(id)),reason:'playtime'})
+      onChange:ids=>{gamesChanged({games:ids.map(id=>db.get(id)),reason:'playtime'});if(ids.some(id=>activityTracker?.isRunning(id)))performanceGuard();},
+      onError:error=>broadcast({type:'error',message:'Windows playtime detection is temporarily unavailable: '+error.message})
     });
     activityTracker.start();
   }
-  setTimeout(async()=>{if(!db)return;await repairMissingSteamCovers({limit:30}).catch(()=>{});if(db)for(const game of db.list('recent').slice(0,3))await cachedSteamBanner(game).catch(()=>{});},2500);
+  checkpointTimer=setInterval(checkpointPlaytime,60000);checkpointTimer.unref?.();
+  powerMonitor?.on?.('suspend',()=>{checkpointPlaytime();for(const clock of sessionClocks.values())clock.pause();activityTracker?.suspend();});
+  powerMonitor?.on?.('resume',()=>{for(const clock of sessionClocks.values())clock.resume();activityTracker?.resume();});
+  setTimeout(async()=>{if(!db||runningGameIds().length&&db.getSettings().performanceGuard)return;await repairMissingSteamCovers({limit:30}).catch(()=>{});if(db)for(const game of db.list('recent').slice(0,3))await cachedSteamBanner(game).catch(()=>{});},2500);
   if(db.getSettings().autoScan)setTimeout(async()=>{
     try{
       if(!db)return;
@@ -492,7 +521,10 @@ app.whenReady().then(async()=>{
 });
 app.on('before-quit',()=>{
   background.quit();
+  if(checkpointTimer)clearInterval(checkpointTimer);
+  if(guardTimer)clearTimeout(guardTimer);
+  checkpointPlaytime();
   activityTracker?.stop();activityTracker=null;
-  if(db){for(const session of sessions.values()){try{const started=db.db.prepare('SELECT started_at FROM sessions WHERE id=?').get(session);if(started)db.finishSession(session,Math.floor((Date.now()-Date.parse(started.started_at))/1000))}catch{}}db.close();db=null;}
+  if(db){for(const session of sessions.values()){try{const started=db.db.prepare('SELECT started_at FROM sessions WHERE id=?').get(session);if(started)db.finishSession(session,sessionClocks.get([...sessions].find(([,sid])=>sid===session)?.[0])?.seconds()||0)}catch{}}db.close();db=null;}
 });
 app.on('window-all-closed',()=>{if(process.platform!=='darwin'&&!tray)app.quit()});

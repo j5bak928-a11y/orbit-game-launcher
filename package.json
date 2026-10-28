@@ -49,6 +49,12 @@
       "target": [
         "nsis",
         "portable"
+      ],
+      "extraResources": [
+        {
+          "from": "assets/bin/orbit-process-list.exe",
+          "to": "bin/orbit-process-list.exe"
+        }
       ]
     },
     "mac": {

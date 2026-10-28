@@ -1,5 +1,6 @@
 'use strict';
 const path=require('node:path');
+const fs=require('node:fs');
 const {execFile}=require('node:child_process');
 const {promisify}=require('node:util');
 const execFileAsync=promisify(execFile);
@@ -36,7 +37,21 @@ function matchRunningGames(games, executables) {
  }
  return [...new Set(games.filter(game=>game&&found.has(game.id)).map(game=>game.id))];
 }
-async function listWindowsExecutables({run=execFileAsync}={}){
+function nativeInventoryPath(resourcesPath=process.resourcesPath){
+ return typeof resourcesPath==='string'&&path.isAbsolute(resourcesPath)?path.join(resourcesPath,'bin','orbit-process-list.exe'):null;
+}
+function parseNativeInventory(stdout){
+ if(typeof stdout!=='string')return [];
+ return stdout.split(/\r?\n/).map(s=>s.trim()).filter(s=>path.win32.isAbsolute(s)&&/\.exe$/i.test(s)).slice(0,10000);
+}
+async function listWindowsExecutables({run=execFileAsync,helperPath=nativeInventoryPath(),exists=fs.existsSync}={}){
+ if(helperPath&&exists(helperPath)){
+  try{
+   const {stdout}=await run(helperPath,[],{timeout:4500,maxBuffer:1024*1024,windowsHide:true});
+   const paths=parseNativeInventory(stdout);
+   if(paths.length)return paths;
+  }catch{} // Native helper may be unavailable after manual installs; retain safe fallback.
+ }
  const script='Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.EndsWith(".exe") } | Select-Object -ExpandProperty ExecutablePath | ConvertTo-Json -Compress';
  const encoded=Buffer.from(script,'utf16le').toString('base64');
  const {stdout}=await run('powershell.exe',['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',encoded],{timeout:9000,maxBuffer:512*1024,windowsHide:true});
@@ -105,4 +120,4 @@ class WindowsActivityTracker{
   this.active.clear();
  }
 }
-module.exports={WindowsActivityTracker,matchRunningGames,listWindowsExecutables};
+module.exports={WindowsActivityTracker,matchRunningGames,listWindowsExecutables,parseNativeInventory,nativeInventoryPath};

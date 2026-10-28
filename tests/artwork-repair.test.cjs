@@ -129,8 +129,8 @@ test('offline repair uses a portrait in an Epic game folder before online lookup
  fs.writeFileSync(path.join(dir,'cover.png'),bytes);f.game.install_path=dir;
  f.context.fixtureDb.getSettings=()=>({useSteamArtwork:false});
  await f.context.cachedSteamCover({...f.game});
- const local=await f.context.findLocalPortrait({...f.game},{validate:f.context.decodableArtwork});
- let save='';if(local)try{save=await f.context.saveArtwork(local)}catch(e){save=e.message}
+ const local=await vm.runInContext('findLocalPortrait({...fixtureDb.get()},{validate:decodableArtwork})',f.context);
+ let save='';if(local)try{save=await vm.runInContext('saveArtwork('+JSON.stringify(local)+')',f.context)}catch(e){save=e.message}
  assert.match(f.game.cover,/\.png$/,JSON.stringify({local,save,download:f.downloads()}));assert.equal(f.downloads(),0);
 });
 

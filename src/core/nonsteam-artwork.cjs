@@ -3,6 +3,7 @@ const fs=require('node:fs/promises');
 const path=require('node:path');
 const {isPortraitArtwork}=require('./cover-shape.cjs');
 const {readSmallJson}=require('./steam-search.cjs');
+const {cleanKey}=require('./game-identity.cjs');
 const MAX=5*1024*1024;
 async function findLocalPortrait(game,{validate=()=>true}={}){
  if(game.source==='steam')return null;
@@ -25,7 +26,7 @@ function epicIdentity(game){
   return {namespace:parts[0],id:parts[1]};
  }catch{return null;}
 }
-function trustedImage(url){try{const u=new URL(url);return u.protocol==='https:'&&!u.username&&!u.password&&!u.port&&/^(?:cdn1|cdn2)\.epicgames\.com$/i.test(u.hostname);}catch{return false;}}
+function trustedImage(url){try{const u=new URL(url);return u.protocol==='https:'&&!u.username&&!u.password&&!u.port&&/^(?:(?:cdn1|cdn2)\.epicgames\.com|cdn2\.unrealengine\.com)$/i.test(u.hostname);}catch{return false;}}
 async function imageBytes(response,validate){
  if(!response?.ok||!response.body||Number(response.headers.get('content-length')||0)>MAX)return null;
  const type=(response.headers.get('content-type')||'').split(';')[0].toLowerCase();
@@ -38,19 +39,37 @@ async function imageBytes(response,validate){
  return magic&&isPortraitArtwork(bytes)&&validate(bytes)?{bytes,ext}:null;
 }
 async function findEpicPortrait(game,{fetchImpl=globalThis.fetch,online=()=>true,validate=()=>true}={}){
- const identity=epicIdentity(game);if(!identity||!online())return null;
- const query='query OrbitItem($namespace:String!,$id:String!){Catalog{catalogItem(namespace:$namespace,id:$id,locale:"en-US"){id namespace keyImages{type url}}}}';
- const url='https://www.epicgames.com/graphql?'+new URLSearchParams({query,variables:JSON.stringify(identity)});
- try{
-  const response=await fetchImpl(url,{signal:AbortSignal.timeout(3500),redirect:'error'});
-  const data=await readSmallJson(response),item=data?.data?.Catalog?.catalogItem;
-  if(item?.id!==identity.id||item?.namespace!==identity.namespace||!Array.isArray(item.keyImages))return null;
-  for(const image of item.keyImages.slice(0,30)){
+ const identity=epicIdentity(game),title=typeof game.name==='string'?game.name.trim():'';
+ const key=cleanKey(title.replace(/[™℠®©]/g,''));
+ if(!online())return null;
+ const tryImages=async images=>{
+  if(!Array.isArray(images))return null;
+  for(const image of images.slice(0,30)){
    if(!online())return null;
    if(!['DieselGameBoxTall','OfferImageTall','Thumbnail'].includes(image?.type)||!trustedImage(image.url))continue;
-   try{const bytes=await imageBytes(await fetchImpl(image.url,{signal:AbortSignal.timeout(3500),redirect:'error'}),validate);if(bytes)return bytes;}catch{}
+   try{const result=await imageBytes(await fetchImpl(image.url,{signal:AbortSignal.timeout(3500),redirect:'error'}),validate);if(result)return result;}catch{}
   }
- }catch{}
- return null;
+  return null;
+ };
+ if(identity){
+  try{
+   const query='query OrbitItem($namespace:String!,$id:String!){Catalog{catalogItem(namespace:$namespace,id:$id,locale:"en-US"){id namespace keyImages{type url}}}}';
+   const url='https://www.epicgames.com/graphql?'+new URLSearchParams({query,variables:JSON.stringify(identity)});
+   const data=await readSmallJson(await fetchImpl(url,{signal:AbortSignal.timeout(3500),redirect:'error'}));
+   const item=data?.data?.Catalog?.catalogItem;
+   if(item&&(item.id!==identity.id||item.namespace!==identity.namespace))return null;
+   const result=await tryImages(item?.keyImages);if(result)return result;
+  }catch{}
+ }
+ if(!online()||key.length<4||title.length>140||/[\x00-\x1f]/.test(title))return null;
+ try{
+  const query='query OrbitSearch($keywords:String!){Catalog{searchStore(keywords:$keywords,country:"US",locale:"en-US",count:20,start:0){elements{title id namespace keyImages{type url}}}}}';
+  const url='https://store.epicgames.com/graphql?'+new URLSearchParams({query,variables:JSON.stringify({keywords:title})});
+  const data=await readSmallJson(await fetchImpl(url,{signal:AbortSignal.timeout(3500),redirect:'error'}));
+  const elements=data?.data?.Catalog?.searchStore?.elements;
+  if(!Array.isArray(elements))return null;
+  const matches=elements.slice(0,20).filter(item=>typeof item?.title==='string'&&cleanKey(item.title.replace(/[™℠®©]/g,''))===key);
+  return matches.length===1?await tryImages(matches[0].keyImages):null;
+ }catch{return null;}
 }
 module.exports={findLocalPortrait,findEpicPortrait};

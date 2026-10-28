@@ -34,7 +34,7 @@ const pendingLaunches=new Set();
 const artworkWork=new ArtworkWork();
 const iconWork=new ArtworkWork({concurrency:2});
 const artworkEditRevisions=new Map();
-const onlineArtwork=()=>!!db?.getSettings().useSteamArtwork && !(db?.getSettings().performanceGuard&&runningGameIds().length>0);
+const onlineArtwork=()=>{const settings=db?.getSettings();return !!settings?.useSteamArtwork&&!(settings.performanceGuard&&runningGameIds().length>0);};
 const artIdentity=game=>JSON.stringify([game.name,game.source,game.source_id,game.executable,game.install_path,game.launch_uri]);
 const artworkRevision=game=>artworkEditRevisions.get(game.id)||0;
 function currentArtworkGame(game,revision){
@@ -257,7 +257,7 @@ async function cachedSteamCover(game,{replaceLandscape=false,revision=artworkRev
     const local=await findLocalPortrait(game,{validate:decodableArtwork});
     if(local&&currentArtworkGame(game,revision))try{filename=await saveArtwork(local)}catch{}
     if(!filename&&game.source==='epic'&&onlineArtwork()&&currentArtworkGame(game,revision)){
-      filename=await artworkWork.run(`epic-cover:${JSON.stringify([game.source_id,game.launch_uri])}`,async needed=>{
+      filename=await artworkWork.run(`epic-cover:${JSON.stringify([game.source_id,game.launch_uri,game.name])}`,async needed=>{
         if(!onlineArtwork())return ArtworkWork.CANCELLED;
         let interrupted=false;
         const online=()=>{if(!onlineArtwork())interrupted=true;return onlineArtwork()&&needed();};

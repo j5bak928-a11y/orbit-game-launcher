@@ -17,6 +17,21 @@ npm start
 
 Use `npm run dev` to enable development tools. Windows 10/11, desktop Linux and modern macOS are intended targets; actual storefront integration still needs smoke testing on the target OS. See [verification and limits](docs/VERIFICATION-v0.10.0.md).
 
+## Review branch: performance, recovery and updates (unreleased)
+
+This branch is under review. Do **not** treat its features as a published release or as proof of native Windows performance improvement.
+
+- Windows installer builds compile a small native, read-only Win32 process inventory helper; Orbit uses it for game tracking when available, with its existing bounded PowerShell enumeration as a fallback. Polls adapt to activity (6 seconds around launches, 15 seconds for active sessions, 60 seconds while idle). External processes are still confirmed by installed path, not by filename alone.
+- Session checkpoints are batched once per minute. On startup Orbit closes orphaned sessions using the last checkpoint rather than claiming all time since a crash. Windows suspend ends detected sessions and pauses direct-session clocks; resume starts detection again. A crash can still lose up to one minute of uncheckpointed playtime.
+- Optional Performance Guard closes the renderer to the Windows tray once game startup is confirmed; the tracker keeps running. It does not alter game processes. If the tray is unavailable, Orbit remains visible.
+- Game covers have persisted Fill/Fit and Top/Center/Bottom choices; Library density can be Comfortable or Compact. UI typography and interaction affordances have been refined without introducing a framework.
+- Electron 45.1.0, restricted IPC sender validation, hardened Electron package fuses and production dependency audit improve baseline security. Windows releases now include a SHA-256 artifact manifest. The files must still be signed before being relied on for a public distribution.
+- The **Windows NSIS installer** uses electron-updater for automatic update checks and downloads, with explicit install when no game is running. Source builds and portable executables do not silently self-install updates. Installed releases require accessible `latest.yml`, installer and blockmap assets.
+  
+**Private GitHub release limitation:** Orbit's source repository is private. Automatic updates **will not work for external installed users** without an accessible public HTTPS feed or authenticated distribution service. No personal GitHub token is embedded. The packaged app defaults to checking its own GitHub Releases and reports an error when inaccessible; distributors can set `ORBIT_UPDATE_FEED_URL` to a trusted HTTPS generic update feed. Only published and accessible versioned metadata enables unattended checks.
+
+Native helper build on Windows: use an MSVC Developer PowerShell/Command Prompt with `cl.exe` available, compile `src/native/process-list.cpp` to `assets/bin/orbit-process-list.exe` (link Psapi.lib), then run `npm run dist:win`. GitHub's Windows workflow compiles the helper automatically before packaging.
+
 ## What's new in 0.2.1
 
 - A quieter charcoal interface, game-led dashboard, separate landscape hero artwork, compact continue-playing cards and readable portrait covers.

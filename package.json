@@ -1,6 +1,6 @@
 {
   "name": "orbit-game-launcher",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "Orbit — a fast, local-first desktop game launcher",
   "main": "src/main.cjs",
@@ -26,7 +26,7 @@
     "node": ">=22.13.0"
   },
   "devDependencies": {
-    "electron": "^38.0.0",
+    "electron": "45.1.0",
     "electron-builder": "^26.0.0",
     "playwright": "1.62.1"
   },
@@ -49,6 +49,12 @@
       "target": [
         "nsis",
         "portable"
+      ],
+      "extraResources": [
+        {
+          "from": "assets/bin/orbit-process-list.exe",
+          "to": "bin/orbit-process-list.exe"
+        }
       ]
     },
     "mac": {
@@ -70,6 +76,22 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
+    },
+    "electronFuses": {
+      "runAsNode": false,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "j5bak928-a11y",
+      "repo": "orbit-game-launcher",
+      "releaseType": "release"
     }
+  },
+  "dependencies": {
+    "electron-updater": "6.8.11"
   }
 }

@@ -19,6 +19,7 @@ on:
     branches:
       - main
       - feature/orbit-v1.1-upgrade
+      - feature/orbit-reliability-performance-updates
     paths:
       - "src/**"
       - "assets/**"

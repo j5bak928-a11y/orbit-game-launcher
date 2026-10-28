@@ -1,6 +1,6 @@
 {
   "name": "orbit-game-launcher",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "description": "Orbit — a fast, local-first desktop game launcher",
   "main": "src/main.cjs",
@@ -90,8 +90,5 @@
       "repo": "orbit-game-launcher",
       "releaseType": "release"
     }
-  },
-  "dependencies": {
-    "electron-updater": "6.8.11"
   }
 }

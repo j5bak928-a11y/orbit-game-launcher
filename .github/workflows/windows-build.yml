@@ -46,9 +46,9 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
-      - name: Compile the native Windows process inventory
+      - name: Set up MSVC for process inventory
         uses: ilammy/msvc-dev-cmd@v1
-      - name: Build native inventory helper
+      - name: Compile native process inventory
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path assets/bin | Out-Null
@@ -69,10 +69,14 @@ jobs:
         run: |
           $files = @(Get-ChildItem -Path release -Filter '*.exe')
           if ($files.Count -lt 2) { throw 'Expected both a Windows installer and portable EXE.' }
-      - name: Create SHA-256 artifact manifest
+      - name: Create SHA-256 manifest
         shell: pwsh
         run: |
-          $lines = Get-ChildItem release -File | Where-Object { $_.Name -match '\\.(exe|yml|blockmap)
+          $lines = Get-ChildItem release -File | Where-Object { $_.Name -match '\.(exe|yml|blockmap)$' } | ForEach-Object {
+            (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower() + '  ' + $_.Name
+          }
+          $lines | Set-Content -Encoding ascii release/SHA256SUMS.txt
+      - name: Upload reviewable Windows builds
         id: build_artifacts
         uses: actions/upload-artifact@v4
         continue-on-error: true
@@ -85,14 +89,14 @@ jobs:
             release/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
-      - name: Report unavailable Windows downloads
+      - name: Report unavailable downloads
         if: steps.build_artifacts.outcome == 'failure'
         shell: pwsh
         run: |
-          'The installer and portable EXE were built and verified, but their artifact upload failed. Inspect the upload log for the storage or network error; downloads are unavailable until upload succeeds.' >> $env:GITHUB_STEP_SUMMARY
+          'Windows build succeeded but artifact upload failed; inspect upload logs.' >> $env:GITHUB_STEP_SUMMARY
 
   release:
-    name: Publish requested Windows build
+    name: Publish requested Windows release
     if: github.event_name == 'workflow_dispatch' && inputs.publish_release
     needs: windows
     runs-on: windows-latest
@@ -105,107 +109,40 @@ jobs:
         with:
           name: Orbit-Windows-${{ github.sha }}
           path: release
-      - name: Set up Node.js for storage-independent release build
+      - name: Set up Node.js for fallback build
         if: needs.windows.outputs.artifact_uploaded != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
-      - name: Install dependencies for release fallback
+      - name: Install dependencies for fallback build
         if: needs.windows.outputs.artifact_uploaded != 'true'
         run: npm ci --no-audit --no-fund
-      - name: Initialize MSVC for release fallback
+      - name: Set up MSVC for fallback build
         if: needs.windows.outputs.artifact_uploaded != 'true'
         uses: ilammy/msvc-dev-cmd@v1
-      - name: Compile native tracker for release fallback
+      - name: Compile tracker for fallback build
         if: needs.windows.outputs.artifact_uploaded != 'true'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path assets/bin | Out-Null
           cl.exe /nologo /O2 /EHsc /std:c++17 /Fe:assets/bin/orbit-process-list.exe src/native/process-list.cpp /link Psapi.lib
           if ($LASTEXITCODE -ne 0) { throw 'Native tracker compilation failed' }
-      - name: Rebuild release without depending on artifact storage
+      - name: Rebuild release if artifact storage unavailable
         if: needs.windows.outputs.artifact_uploaded != 'true'
         run: npm run dist:win -- --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      - name: Create checksums for rebuilt release if missing
+      - name: Create checksums for fallback release
         shell: pwsh
         run: |
           if (!(Test-Path release/SHA256SUMS.txt)) {
-            $lines = Get-ChildItem release -File | Where-Object { $_.Name -match '\\.(exe|yml|blockmap)
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          $version = (Get-Content package.json | ConvertFrom-Json).version
-          $tag = "v$version"
-          $files = @(Get-ChildItem -Path release -File | Where-Object { $_.Name -match '\\.(exe|yml|blockmap) --title "Orbit $version" --notes "Windows installer and portable executable. Includes fullscreen controller navigation, game detection and artwork fixes. These builds are unsigned. Native detection and installed-game launches require a Windows smoke test." --latest --target $env:GITHUB_SHA
- } | ForEach-Object {
-            (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower() + '  ' + $_.Name
-          }
-          $lines | Set-Content -Encoding ascii release/SHA256SUMS.txt
-      - name: Keep reviewable Windows builds
-        id: build_artifacts
-        uses: actions/upload-artifact@v4
-        continue-on-error: true
-        with:
-          name: Orbit-Windows-${{ github.sha }}
-          path: release/*.exe
-          if-no-files-found: error
-          retention-days: 14
-      - name: Report unavailable Windows downloads
-        if: steps.build_artifacts.outcome == 'failure'
-        shell: pwsh
-        run: |
-          'The installer and portable EXE were built and verified, but their artifact upload failed. Inspect the upload log for the storage or network error; downloads are unavailable until upload succeeds.' >> $env:GITHUB_STEP_SUMMARY
-
-  release:
-    name: Publish requested Windows build
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
-    needs: windows
-    runs-on: windows-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        if: needs.windows.outputs.artifact_uploaded == 'true'
-        with:
-          name: Orbit-Windows-${{ github.sha }}
-          path: release
-      - name: Set up Node.js for storage-independent release build
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-      - name: Install dependencies for release fallback
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        run: npm ci --no-audit --no-fund
-      - name: Rebuild release without depending on artifact storage
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        run: npm run dist:win -- --publish never
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      - name: Attach executables to the release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          $version = (Get-Content package.json | ConvertFrom-Json).version
-          $tag = "v$version"
-          $files = @(Get-ChildItem -Path release -Filter '*.exe' | ForEach-Object { $_.FullName })
-          if ($files.Count -lt 2) { throw 'Expected both a Windows installer and portable EXE.' }
-          gh release create $tag @files --title "Orbit $version" --notes "Windows installer and portable executable. Includes fullscreen controller navigation, game detection and artwork fixes. These builds are unsigned. Native detection and installed-game launches require a Windows smoke test." --latest --target $env:GITHUB_SHA
- } | ForEach-Object {
+            $lines = Get-ChildItem release -File | Where-Object { $_.Name -match '\.(exe|yml|blockmap)$' } | ForEach-Object {
               (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower() + '  ' + $_.Name
             }
             $lines | Set-Content -Encoding ascii release/SHA256SUMS.txt
           }
-      - name: Attach executables to the release
+      - name: Attach installer and update metadata
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -213,466 +150,7 @@ jobs:
         run: |
           $version = (Get-Content package.json | ConvertFrom-Json).version
           $tag = "v$version"
-          $files = @(Get-ChildItem -Path release -Filter '*.exe' | ForEach-Object { $_.FullName })
-          if ($files.Count -lt 2) { throw 'Expected both a Windows installer and portable EXE.' }
-          gh release create $tag @files --title "Orbit $version" --notes "Windows installer and portable executable. Includes fullscreen controller navigation, game detection and artwork fixes. These builds are unsigned. Native detection and installed-game launches require a Windows smoke test." --latest --target $env:GITHUB_SHA
- } | ForEach-Object {
-            (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower() + '  ' + $_.Name
-          }
-          $lines | Set-Content -Encoding ascii release/SHA256SUMS.txt
-      - name: Keep reviewable Windows builds
-        id: build_artifacts
-        uses: actions/upload-artifact@v4
-        continue-on-error: true
-        with:
-          name: Orbit-Windows-${{ github.sha }}
-          path: release/*.exe
-          if-no-files-found: error
-          retention-days: 14
-      - name: Report unavailable Windows downloads
-        if: steps.build_artifacts.outcome == 'failure'
-        shell: pwsh
-        run: |
-          'The installer and portable EXE were built and verified, but their artifact upload failed. Inspect the upload log for the storage or network error; downloads are unavailable until upload succeeds.' >> $env:GITHUB_STEP_SUMMARY
-
-  release:
-    name: Publish requested Windows build
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
-    needs: windows
-    runs-on: windows-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        if: needs.windows.outputs.artifact_uploaded == 'true'
-        with:
-          name: Orbit-Windows-${{ github.sha }}
-          path: release
-      - name: Set up Node.js for storage-independent release build
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-      - name: Install dependencies for release fallback
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        run: npm ci --no-audit --no-fund
-      - name: Rebuild release without depending on artifact storage
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        run: npm run dist:win -- --publish never
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      - name: Attach executables to the release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          $version = (Get-Content package.json | ConvertFrom-Json).version
-          $tag = "v$version"
-          $files = @(Get-ChildItem -Path release -Filter '*.exe' | ForEach-Object { $_.FullName })
-          if ($files.Count -lt 2) { throw 'Expected both a Windows installer and portable EXE.' }
-          gh release create $tag @files --title "Orbit $version" --notes "Windows installer and portable executable. Includes fullscreen controller navigation, game detection and artwork fixes. These builds are unsigned. Native detection and installed-game launches require a Windows smoke test." --latest --target $env:GITHUB_SHA
- -or $_.Name -eq 'SHA256SUMS.txt' } | ForEach-Object { $_.FullName })
-          if (@($files | Where-Object { $_ -match '\\.exe --title "Orbit $version" --notes "Windows installer and portable executable. Includes fullscreen controller navigation, game detection and artwork fixes. These builds are unsigned. Native detection and installed-game launches require a Windows smoke test." --latest --target $env:GITHUB_SHA
- } | ForEach-Object {
-            (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower() + '  ' + $_.Name
-          }
-          $lines | Set-Content -Encoding ascii release/SHA256SUMS.txt
-      - name: Keep reviewable Windows builds
-        id: build_artifacts
-        uses: actions/upload-artifact@v4
-        continue-on-error: true
-        with:
-          name: Orbit-Windows-${{ github.sha }}
-          path: release/*.exe
-          if-no-files-found: error
-          retention-days: 14
-      - name: Report unavailable Windows downloads
-        if: steps.build_artifacts.outcome == 'failure'
-        shell: pwsh
-        run: |
-          'The installer and portable EXE were built and verified, but their artifact upload failed. Inspect the upload log for the storage or network error; downloads are unavailable until upload succeeds.' >> $env:GITHUB_STEP_SUMMARY
-
-  release:
-    name: Publish requested Windows build
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
-    needs: windows
-    runs-on: windows-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        if: needs.windows.outputs.artifact_uploaded == 'true'
-        with:
-          name: Orbit-Windows-${{ github.sha }}
-          path: release
-      - name: Set up Node.js for storage-independent release build
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-      - name: Install dependencies for release fallback
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        run: npm ci --no-audit --no-fund
-      - name: Rebuild release without depending on artifact storage
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        run: npm run dist:win -- --publish never
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      - name: Attach executables to the release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          $version = (Get-Content package.json | ConvertFrom-Json).version
-          $tag = "v$version"
-          $files = @(Get-ChildItem -Path release -Filter '*.exe' | ForEach-Object { $_.FullName })
-          if ($files.Count -lt 2) { throw 'Expected both a Windows installer and portable EXE.' }
-          gh release create $tag @files --title "Orbit $version" --notes "Windows installer and portable executable. Includes fullscreen controller navigation, game detection and artwork fixes. These builds are unsigned. Native detection and installed-game launches require a Windows smoke test." --latest --target $env:GITHUB_SHA
- } | ForEach-Object {
-              (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower() + '  ' + $_.Name
-            }
-            $lines | Set-Content -Encoding ascii release/SHA256SUMS.txt
-          }
-      - name: Attach executables to the release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          $version = (Get-Content package.json | ConvertFrom-Json).version
-          $tag = "v$version"
-          $files = @(Get-ChildItem -Path release -Filter '*.exe' | ForEach-Object { $_.FullName })
-          if ($files.Count -lt 2) { throw 'Expected both a Windows installer and portable EXE.' }
-          gh release create $tag @files --title "Orbit $version" --notes "Windows installer and portable executable. Includes fullscreen controller navigation, game detection and artwork fixes. These builds are unsigned. Native detection and installed-game launches require a Windows smoke test." --latest --target $env:GITHUB_SHA
- } | ForEach-Object {
-            (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower() + '  ' + $_.Name
-          }
-          $lines | Set-Content -Encoding ascii release/SHA256SUMS.txt
-      - name: Keep reviewable Windows builds
-        id: build_artifacts
-        uses: actions/upload-artifact@v4
-        continue-on-error: true
-        with:
-          name: Orbit-Windows-${{ github.sha }}
-          path: release/*.exe
-          if-no-files-found: error
-          retention-days: 14
-      - name: Report unavailable Windows downloads
-        if: steps.build_artifacts.outcome == 'failure'
-        shell: pwsh
-        run: |
-          'The installer and portable EXE were built and verified, but their artifact upload failed. Inspect the upload log for the storage or network error; downloads are unavailable until upload succeeds.' >> $env:GITHUB_STEP_SUMMARY
-
-  release:
-    name: Publish requested Windows build
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
-    needs: windows
-    runs-on: windows-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        if: needs.windows.outputs.artifact_uploaded == 'true'
-        with:
-          name: Orbit-Windows-${{ github.sha }}
-          path: release
-      - name: Set up Node.js for storage-independent release build
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-      - name: Install dependencies for release fallback
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        run: npm ci --no-audit --no-fund
-      - name: Rebuild release without depending on artifact storage
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        run: npm run dist:win -- --publish never
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      - name: Attach executables to the release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          $version = (Get-Content package.json | ConvertFrom-Json).version
-          $tag = "v$version"
-          $files = @(Get-ChildItem -Path release -Filter '*.exe' | ForEach-Object { $_.FullName })
-          if ($files.Count -lt 2) { throw 'Expected both a Windows installer and portable EXE.' }
-          gh release create $tag @files --title "Orbit $version" --notes "Windows installer and portable executable. Includes fullscreen controller navigation, game detection and artwork fixes. These builds are unsigned. Native detection and installed-game launches require a Windows smoke test." --latest --target $env:GITHUB_SHA
- }).Count -lt 2) { throw 'Expected both a Windows installer and portable EXE.' }
-          if (-not ($files | Where-Object { $_ -match 'latest\\.yml --title "Orbit $version" --notes "Windows installer and portable executable. Includes fullscreen controller navigation, game detection and artwork fixes. These builds are unsigned. Native detection and installed-game launches require a Windows smoke test." --latest --target $env:GITHUB_SHA
- } | ForEach-Object {
-            (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower() + '  ' + $_.Name
-          }
-          $lines | Set-Content -Encoding ascii release/SHA256SUMS.txt
-      - name: Keep reviewable Windows builds
-        id: build_artifacts
-        uses: actions/upload-artifact@v4
-        continue-on-error: true
-        with:
-          name: Orbit-Windows-${{ github.sha }}
-          path: release/*.exe
-          if-no-files-found: error
-          retention-days: 14
-      - name: Report unavailable Windows downloads
-        if: steps.build_artifacts.outcome == 'failure'
-        shell: pwsh
-        run: |
-          'The installer and portable EXE were built and verified, but their artifact upload failed. Inspect the upload log for the storage or network error; downloads are unavailable until upload succeeds.' >> $env:GITHUB_STEP_SUMMARY
-
-  release:
-    name: Publish requested Windows build
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
-    needs: windows
-    runs-on: windows-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        if: needs.windows.outputs.artifact_uploaded == 'true'
-        with:
-          name: Orbit-Windows-${{ github.sha }}
-          path: release
-      - name: Set up Node.js for storage-independent release build
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-      - name: Install dependencies for release fallback
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        run: npm ci --no-audit --no-fund
-      - name: Rebuild release without depending on artifact storage
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        run: npm run dist:win -- --publish never
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      - name: Attach executables to the release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          $version = (Get-Content package.json | ConvertFrom-Json).version
-          $tag = "v$version"
-          $files = @(Get-ChildItem -Path release -Filter '*.exe' | ForEach-Object { $_.FullName })
-          if ($files.Count -lt 2) { throw 'Expected both a Windows installer and portable EXE.' }
-          gh release create $tag @files --title "Orbit $version" --notes "Windows installer and portable executable. Includes fullscreen controller navigation, game detection and artwork fixes. These builds are unsigned. Native detection and installed-game launches require a Windows smoke test." --latest --target $env:GITHUB_SHA
- } | ForEach-Object {
-              (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower() + '  ' + $_.Name
-            }
-            $lines | Set-Content -Encoding ascii release/SHA256SUMS.txt
-          }
-      - name: Attach executables to the release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          $version = (Get-Content package.json | ConvertFrom-Json).version
-          $tag = "v$version"
-          $files = @(Get-ChildItem -Path release -Filter '*.exe' | ForEach-Object { $_.FullName })
-          if ($files.Count -lt 2) { throw 'Expected both a Windows installer and portable EXE.' }
-          gh release create $tag @files --title "Orbit $version" --notes "Windows installer and portable executable. Includes fullscreen controller navigation, game detection and artwork fixes. These builds are unsigned. Native detection and installed-game launches require a Windows smoke test." --latest --target $env:GITHUB_SHA
- } | ForEach-Object {
-            (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower() + '  ' + $_.Name
-          }
-          $lines | Set-Content -Encoding ascii release/SHA256SUMS.txt
-      - name: Keep reviewable Windows builds
-        id: build_artifacts
-        uses: actions/upload-artifact@v4
-        continue-on-error: true
-        with:
-          name: Orbit-Windows-${{ github.sha }}
-          path: release/*.exe
-          if-no-files-found: error
-          retention-days: 14
-      - name: Report unavailable Windows downloads
-        if: steps.build_artifacts.outcome == 'failure'
-        shell: pwsh
-        run: |
-          'The installer and portable EXE were built and verified, but their artifact upload failed. Inspect the upload log for the storage or network error; downloads are unavailable until upload succeeds.' >> $env:GITHUB_STEP_SUMMARY
-
-  release:
-    name: Publish requested Windows build
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
-    needs: windows
-    runs-on: windows-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        if: needs.windows.outputs.artifact_uploaded == 'true'
-        with:
-          name: Orbit-Windows-${{ github.sha }}
-          path: release
-      - name: Set up Node.js for storage-independent release build
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-      - name: Install dependencies for release fallback
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        run: npm ci --no-audit --no-fund
-      - name: Rebuild release without depending on artifact storage
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        run: npm run dist:win -- --publish never
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      - name: Attach executables to the release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          $version = (Get-Content package.json | ConvertFrom-Json).version
-          $tag = "v$version"
-          $files = @(Get-ChildItem -Path release -Filter '*.exe' | ForEach-Object { $_.FullName })
-          if ($files.Count -lt 2) { throw 'Expected both a Windows installer and portable EXE.' }
-          gh release create $tag @files --title "Orbit $version" --notes "Windows installer and portable executable. Includes fullscreen controller navigation, game detection and artwork fixes. These builds are unsigned. Native detection and installed-game launches require a Windows smoke test." --latest --target $env:GITHUB_SHA
- })) { throw 'Missing updater metadata latest.yml.' }
-          gh release create $tag @files --title "Orbit $version" --notes "Windows installer and portable executable. Includes fullscreen controller navigation, game detection and artwork fixes. These builds are unsigned. Native detection and installed-game launches require a Windows smoke test." --latest --target $env:GITHUB_SHA
- } | ForEach-Object {
-            (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower() + '  ' + $_.Name
-          }
-          $lines | Set-Content -Encoding ascii release/SHA256SUMS.txt
-      - name: Keep reviewable Windows builds
-        id: build_artifacts
-        uses: actions/upload-artifact@v4
-        continue-on-error: true
-        with:
-          name: Orbit-Windows-${{ github.sha }}
-          path: release/*.exe
-          if-no-files-found: error
-          retention-days: 14
-      - name: Report unavailable Windows downloads
-        if: steps.build_artifacts.outcome == 'failure'
-        shell: pwsh
-        run: |
-          'The installer and portable EXE were built and verified, but their artifact upload failed. Inspect the upload log for the storage or network error; downloads are unavailable until upload succeeds.' >> $env:GITHUB_STEP_SUMMARY
-
-  release:
-    name: Publish requested Windows build
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
-    needs: windows
-    runs-on: windows-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        if: needs.windows.outputs.artifact_uploaded == 'true'
-        with:
-          name: Orbit-Windows-${{ github.sha }}
-          path: release
-      - name: Set up Node.js for storage-independent release build
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-      - name: Install dependencies for release fallback
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        run: npm ci --no-audit --no-fund
-      - name: Rebuild release without depending on artifact storage
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        run: npm run dist:win -- --publish never
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      - name: Attach executables to the release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          $version = (Get-Content package.json | ConvertFrom-Json).version
-          $tag = "v$version"
-          $files = @(Get-ChildItem -Path release -Filter '*.exe' | ForEach-Object { $_.FullName })
-          if ($files.Count -lt 2) { throw 'Expected both a Windows installer and portable EXE.' }
-          gh release create $tag @files --title "Orbit $version" --notes "Windows installer and portable executable. Includes fullscreen controller navigation, game detection and artwork fixes. These builds are unsigned. Native detection and installed-game launches require a Windows smoke test." --latest --target $env:GITHUB_SHA
- } | ForEach-Object {
-              (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower() + '  ' + $_.Name
-            }
-            $lines | Set-Content -Encoding ascii release/SHA256SUMS.txt
-          }
-      - name: Attach executables to the release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          $version = (Get-Content package.json | ConvertFrom-Json).version
-          $tag = "v$version"
-          $files = @(Get-ChildItem -Path release -Filter '*.exe' | ForEach-Object { $_.FullName })
-          if ($files.Count -lt 2) { throw 'Expected both a Windows installer and portable EXE.' }
-          gh release create $tag @files --title "Orbit $version" --notes "Windows installer and portable executable. Includes fullscreen controller navigation, game detection and artwork fixes. These builds are unsigned. Native detection and installed-game launches require a Windows smoke test." --latest --target $env:GITHUB_SHA
- } | ForEach-Object {
-            (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower() + '  ' + $_.Name
-          }
-          $lines | Set-Content -Encoding ascii release/SHA256SUMS.txt
-      - name: Keep reviewable Windows builds
-        id: build_artifacts
-        uses: actions/upload-artifact@v4
-        continue-on-error: true
-        with:
-          name: Orbit-Windows-${{ github.sha }}
-          path: release/*.exe
-          if-no-files-found: error
-          retention-days: 14
-      - name: Report unavailable Windows downloads
-        if: steps.build_artifacts.outcome == 'failure'
-        shell: pwsh
-        run: |
-          'The installer and portable EXE were built and verified, but their artifact upload failed. Inspect the upload log for the storage or network error; downloads are unavailable until upload succeeds.' >> $env:GITHUB_STEP_SUMMARY
-
-  release:
-    name: Publish requested Windows build
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
-    needs: windows
-    runs-on: windows-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        if: needs.windows.outputs.artifact_uploaded == 'true'
-        with:
-          name: Orbit-Windows-${{ github.sha }}
-          path: release
-      - name: Set up Node.js for storage-independent release build
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-      - name: Install dependencies for release fallback
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        run: npm ci --no-audit --no-fund
-      - name: Rebuild release without depending on artifact storage
-        if: needs.windows.outputs.artifact_uploaded != 'true'
-        run: npm run dist:win -- --publish never
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      - name: Attach executables to the release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          $version = (Get-Content package.json | ConvertFrom-Json).version
-          $tag = "v$version"
-          $files = @(Get-ChildItem -Path release -Filter '*.exe' | ForEach-Object { $_.FullName })
-          if ($files.Count -lt 2) { throw 'Expected both a Windows installer and portable EXE.' }
-          gh release create $tag @files --title "Orbit $version" --notes "Windows installer and portable executable. Includes fullscreen controller navigation, game detection and artwork fixes. These builds are unsigned. Native detection and installed-game launches require a Windows smoke test." --latest --target $env:GITHUB_SHA
+          $files = @(Get-ChildItem release -File | Where-Object { $_.Name -match '\.(exe|yml|blockmap)$' -or $_.Name -eq 'SHA256SUMS.txt' } | ForEach-Object { $_.FullName })
+          if (@($files | Where-Object { $_ -match '\.exe$' }).Count -lt 2) { throw 'Expected installer and portable EXE' }
+          if (-not ($files | Where-Object { $_ -match 'latest\.yml$' })) { throw 'Missing latest.yml update manifest' }
+          gh release create $tag @files --title "Orbit $version" --notes "Windows installer and portable executable. Unsigned builds; real Windows smoke tests and signing remain required." --latest --target $env:GITHUB_SHA

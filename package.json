@@ -1,6 +1,6 @@
 {
   "name": "orbit-game-launcher",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "Orbit — a fast, local-first desktop game launcher",
   "main": "src/main.cjs",

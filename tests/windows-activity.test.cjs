@@ -11,6 +11,27 @@ test('Windows monitoring maps game processes to storefront install folders',()=>
  assert.deepEqual(matchRunningGames(games,['C:\\Epic Games\\rocketleague\\unins000.exe',
  'C:\\Epic Games\\rocketleague2\\RocketLeague.exe']),[]);
 });
+test('matches exact executables for linked games without treating shared folders as games',()=>{
+ const list=[{id:'manual',source:'manual',executable:'C:\\Games\\My Game.exe',install_path:''},{id:'other',source:'gog',executable:'C:\\Games\\Other.exe',install_path:'C:\\Games'}];
+ assert.deepEqual(matchRunningGames(list,['c:\\games\\my game.exe']),['manual']);
+});
+test('matches a linked game launched by a wrapper using its dedicated installation folder',()=>{
+ const list=[{id:'epic',source:'epic',launch_uri:'com.epicgames.launcher://apps/1',executable:'D:\\Games\\Example\\Launcher.exe',install_path:'D:\\Games\\Example'}];
+ assert.deepEqual(matchRunningGames(list,['D:\\Games\\Example\\Bin\\Game.exe']),['epic']);
+});
+test('does not attribute a shared installation folder to multiple linked games',()=>{
+ const list=[{id:'one',source:'gog',launch_uri:'goggalaxy://openGame/1',install_path:'D:\\Games\\Shared'},{id:'two',source:'manual',launch_uri:'steam://rungameid/2',install_path:'D:\\Games\\Shared'}];
+ assert.deepEqual(matchRunningGames(list,['D:\\Games\\Shared\\Game.exe']),[]);
+});
+test('does not infer a non-storefront game from a broad folder alone',()=>{
+ const list=[{id:'one',source:'gog',launch_uri:'goggalaxy://openGame/1',install_path:'D:\\GOG Games'}];
+ assert.deepEqual(matchRunningGames(list,['D:\\GOG Games\\Other\\Game.exe']),[]);
+});
+test('does not count the confirmation delay after a monitored process exits',async()=>{
+ let clock=1000,running=true,finish=[];
+ const t=new WindowsActivityTracker({listGames:()=>games,isDirectSession:()=>false,start:id=>id,finish:(_id,seconds)=>finish.push(seconds),enumerate:async()=>running?['D:\\SteamLibrary\\steamapps\\common\\EA SPORTS FC 27\\FC27.exe']:[],now:()=>clock});
+ await t.poll();clock=61000;running=false;await t.poll();clock=76000;await t.poll();assert.deepEqual(finish,[60]);
+});
 test('a monitored session starts once and finishes after two misses',async()=>{
  let running=true,clock=1000;const starts=[],ends=[];
  const tracker=new WindowsActivityTracker({
@@ -33,7 +54,7 @@ test('matching retains library order, duplicate IDs and nested installation sema
   {id:'manual',source:'manual',install_path:'D:\\Games\\Outer'},
  ];
  const processes = ['D:/GAMES/Outer/Inner/Bin/Game.exe', 'd:\\Games\\Outer\\Inner\\Bin\\Game.exe'];
- assert.deepEqual(matchRunningGames(nested, processes), ['inner','outer']);
+ assert.deepEqual(matchRunningGames(nested, processes), ['inner']);
 });
 
 test('matching handles UNC roots while rejecting sibling and relative paths', () => {
@@ -44,7 +65,7 @@ test('matching handles UNC roots while rejecting sibling and relative paths', ()
   {id:'relative',source:'steam',install_path:'Games\\One'},
   {id:'drive-root',source:'steam',install_path:'D:\\'},
  ];
- assert.deepEqual(matchRunningGames(library, ['\\\\SERVER\\SHARE\\Games\\One\\Bin\\GAME.exe']), ['share','game']);
+ assert.deepEqual(matchRunningGames(library, ['\\\\SERVER\\SHARE\\Games\\One\\Bin\\GAME.exe']), ['game']);
  assert.deepEqual(matchRunningGames(library, ['Games\\One\\Game.exe']), []);
 });
 

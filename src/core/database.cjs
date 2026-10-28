@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
   }
   list(sort='name'){const order=Object.hasOwn(SORTS,sort)?SORTS[sort]:SORTS.name;return this.db.prepare(`SELECT ${COLUMNS.join(',')} FROM games ORDER BY ${order}`).all().map(deserialize);}
   listActivityGames(){
-    this.activityList ??= this.db.prepare("SELECT id,source,install_path FROM games WHERE source IN ('steam','epic') AND install_path != ''");
+    this.activityList ??= this.db.prepare("SELECT id,source,install_path,executable,launch_uri FROM games WHERE executable != '' OR (install_path != '' AND (source IN ('steam','epic') OR launch_uri != ''))");
     return this.activityList.all();
   }
   get(id){return deserialize(this.db.prepare(`SELECT ${COLUMNS.join(',')} FROM games WHERE id=?`).get(id));}

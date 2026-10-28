@@ -44,3 +44,19 @@ body[data-reduce-motion=true] *,body[data-reduce-motion=true] *:before,body[data
 
 .detail-playtime{display:grid;gap:7px;margin:18px 0;padding:14px 16px;border:1px solid rgba(var(--accent-rgb),.22);border-radius:10px;background:linear-gradient(120deg,rgba(var(--accent-rgb),.09),transparent 80%)}
 .detail-playtime-label{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:10px;letter-spacing:.08em;font-weight:700}.detail-playtime-value{font-size:19px;color:var(--text);letter-spacing:-.02em}.detail-playtime-caption{color:var(--muted);font-size:11px}.detail-live{margin-left:auto;color:var(--accent);letter-spacing:normal;font-size:10px}
+
+/* Orbit 0.2.x refinements: visual hierarchy without extra GPU effects. */
+body[data-density=compact]{--card-min:138px;--grid-gap:14px;--card-label-height:52px;--list-row-height:67px}
+.cover-image.fit-contain{object-fit:contain;background:var(--panel3)}
+.cover-image.position-top{object-position:center top}
+.cover-image.position-center{object-position:center center}
+.cover-image.position-bottom{object-position:center bottom}
+.game-name,.continue-copy strong{font-size:12px;line-height:1.45}
+.game-meta,.continue-copy>span,.game-row p{font-size:11px;line-height:1.4}
+.setting-help,.detail-note,.detail-playtime-caption{font-size:12px;line-height:1.55}
+.detail-actions .primary-btn{min-height:44px;padding-inline:25px}
+.dialog .secondary-btn,.dialog .danger-btn{min-height:38px}
+button:focus-visible,[role=button]:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+@media(pointer:coarse){.game-card .cover-play,.favorite-float{opacity:1;transform:none}.top-icon,.primary-btn,.secondary-btn,.nav-item{min-height:40px}}
+@media(prefers-reduced-motion:reduce){.game-card:hover .cover,.continue-card:hover{transform:none!important}}
+body[data-reduce-motion=true] .game-card:hover .cover,body[data-reduce-motion=true] .continue-card:hover{transform:none!important}

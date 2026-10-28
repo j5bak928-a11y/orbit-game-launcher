@@ -494,4 +494,4 @@ app.on('before-quit',()=>{
   activityTracker?.stop();activityTracker=null;
   if(db){for(const session of sessions.values()){try{const started=db.db.prepare('SELECT started_at FROM sessions WHERE id=?').get(session);if(started)db.finishSession(session,Math.floor((Date.now()-Date.parse(started.started_at))/1000))}catch{}}db.close();db=null;}
 });
-app.on('window-all-closed',()=>{if(process.platform!=='darwin')app.quit()});
+app.on('window-all-closed',()=>{if(process.platform!=='darwin'&&!tray)app.quit()});

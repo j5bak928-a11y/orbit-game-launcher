@@ -123,6 +123,38 @@ const settle=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
    if(await icon.evaluate(node=>getComputedStyle(node).display)!=='none')reviewFailures.push('failed list icons must hide so the letter fallback remains visible');
    await fixture.close();
   }
+  {
+   const fixture=await fixturePage(1);
+   await fixture.evaluate(()=>{
+    window.coverSearch={};
+    window.orbit.findOnlineCover=title=>{window.coverSearch.title=title;return new Promise(resolve=>{window.coverSearch.resolve=resolve});};
+    window.orbit.chooseArtwork=async()=> '22222222-2222-4222-8222-222222222222.png';
+   });
+   await fixture.locator('header [data-action=add]').click();
+   await fixture.locator('#game-name').fill('My game');
+   await fixture.locator('#game-executable').fill('C:/Games/Game.exe');
+   await fixture.locator('#cover-search-title').fill('Fortnite');
+   await fixture.locator('#cover-search-title').press('Enter');
+   assert.equal(await fixture.evaluate(()=>window.coverSearch.title),'Fortnite');
+   assert.equal(await fixture.locator('#game-form').count(),1,'Enter must search without saving the editor');
+   await fixture.locator('[data-action=choose-art][data-key=cover]').click();
+   await fixture.evaluate(()=>window.coverSearch.resolve({cover:'11111111-1111-4111-8111-111111111111.png',message:'Cover found on Epic Games.'}));
+   await fixture.waitForFunction(()=>document.querySelector('#cover-search-status')?.textContent.includes('Cover changed while searching; your selection was kept.'));
+   assert.equal(await fixture.locator('#game-cover').inputValue(),'22222222-2222-4222-8222-222222222222.png');
+   await fixture.locator('[data-action=find-online-art]').click();
+   await fixture.evaluate(()=>window.coverSearch.resolve({cover:'11111111-1111-4111-8111-111111111111.png',message:'Cover found on Epic Games.'}));
+   await fixture.waitForFunction(()=>document.querySelector('#cover-search-status')?.textContent.includes('Cover found on Epic Games.'));
+   assert.equal(await fixture.locator('#game-name').inputValue(),'My game');
+   assert.equal(await fixture.locator('#game-cover').inputValue(),'11111111-1111-4111-8111-111111111111.png');
+   await fixture.locator('#game-executable').fill('C:/Games/Game.exe');
+   await fixture.locator('#game-form [type=submit]').click();
+   await fixture.locator('#game-form').waitFor({state:'detached'});
+   const game=await fixture.evaluate(async()=>(await window.orbit.listGames()).find(item=>item.name==='My game'));
+   assert.equal(game.cover,'11111111-1111-4111-8111-111111111111.png');
+   assert.equal(game.name,'My game');
+   assert(!Object.hasOwn(game,'cover-search-title'));
+   await fixture.close();
+  }
   assert.deepEqual(reviewFailures,[],'interface review regressions');
   assert.deepEqual(errors,[]);
   const report={browser:browser.version(),libraryGames:5000,gridPositions:measurements.length,listBottoms:7,errors,measurements};

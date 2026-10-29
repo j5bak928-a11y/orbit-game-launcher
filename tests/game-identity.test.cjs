@@ -61,3 +61,11 @@ test('Modern Warfare 4 resolves to its own Steam artwork ID, not Call of Duty 4'
  assert.equal(catalogMatch('Call of Duty Modern Warfare 4')?.steamId,'4435490');
  assert.notEqual(catalogMatch('Call of Duty 4 Modern Warfare')?.steamId,'4435490');
 });
+
+test('the Modern Warfare 4 executable and specific short title identify its artwork',()=>{
+ const executable=identifyGame('/games/Call of Duty/cod26-cod.exe');
+ assert.equal(executable.name,'Call of Duty: Modern Warfare 4');
+ assert.equal(executable.steamId,'4435490');
+ assert.equal(identifyGame('/games/Modern Warfare 4.exe').steamId,'4435490');
+ assert.equal(identifyGame('/games/cod.exe').steamId,'');
+});

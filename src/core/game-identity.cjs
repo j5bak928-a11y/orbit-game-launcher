@@ -8,7 +8,7 @@ const {promisify} = require('node:util');
 const execFileAsync = promisify(execFile);
 
 const CATALOG = [
-  {name:'Call of Duty: Modern Warfare 4',steamId:'4435490',aliases:['callofdutymodernwarfare4']},
+  {name:'Call of Duty: Modern Warfare 4',steamId:'4435490',aliases:['callofdutymodernwarfare4','modernwarfare4','codmodernwarfare4','codmw4','cod26cod']},
   {name:'Hearts of Iron IV',steamId:'394360',aliases:['hoi4','heartsofiron4','heartsofironiv']},
   {name:'Europa Universalis IV',steamId:'236850',aliases:['eu4','europauniversalis4','europauniversalisiv']},
   {name:'Crusader Kings III',steamId:'1151640',aliases:['ck3','crusaderkings3','crusaderkingsiii']},

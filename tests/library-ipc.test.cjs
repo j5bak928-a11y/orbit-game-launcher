@@ -76,6 +76,13 @@ const waitUntil=async(predicate,timeout=4000)=>{
  return false;
 };
 
+test('numeric build metadata displays consistently as a four-part release version',async t=>{
+ const f=fixture(t);
+ vm.runInContext("require('electron').app.getVersion=()=> '0.2.4+1';",f.context);
+ assert.equal((await f.invoke('bootstrap')).version,'0.2.4.1');
+ assert.equal((await f.invoke('getAppInfo')).version,'0.2.4.1');
+});
+
 test('linked launch checks for a game process after releasing the pending launch',async t=>{
  const f=fixture(t,{platform:'win32'});
  const game=f.database.upsert({name:'Linked game',source:'steam',source_id:'123',install_path:'C:\\Games\\Game',launch_uri:'steam://rungameid/123'}).game;

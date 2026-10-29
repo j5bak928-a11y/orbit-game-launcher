@@ -132,9 +132,11 @@ const settle=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
    });
    await fixture.locator('header [data-action=add]').click();
    await fixture.locator('#game-name').fill('My game');
+   await fixture.locator('#game-executable').fill('C:/Games/Game.exe');
    await fixture.locator('#cover-search-title').fill('Fortnite');
-   await fixture.locator('[data-action=find-online-art]').click();
+   await fixture.locator('#cover-search-title').press('Enter');
    assert.equal(await fixture.evaluate(()=>window.coverSearch.title),'Fortnite');
+   assert.equal(await fixture.locator('#game-form').count(),1,'Enter must search without saving the editor');
    await fixture.locator('[data-action=choose-art][data-key=cover]').click();
    await fixture.evaluate(()=>window.coverSearch.resolve({cover:'11111111-1111-4111-8111-111111111111.png',message:'Cover found on Epic Games.'}));
    await fixture.waitForFunction(()=>document.querySelector('#cover-search-status')?.textContent.includes('Cover changed while searching; your selection was kept.'));

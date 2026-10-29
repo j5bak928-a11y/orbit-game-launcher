@@ -206,9 +206,9 @@ async def run():
         # name is unrecognizable. This must not require a store account.
         await page.get_by_role('button',name='Add game').first.click()
         await page.locator('#game-name').fill('Celeste')
-        await page.get_by_role('button',name='Find online cover by title').click()
+        await page.get_by_role('button',name='Search',exact=True).click()
         await page.wait_for_function('document.querySelector("#game-cover")?.value.endsWith(".jpg")')
-        assert 'Cover found on Steam' in await page.locator('#game-detection-status').inner_text()
+        assert 'Cover found on Steam' in await page.locator('#cover-search-status').inner_text()
         await page.get_by_role('button',name='Cancel').click()
         await page.get_by_role('button',name='Add game').first.click()
         await page.locator('#game-name').fill('Local Demo')

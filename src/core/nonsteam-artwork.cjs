@@ -5,6 +5,9 @@ const {isPortraitArtwork}=require('./cover-shape.cjs');
 const {readSmallJson}=require('./steam-search.cjs');
 const {cleanKey}=require('./game-identity.cjs');
 const MAX=5*1024*1024;
+// Last-resort official asset for the installed Fortnite app. Store metadata is
+// preferred so it can follow newer artwork; this image may eventually expire.
+const FORTNITE_PORTRAIT='https://cdn1.epicgames.com/item/fn/FNBR_42-30_Fortnitemares_KeyArt_Fortnitemares_EGS_Launcher_Blade_1200x1600_1200x1600-af4593ae7f114b21aa0dc08449063141';
 async function findLocalPortrait(game,{validate=()=>true}={}){
  if(game.source==='steam')return null;
  const dirs=[];
@@ -57,19 +60,27 @@ async function findEpicPortrait(game,{fetchImpl=globalThis.fetch,online=()=>true
    const url='https://www.epicgames.com/graphql?'+new URLSearchParams({query,variables:JSON.stringify(identity)});
    const data=await readSmallJson(await fetchImpl(url,{signal:AbortSignal.timeout(3500),redirect:'error'}));
    const item=data?.data?.Catalog?.catalogItem;
-   if(item&&(item.id!==identity.id||item.namespace!==identity.namespace))return null;
-   const result=await tryImages(item?.keyImages);if(result)return result;
+   // Never trust images from a mismatched identity. A separate exact-title
+   // search can still find the correct storefront offer.
+   if(item&&item.id===identity.id&&item.namespace===identity.namespace){
+    const result=await tryImages(item.keyImages);if(result)return result;
+   }
   }catch{}
  }
- if(!online()||key.length<4||title.length>140||Array.from(title).some(c=>c.charCodeAt(0)<32))return null;
- try{
+ const usableTitle=key.length>=4&&title.length<=140&&!Array.from(title).some(c=>c.charCodeAt(0)<32);
+ if(online()&&usableTitle)try{
   const query='query OrbitSearch($keywords:String!){Catalog{searchStore(keywords:$keywords,country:"US",locale:"en-US",count:20,start:0){elements{title id namespace keyImages{type url}}}}}';
   const url='https://store.epicgames.com/graphql?'+new URLSearchParams({query,variables:JSON.stringify({keywords:title})});
   const data=await readSmallJson(await fetchImpl(url,{signal:AbortSignal.timeout(3500),redirect:'error'}));
   const elements=data?.data?.Catalog?.searchStore?.elements;
-  if(!Array.isArray(elements))return null;
-  const matches=elements.slice(0,20).filter(item=>typeof item?.title==='string'&&cleanKey(item.title.replace(/[™℠®©]/g,''))===key);
-  return matches.length===1?await tryImages(matches[0].keyImages):null;
- }catch{return null;}
+  if(Array.isArray(elements)){
+   const matches=elements.slice(0,20).filter(item=>typeof item?.title==='string'&&cleanKey(item.title.replace(/[™℠®©]/g,''))===key);
+   if(matches.length===1){const result=await tryImages(matches[0].keyImages);if(result)return result;}
+  }
+ }catch{}
+ if(game.source==='epic'&&(key==='fortnite'||String(game.source_id||'').toLowerCase()==='fortnite')){
+  return tryImages([{type:'DieselGameBoxTall',url:FORTNITE_PORTRAIT}]);
+ }
+ return null;
 }
 module.exports={findLocalPortrait,findEpicPortrait};

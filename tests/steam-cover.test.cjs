@@ -12,6 +12,13 @@ const meta={appid:8765,assets:{asset_url_format:`steam/apps/8765/\${FILENAME}?t=
 const json=body=>new Response(JSON.stringify(body),{headers:{'content-type':'application/json'}});
 const image=()=>new Response(jpeg,{headers:{'content-type':'image/jpeg'}});
 
+test('Modern Warfare 4 still gets its official portrait when Steam metadata is unavailable',async()=>{
+ const cover=await findSteamCover('4435490',{local:async()=>null,fetchImpl:async url=>
+  url==='https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/4435490/c71bc2cb60e440d1a0d2435d0c06c4d4a4050edf/library_capsule_2x.jpg'
+   ?image():new Response('unavailable',{status:503})});
+ assert.deepEqual(cover,jpeg);
+});
+
 test('Steam GetItems metadata resolves content-hashed portrait',async()=>{
  const requests=[];
  const mock=async url=>{requests.push(url);return url.includes('GetItems')?json({response:{store_items:[meta]}}):image()};

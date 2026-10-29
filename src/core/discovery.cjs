@@ -321,8 +321,17 @@ async function scanFolder(root,{limit=6000,maxDepth=5,platform=process.platform}
   candidates.sort((a,b)=>b.score-a.score||a.file.localeCompare(b.file));
   // Multiple known standalone titles in a selected flat folder remain separate.
   const known=candidates.filter(candidate=>candidate.identity.kind==='executable');
-  const choices=owner===root&&known.length?known:candidates.slice(0,1);
-  if(choices.length===1&&!known.length&&candidates[1]&&candidates[0].score-candidates[1].score<20){warnings.push(`Ambiguous executables in ${owner}; select the game's executable manually.`);continue;}
+  let choices;
+  if(owner===root&&known.length)choices=known;
+  else {
+   const plausible=candidates.filter(candidate=>candidates[0].score-candidate.score<20);
+   const recognized=plausible.filter(candidate=>candidate.identity.kind==='executable');
+   if(plausible.length>1){
+    const titles=new Set(recognized.map(candidate=>candidate.identity.name));
+    if(titles.size!==1){warnings.push(`Ambiguous executables in ${owner}; select the game's executable manually.`);continue;}
+    choices=[recognized[0]];
+   }else choices=candidates.slice(0,1);
+  }
   for(const best of choices)games.push({name:identifyGame(best.file,{fallbackName:best.fallbackName}).name,source:'folder',install_path:owner,executable:best.file,tags:[]});
  }
  if(truncated||seen>=limit)warnings.push(`Scan stopped at ${limit} entries for ${root}; choose smaller folders for complete results.`);

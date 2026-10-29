@@ -418,7 +418,7 @@ async function handleAction(button){const action=button.dataset.action,id=button
   case 'remove-confirm':openModal('remove',{id});break;
   case 'remove':try{await window.orbit.removeGame(id);closeModal();toast('Game removed from your library.')}catch(e){toast(e.message,true)}break;
   case 'scan':await performScan();break;
-  case 'repair-artwork':{button.disabled=true;try{const result=await window.orbit.repairSteamArtwork();const note=result.onlineEnabled===false?' Online artwork is off in Settings.':result.paused?' Online artwork is paused while Performance Guard is active.':'';toast(`Updated ${result.found} portrait covers and ${result.icons||0} game icons across ${result.attempted} games.${note}`)}catch(e){toast(e.message||'Cover repair failed.',true)}finally{button.disabled=false}break;}
+  case 'repair-artwork':{button.disabled=true;try{const result=await window.orbit.repairSteamArtwork();const note=result.onlineEnabled===false?' Online artwork is off in Settings.':result.paused?' Online artwork was paused by Performance Guard during repair.':'';toast(`Updated ${result.found} portrait covers and ${result.icons||0} game icons across ${result.attempted} games.${note}`)}catch(e){toast(e.message||'Cover repair failed.',true)}finally{button.disabled=false}break;}
   case 'import':await performImport();break;
   case 'toggle-all-import':{const allowed=state.imports.flatMap((g,i)=>g.alreadyAdded?[]:[i]).slice(0,MAX_IMPORT_SELECTION);state.selectedImports=state.selectedImports.size?new Set():new Set(allowed);renderModal();break;}
   case 'import-page':{const direction=button.dataset.page;state.importPage=Math.max(0,Math.min(Math.ceil(state.imports.length/IMPORT_PAGE_SIZE)-1,state.importPage+(direction==='next'?1:-1)));renderModal();el('modal-root').querySelector(`[data-page="${direction}"]:not([disabled])`)?.focus();break;}
@@ -486,6 +486,9 @@ let searchTimer;document.addEventListener('input',event=>{if(event.target.id!=='
 });
 document.addEventListener('submit',event=>{if(event.target.id==='game-form'){event.preventDefault();storeGame(event.target)}});
 document.addEventListener('keydown',event=>{
+ if(event.key==='Enter'&&!event.isComposing&&event.target.id==='cover-search-title'){
+  event.preventDefault();const search=el('modal-root')?.querySelector('[data-action="find-online-art"]');if(search&&!search.disabled)search.click();return;
+ }
  if(event.key==='F11'&&!event.ctrlKey&&!event.metaKey&&!event.altKey){event.preventDefault();if(!event.repeat)Promise.resolve().then(toggleControllerMode).catch(error=>toast(error.message,true));return;}
  if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();el('global-search')?.focus();el('global-search')?.select()}
  if(event.key==='Escape'&&state.modal){event.preventDefault();closeModal()}

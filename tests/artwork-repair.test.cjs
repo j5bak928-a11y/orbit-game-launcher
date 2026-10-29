@@ -97,6 +97,30 @@ test('repair reports that online searches are paused during a guarded game sessi
  await assert.rejects(f.handlers.get('orbit:findOnlineCover')({},'Fortnite'),/paused by Performance Guard/);
 });
 
+test('manual search reports a guard pause that starts while Steam is being searched',async t=>{
+ let start,finish;
+ const started=new Promise(resolve=>{start=resolve});
+ const gate=new Promise(resolve=>{finish=resolve});
+ const f=fixture(t,600,900,{missing:true,steamSearch:async()=>{start();await gate;return null;}});
+ f.context.fixtureDb.getSettings=()=>({useSteamArtwork:true,performanceGuard:true});
+ f.context.handlers();
+ const pending=f.handlers.get('orbit:findOnlineCover')({},'Fortnite');
+ await started;vm.runInContext("sessions.set('running-game','session');",f.context);finish();
+ await assert.rejects(pending,/paused by Performance Guard/);
+});
+
+test('repair reports a guard pause that starts during artwork lookup',async t=>{
+ let start,finish;
+ const started=new Promise(resolve=>{start=resolve});
+ const gate=new Promise(resolve=>{finish=resolve});
+ const f=fixture(t,600,900,{missing:true});f.game.cover='';
+ f.context.fixtureDb.getSettings=()=>({useSteamArtwork:true,performanceGuard:true});
+ f.context.downloadSteamCover=async()=>{start();await gate;return '';};
+ const pending=f.context.repairMissingSteamCovers({replaceLandscape:true});
+ await started;vm.runInContext("sessions.set('running-game','session');",f.context);finish();
+ const result=await pending;assert.equal(result.paused,true);
+});
+
 test('an edited cover wins over a pending Epic lookup',async t=>{
  let start,finish;
  const started=new Promise(resolve=>{start=resolve});

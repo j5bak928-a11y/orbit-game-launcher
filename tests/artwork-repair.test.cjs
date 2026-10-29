@@ -10,7 +10,7 @@ const { createRequire } = require('node:module');
 
 // Exercise the real main-process repair functions with local image metadata.
 // Native Electron setup, online downloads and process enumeration stay inactive.
-function fixture(t, width, height, { missing = false, cover = crypto.randomUUID() + '.png' } = {}) {
+function fixture(t, width, height, { missing = false, cover = crypto.randomUUID() + '.png', epicLookup, steamSearch } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orbit-repair-test-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const art = path.join(root, 'artwork');
@@ -33,7 +33,9 @@ function fixture(t, width, height, { missing = false, cover = crypto.randomUUID(
   };
   const main = path.join(__dirname, '../src/main.cjs');
   const realRequire = createRequire(main);
+  const handlers = new Map();
   const electron = {
+    ipcMain: { handle: (name, fn) => handlers.set(name, fn) },
     nativeImage: { createFromBuffer: () => ({ isEmpty: () => false }) },
     app: {
       requestSingleInstanceLock: () => true,
@@ -44,7 +46,12 @@ function fixture(t, width, height, { missing = false, cover = crypto.randomUUID(
     protocol: { registerSchemesAsPrivileged() {} },
   };
   const context = vm.createContext({
-    require: name => name === 'electron' ? electron : realRequire(name),
+    require: name => {
+      if (name === 'electron') return electron;
+      if (name === './core/nonsteam-artwork.cjs' && epicLookup) return {...realRequire(name), findEpicPortrait:epicLookup};
+      if (name === './core/steam-search.cjs' && steamSearch) return {...realRequire(name), findExactSteamApp:steamSearch};
+      return realRequire(name);
+    },
     __dirname: path.dirname(main), process, Buffer, fixtureDb: database,
   });
   vm.runInContext(fs.readFileSync(main, 'utf8'), context, { filename: main });
@@ -52,8 +59,92 @@ function fixture(t, width, height, { missing = false, cover = crypto.randomUUID(
   let downloads = 0;
   const replacement = crypto.randomUUID() + '.jpg';
   context.downloadSteamCover = async () => { downloads++; return replacement; };
-  return { context, game, replacement, downloads: () => downloads };
+  return { context, game, replacement, handlers, downloads: () => downloads };
 }
+
+test('repair identifies a previously added local game from its specific executable',async t=>{
+ const f=fixture(t,600,900,{missing:true});
+ f.game.source='folder';f.game.source_id='';f.game.name='My game';f.game.cover='';
+ f.game.executable=path.join(os.tmpdir(),'Call of Duty','cod26-cod.exe');
+ let appId='';f.context.downloadSteamCover=async id=>{appId=id;return f.replacement;};
+ await f.context.cachedSteamCover({...f.game});
+ assert.equal(appId,'4435490');assert.equal(f.game.cover,f.replacement);
+});
+
+test('manual online cover search can find Fortnite on Epic when Steam has no match',async t=>{
+ const bytes=Buffer.alloc(24);Buffer.from('89504e470d0a1a0a','hex').copy(bytes);bytes.writeUInt32BE(600,16);bytes.writeUInt32BE(900,20);
+ const f=fixture(t,600,900,{missing:true,steamSearch:async()=>null,epicLookup:async game=>game.name==='Fortnite'?{bytes,ext:'.png'}:null});
+ f.context.handlers();
+ const result=await f.handlers.get('orbit:findOnlineCover')({},'Fortnite');
+ assert.match(result.cover,/\.png$/);assert.match(result.message,/Epic/i);
+});
+
+test('manual cover search uses the known Modern Warfare 4 ID without depending on title search',async t=>{
+ const f=fixture(t,600,900,{missing:true,steamSearch:async()=>null});
+ let appId='';f.context.downloadSteamCover=async id=>{appId=id;return f.replacement;};
+ f.context.handlers();
+ const result=await f.handlers.get('orbit:findOnlineCover')({},'Modern Warfare 4');
+ assert.equal(appId,'4435490');assert.equal(result.cover,f.replacement);
+});
+
+test('repair reports that online searches are paused during a guarded game session',async t=>{
+ const f=fixture(t,600,900,{missing:true});
+ f.game.cover='';f.context.fixtureDb.getSettings=()=>({useSteamArtwork:true,performanceGuard:true});
+ vm.runInContext("sessions.set('running-game','session');",f.context);
+ const result=await f.context.repairMissingSteamCovers({replaceLandscape:true});
+ assert.equal(result.onlineEnabled,true);assert.equal(result.paused,true);
+ f.context.handlers();
+ await assert.rejects(f.handlers.get('orbit:findOnlineCover')({},'Fortnite'),/paused by Performance Guard/);
+});
+
+test('manual search reports a guard pause that starts while Steam is being searched',async t=>{
+ let start,finish;
+ const started=new Promise(resolve=>{start=resolve});
+ const gate=new Promise(resolve=>{finish=resolve});
+ const f=fixture(t,600,900,{missing:true,steamSearch:async()=>{start();await gate;return null;}});
+ f.context.fixtureDb.getSettings=()=>({useSteamArtwork:true,performanceGuard:true});
+ f.context.handlers();
+ const pending=f.handlers.get('orbit:findOnlineCover')({},'Fortnite');
+ await started;vm.runInContext("sessions.set('running-game','session');",f.context);finish();
+ await assert.rejects(pending,/paused by Performance Guard/);
+});
+
+test('repair reports a guard pause that starts during artwork lookup',async t=>{
+ let start,finish;
+ const started=new Promise(resolve=>{start=resolve});
+ const gate=new Promise(resolve=>{finish=resolve});
+ const f=fixture(t,600,900,{missing:true});f.game.cover='';
+ f.context.fixtureDb.getSettings=()=>({useSteamArtwork:true,performanceGuard:true});
+ f.context.downloadSteamCover=async()=>{start();await gate;return '';};
+ const pending=f.context.repairMissingSteamCovers({replaceLandscape:true});
+ await started;vm.runInContext("sessions.set('running-game','session');",f.context);finish();
+ const result=await pending;assert.equal(result.paused,true);
+});
+
+test('an edited cover wins over a pending Epic lookup',async t=>{
+ let start,finish;
+ const started=new Promise(resolve=>{start=resolve});
+ const gate=new Promise(resolve=>{finish=resolve});
+ const f=fixture(t,600,900,{missing:true,epicLookup:async()=>{start();await gate;return {bytes:Buffer.alloc(24),ext:'.png'};}});
+ f.game.source='epic';f.game.source_id='Fortnite';f.game.name='Fortnite';f.game.cover='';
+ const pending=f.context.cachedSteamCover({...f.game});
+ await started;
+ const chosen='33333333-3333-4333-8333-333333333333.png';
+ f.context.fixtureDb.update(f.game.id,{cover:chosen});
+ vm.runInContext('artworkEditRevisions.set(fixtureDb.get().id,1);',f.context);
+ finish();await pending;
+ assert.equal(f.game.cover,chosen);
+});
+
+test('a user-initiated cover search retries a previous Epic miss',async t=>{
+ const bytes=Buffer.alloc(24);Buffer.from('89504e470d0a1a0a','hex').copy(bytes);bytes.writeUInt32BE(600,16);bytes.writeUInt32BE(900,20);
+ let attempts=0;
+ const f=fixture(t,600,900,{missing:true,steamSearch:async()=>null,epicLookup:async()=>++attempts===1?null:{bytes,ext:'.png'}});
+ f.context.handlers();
+ const search=f.handlers.get('orbit:findOnlineCover');
+ assert.equal((await search({},'Fortnite')).cover,'');
+ assert.match((await search({},'Fortnite')).cover,/\.png$/);
+});
 
 test('repair replaces an existing landscape cover with a portrait candidate', async t => {
   const f = fixture(t, 1280, 720);

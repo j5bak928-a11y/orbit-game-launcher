@@ -20,7 +20,7 @@ const {WindowsActivityTracker}=require('./core/windows-activity.cjs');
 const {backgroundWindow}=require('./core/background-window.cjs');
 const {sessionClock}=require('./core/session-clock.cjs');
 const {createUpdateService}=require('./core/updates.cjs');
-const {catalogMatch}=require('./core/game-identity.cjs');
+const {catalogMatch,identifyGame}=require('./core/game-identity.cjs');
 const {createPortableBackup,decodePortableBackup,installBackupArtwork,writeAtomic,MAX_ARCHIVE}=require('./core/backup.cjs');
 
 protocol.registerSchemesAsPrivileged([{scheme:'orbit-art',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true}}]);
@@ -35,6 +35,11 @@ const artworkWork=new ArtworkWork();
 const iconWork=new ArtworkWork({concurrency:2});
 const artworkEditRevisions=new Map();
 const onlineArtwork=()=>{const settings=db?.getSettings();return !!settings?.useSteamArtwork&&!(settings.performanceGuard&&runningGameIds().length>0);};
+function requireOnlineArtwork(){
+  const settings=db?.getSettings();
+  if(!settings?.useSteamArtwork)throw Error('Enable online artwork in Settings first.');
+  if(settings.performanceGuard&&runningGameIds().length>0)throw Error('Online artwork is paused by Performance Guard while a game is running.');
+}
 const artIdentity=game=>JSON.stringify([game.name,game.source,game.source_id,game.executable,game.install_path,game.launch_uri]);
 const artworkRevision=game=>artworkEditRevisions.get(game.id)||0;
 function currentArtworkGame(game,revision){
@@ -172,10 +177,29 @@ async function downloadSteamArtwork(appId,kind,{roots=steamRoots(),isRelevant=()
   },{isRelevant:()=>!!db&&isRelevant()});
 }
 async function downloadSteamCover(appId,options){return downloadSteamArtwork(appId,'cover',options);}
+async function downloadEpicCover(game,{isRelevant=()=>true}={}){
+  return artworkWork.run(`epic-cover:${JSON.stringify([game.source_id,game.launch_uri,game.name])}`,async needed=>{
+    if(!onlineArtwork())return ArtworkWork.CANCELLED;
+    let interrupted=false;
+    const online=()=>{if(!onlineArtwork())interrupted=true;return onlineArtwork()&&needed();};
+    const result=await findEpicPortrait(game,{online,validate:decodableArtwork});
+    if(!needed()||interrupted||!onlineArtwork())return ArtworkWork.CANCELLED;
+    if(!result)return '';
+    const hash=crypto.createHash('sha256').update(result.bytes).digest('hex');
+    const name=`${hash.slice(0,8)}-${hash.slice(8,12)}-${hash.slice(12,16)}-${hash.slice(16,20)}-${hash.slice(20,32)}${result.ext}`;
+    await fsp.mkdir(artworkDir(),{recursive:true});
+    if(!needed())return ArtworkWork.CANCELLED;
+    try{await fsp.writeFile(path.join(artworkDir(),name),result.bytes,{flag:'wx'});}catch(e){if(e.code!=='EEXIST')throw e;}
+    return needed()?name:ArtworkWork.CANCELLED;
+  },{isRelevant:()=>onlineArtwork()&&isRelevant()});
+}
 async function steamIdFor(game,revision=artworkRevision(game)){
   if(game.source==='steam')return game.source_id;
   const known=catalogMatch(game.name)?.steamId;
   if(known)return known;
+  // Existing library entries can still be named after a generic launcher or
+  // a user label. Only recognized standalone executables/folders contribute.
+  if(game.executable){const identity=identifyGame(game.executable);if(identity.steamId)return identity.steamId;}
   if(!onlineArtwork())return '';
   const match=await artworkWork.run(`title:${String(game.name).trim().toLocaleLowerCase()}`,async needed=>{
     if(!onlineArtwork())return ArtworkWork.CANCELLED;
@@ -219,7 +243,7 @@ async function cacheGameIcon(game,revision=artworkRevision(game)){
   return true;
 }
 async function repairMissingSteamCovers({limit=100,replaceLandscape=false}={}){
-  const online=db.getSettings().useSteamArtwork;
+  const online=db.getSettings().useSteamArtwork;let paused=!!online&&!onlineArtwork();
   const candidates=[],snapshot=artworkRequests(db.list());
   for(const {game,revision} of snapshot){
     if(candidates.length>=limit)break;
@@ -246,8 +270,9 @@ async function repairMissingSteamCovers({limit=100,replaceLandscape=false}={}){
       if(result.value.updatedCover)found++;
       if(result.value.updatedIcon)icons++;
     }
+    if(db?.getSettings().useSteamArtwork&&!onlineArtwork())paused=true;
   }
-  return {found,icons,attempted:candidates.length,disabled:false,onlineEnabled:online};
+  return {found,icons,attempted:candidates.length,disabled:false,onlineEnabled:!!db?.getSettings().useSteamArtwork,paused};
 }
 async function cachedSteamCover(game,{replaceLandscape=false,revision=artworkRevision(game)}={}){
   if(game.cover&&!replaceLandscape)return;
@@ -257,20 +282,7 @@ async function cachedSteamCover(game,{replaceLandscape=false,revision=artworkRev
     const local=await findLocalPortrait(game,{validate:decodableArtwork});
     if(local&&currentArtworkGame(game,revision))try{filename=await saveArtwork(local)}catch{}
     if(!filename&&game.source==='epic'&&onlineArtwork()&&currentArtworkGame(game,revision)){
-      filename=await artworkWork.run(`epic-cover:${JSON.stringify([game.source_id,game.launch_uri,game.name])}`,async needed=>{
-        if(!onlineArtwork())return ArtworkWork.CANCELLED;
-        let interrupted=false;
-        const online=()=>{if(!onlineArtwork())interrupted=true;return onlineArtwork()&&needed();};
-        const result=await findEpicPortrait(game,{online,validate:decodableArtwork});
-        if(!needed()||interrupted||!onlineArtwork())return ArtworkWork.CANCELLED;
-        if(!result)return '';
-        const hash=crypto.createHash('sha256').update(result.bytes).digest('hex');
-        const name=`${hash.slice(0,8)}-${hash.slice(8,12)}-${hash.slice(12,16)}-${hash.slice(16,20)}-${hash.slice(20,32)}${result.ext}`;
-        await fsp.mkdir(artworkDir(),{recursive:true});
-        if(!needed())return ArtworkWork.CANCELLED;
-        try{await fsp.writeFile(path.join(artworkDir(),name),result.bytes,{flag:'wx'});}catch(e){if(e.code!=='EEXIST')throw e;}
-        return needed()?name:ArtworkWork.CANCELLED;
-      },{isRelevant:()=>onlineArtwork()&&!!currentArtworkGame(game,revision)});
+      filename=await downloadEpicCover(game,{isRelevant:()=>!!currentArtworkGame(game,revision)});
     }
   }
   if(!filename&&currentArtworkGame(game,revision)){
@@ -363,11 +375,17 @@ function handlers(){
     }
   }));
   bind('findOnlineCover',async title=>{
-    if(!db.getSettings().useSteamArtwork)throw Error('Enable Steam artwork downloads in Settings first.');
-    const match=await findExactSteamApp(title);
-    if(!match)return {cover:'',message:'No exact title match was found on Steam. Try editing the game title or choosing artwork manually.'};
-    const cover=await downloadSteamCover(match.steamId);
-    return {cover,matchedName:match.name,message:cover?'Cover found on Steam.':'No cover available right now. Your game can still be added.'};
+    requireOnlineArtwork();
+    if(typeof title!=='string'||!title.trim()||title.length>140||Array.from(title).some(c=>c.charCodeAt(0)<32))throw Error('Enter a valid game title.');
+    artworkWork.clearMisses();
+    const name=title.trim(),known=catalogMatch(name);
+    const match=known?.steamId?{name:known.name,steamId:known.steamId}:await findExactSteamApp(name);
+    if(match){const cover=await downloadSteamCover(match.steamId);if(cover)return {cover,matchedName:match.name,message:'Cover found on Steam.'};}
+    requireOnlineArtwork();
+    const cover=await downloadEpicCover({source:'epic',source_id:'',launch_uri:'',name});
+    if(!cover)requireOnlineArtwork();
+    return cover?{cover,matchedName:name,message:'Cover found on Epic Games.'}:
+      {cover:'',message:'No exact cover found on Steam or Epic Games. Check the title or choose an image manually.'};
   });
   bind('chooseArtwork',imageFromDialog);
   bind('chooseFolder',async()=>{const result=await dialog.showOpenDialog(win,{title:'Choose game library folder',properties:['openDirectory']});return result.canceled?null:result.filePaths[0]});

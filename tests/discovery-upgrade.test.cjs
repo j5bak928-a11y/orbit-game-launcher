@@ -56,6 +56,27 @@ test('selected folder leaves equally plausible unknown binaries for manual selec
  const root=await fixture(t);await file(root,'Unknown/Alpha.exe');await file(root,'Unknown/Bravo.exe');
  const result=await discovery.scanFolder(root,{platform:'win32'});assert.equal(result.games.length,0);assert.ok(result.warnings.some(w=>/ambiguous/i.test(w)));
 });
+test('shared Call of Duty folder selects the specifically recognized MW4 executable',async t=>{
+ const root=await fixture(t);
+ await file(root,'Call of Duty/cod.exe');
+ const exe=await file(root,'Call of Duty/cod26-cod.exe');
+ const result=await discovery.scanFolder(root,{platform:'win32'});
+ assert.equal(result.games.length,1);
+ assert.equal(result.games[0].name,'Call of Duty: Modern Warfare 4');
+ assert.equal(result.games[0].executable,exe);
+});
+test('equally plausible different recognized games in one folder remain ambiguous',async t=>{
+ const root=await fixture(t);
+ await file(root,'Mixed/hoi4.exe');await file(root,'Mixed/eu4.exe');
+ const result=await discovery.scanFolder(root,{platform:'win32'});
+ assert.equal(result.games.length,0);assert.ok(result.warnings.some(w=>/ambiguous/i.test(w)));
+});
+test('a weak recognized executable does not override a strong folder title match',async t=>{
+ const root=await fixture(t),expected=await file(root,'Outer Wilds/Outer Wilds.exe');
+ await file(root,'Outer Wilds/hoi4.exe');
+ const result=await discovery.scanFolder(root,{platform:'win32'});
+ assert.equal(result.games.length,1);assert.equal(result.games[0].executable,expected);
+});
 test('Heroic reads its real installed Epic/GOG caches and preserves store identity with Heroic handoff',async t=>{
  const root=await fixture(t),install=path.join(root,'Game');const exe=await file(install,'Game.exe');
  await file(root,'heroic/legendaryConfig/legendary/installed.json',{EpicGame:{app_name:'EpicGame',title:'Epic Game',install_path:install,executable:'Game.exe'},DLC:{app_name:'DLC',title:'DLC',install_path:install,is_dlc:true}});

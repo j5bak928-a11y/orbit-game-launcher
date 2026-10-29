@@ -7,7 +7,7 @@ const {steamRoots}=require('./discovery.cjs');
 
 const CDN='https://shared.fastly.steamstatic.com/store_item_assets/';
 const MAX_JSON_BYTES=1024*1024;
-const LEGACY_GAME_PORTRAITS=Object.freeze({'252950':'cc030d5cf1de6d485d41685bf2aac8ae4ca8ab8e/library_capsule_2x.jpg'});
+const LEGACY_GAME_PORTRAITS=Object.freeze({'252950':'cc030d5cf1de6d485d41685bf2aac8ae4ca8ab8e/library_capsule_2x.jpg','4435490':'c71bc2cb60e440d1a0d2435d0c06c4d4a4050edf/library_capsule_2x.jpg'});
 // Steam uses both historical library_600x900 and newer library_capsule filenames.
 // Only portrait library assets are accepted; headers and store capsules stay excluded.
 const VALID_ASSET=/^(?:[a-f0-9]{40}\/)?(?:library_600x900|library_capsule)(?:_2x)?\.jpg$/i;
@@ -102,7 +102,7 @@ async function findSteamCover(appId,{fetchImpl=globalThis.fetch,roots=steamRoots
   const metadata=await steamMetadataUrls(appId,{fetchImpl});
   const fallbacks=['library_capsule_2x.jpg','library_capsule.jpg','library_600x900_2x.jpg','library_600x900.jpg'].map(name=>`${CDN}steam/apps/${appId}/${name}`);
   const extra=LEGACY_GAME_PORTRAITS[String(appId)]?CDN+'steam/apps/'+appId+'/'+LEGACY_GAME_PORTRAITS[String(appId)]:'';
-  const urls=[...new Set([...metadata,...fallbacks,extra].filter(Boolean))].slice(0,12);
+  const urls=[...new Set([...metadata,extra,...fallbacks].filter(Boolean))].slice(0,12);
   for(const url of urls){
     if(!networkAllowed(online))break;
     try{const response=await fetchImpl(url,{signal:AbortSignal.timeout(2800)});const bytes=await readJpegWithLimit(response);if(bytes&&isPortraitArtwork(bytes))return bytes;}catch{}

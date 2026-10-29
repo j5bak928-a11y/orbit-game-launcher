@@ -278,11 +278,12 @@ function editor(g){const isEdit=!!g;const title=isEdit?'Edit game':'Add a game';
  const imgSection=(key,label)=>`<div class="image-upload"><div id="preview-${key}">${artwork(g?.[key])?`<img src="${artwork(g[key])}" alt="${label} preview" />`:key==='cover'&&artwork(g?.icon)?`<div class="auto-icon-preview"><img src="${artwork(g.icon)}" alt="Icon fallback" /></div>`:`<div class="image-placeholder">${ic('image',21)}</div>`}</div><div style="flex:1"><p>${label}</p><small>${key==='icon'?'Used when no cover exists':'PNG, JPEG or WebP'}</small></div><button type="button" class="secondary-btn" data-action="choose-art" data-key="${key}">Choose</button><button type="button" class="small-link" data-action="clear-art" data-key="${key}" aria-label="Clear ${label}">Clear</button></div>`;
  return dialogFrame(title,isEdit?'Update this game without changing its installation.':'Select any locally installed game executable. Orbit recognizes known game filenames and looks for cover art or an icon.',`<form id="game-form" data-form="game" data-id="${esc(g?.id||'')}"><div class="dialog-body">
   <div class="field"><label for="game-name">Game title *</label><input id="game-name" name="name" type="text" maxlength="140" value="${esc(g?.name||'')}" placeholder="For example, Hollow Knight" required /></div>
-  <div class="field"><label for="game-executable">Executable</label><div class="file-field"><input id="game-executable" name="executable" type="text" value="${esc(g?.executable||'')}" placeholder="Select the game executable" /><button type="button" class="secondary-btn" data-action="choose-exe">${ic('folder',16)} Browse .exe</button></div><div class="file-extras"><button type="button" class="small-link" data-action="find-art">${ic('sparkles',14)} Detect game &amp; icon</button><button type="button" class="small-link" data-action="find-online-art">${ic('search',14)} Find online cover by title</button><span id="game-detection-status" role="status" aria-live="polite"></span></div></div>
+  <div class="field"><label for="game-executable">Executable</label><div class="file-field"><input id="game-executable" name="executable" type="text" value="${esc(g?.executable||'')}" placeholder="Select the game executable" /><button type="button" class="secondary-btn" data-action="choose-exe">${ic('folder',16)} Browse .exe</button></div><div class="file-extras"><button type="button" class="small-link" data-action="find-art">${ic('sparkles',14)} Detect game &amp; icon</button><span id="game-detection-status" role="status" aria-live="polite"></span></div></div>
   <div class="field"><label for="game-uri">Launcher URI (optional)</label><input id="game-uri" name="launch_uri" value="${esc(g?.launch_uri||'')}" type="text" placeholder="steam://rungameid/12345" /><small>Orbit launches through the associated game launcher. On Windows, add the actual game executable for playtime tracking.</small></div>
   <div class="field-grid"><div class="field"><label for="game-workdir">Working directory</label><input id="game-workdir" name="working_dir" type="text" value="${esc(g?.working_dir||'')}" placeholder="Defaults to executable folder" /></div><div class="field"><label for="game-genre">Genre</label><input id="game-genre" name="genre" type="text" maxlength="100" value="${esc(g?.genre||'')}" placeholder="Adventure, RPG, Strategy…" /></div></div>
   <div class="field-grid"><div class="field"><label for="game-tags">Tags</label><input id="game-tags" name="tags" value="${esc((g?.tags||[]).join(', '))}" type="text" placeholder="Co-op, Story, Competitive" /><small>Separate multiple tags with commas.</small></div><div class="field"><label for="game-args">Launch arguments</label><input id="game-args" name="launch_args" type="text" value="${esc(params)}" placeholder='["--fullscreen"]' /><small>Enter a JSON array, e.g. ["--fullscreen", "--safe-mode"].</small></div></div>
   <div class="image-fields">${imgSection('cover','Cover artwork')}${imgSection('banner','Banner artwork')}${imgSection('icon','Game icon')}</div>
+  <div class="field cover-search"><label for="cover-search-title">Find a cover online</label><div class="file-field"><input id="cover-search-title" type="text" maxlength="140" placeholder="Use game title, or enter a different title" autocomplete="off" /><button type="button" class="secondary-btn" data-action="find-online-art">${ic('search',14)} Search</button></div><small>Search Steam and Epic Games. The preview changes only when a cover is found; save to apply it.</small><span id="cover-search-status" role="status" aria-live="polite"></span></div>
   <div class="field-grid"><div class="field"><label for="game-cover-fit">Cover presentation</label><select id="game-cover-fit" name="cover_fit"><option value="cover" ${g?.cover_fit!=='contain'?'selected':''}>Fill frame</option><option value="contain" ${g?.cover_fit==='contain'?'selected':''}>Fit entire artwork</option></select></div><div class="field"><label for="game-cover-position">Cover position</label><select id="game-cover-position" name="cover_position"><option value="center" ${!['top','bottom'].includes(g?.cover_position)?'selected':''}>Center</option><option value="top" ${g?.cover_position==='top'?'selected':''}>Top</option><option value="bottom" ${g?.cover_position==='bottom'?'selected':''}>Bottom</option></select></div></div>
   <input type="hidden" id="game-cover" name="cover" value="${esc(g?.cover||'')}"/><input type="hidden" id="game-banner" name="banner" value="${esc(g?.banner||'')}"/><input type="hidden" id="game-icon" name="icon" value="${esc(g?.icon||'')}"/>
   </div><div class="dialog-footer"><button type="button" class="secondary-btn" data-action="close-modal">Cancel</button><button type="submit" class="primary-btn">${ic('check',16)} ${isEdit?'Save changes':'Add to library'}</button></div></form>`, '',true);
@@ -417,27 +418,29 @@ async function handleAction(button){const action=button.dataset.action,id=button
   case 'remove-confirm':openModal('remove',{id});break;
   case 'remove':try{await window.orbit.removeGame(id);closeModal();toast('Game removed from your library.')}catch(e){toast(e.message,true)}break;
   case 'scan':await performScan();break;
-  case 'repair-artwork':{button.disabled=true;try{const result=await window.orbit.repairSteamArtwork();toast(result.disabled?'Enable Steam artwork downloads first.':`Updated ${result.found} portrait covers and ${result.icons||0} game icons across ${result.attempted} games.`)}catch(e){toast(e.message||'Cover repair failed.',true)}finally{button.disabled=false}break;}
+  case 'repair-artwork':{button.disabled=true;try{const result=await window.orbit.repairSteamArtwork();const note=result.onlineEnabled===false?' Online artwork is off in Settings.':result.paused?' Online artwork was paused by Performance Guard during repair.':'';toast(`Updated ${result.found} portrait covers and ${result.icons||0} game icons across ${result.attempted} games.${note}`)}catch(e){toast(e.message||'Cover repair failed.',true)}finally{button.disabled=false}break;}
   case 'import':await performImport();break;
   case 'toggle-all-import':{const allowed=state.imports.flatMap((g,i)=>g.alreadyAdded?[]:[i]).slice(0,MAX_IMPORT_SELECTION);state.selectedImports=state.selectedImports.size?new Set():new Set(allowed);renderModal();break;}
   case 'import-page':{const direction=button.dataset.page;state.importPage=Math.max(0,Math.min(Math.ceil(state.imports.length/IMPORT_PAGE_SIZE)-1,state.importPage+(direction==='next'?1:-1)));renderModal();el('modal-root').querySelector(`[data-page="${direction}"]:not([disabled])`)?.focus();break;}
   case 'choose-exe':{try{const file=await window.orbit.chooseExecutable();if(file){el('game-executable').value=file;await detectGameFile(file);}}catch(e){toast(e.message,true)}break;}
   case 'find-art':{const file=el('game-executable')?.value?.trim();if(!file){toast('Choose a game executable first.',true);break;}await detectGameFile(file);break;}
   case 'find-online-art':{
-   const name=el('game-name')?.value?.trim();
+   const entered=el('cover-search-title')?.value?.trim()||'',gameTitle=el('game-name')?.value?.trim()||'';
+   const name=entered||gameTitle;
    if(!name){toast('Enter the complete game title to search for its cover.',true);break;}
-   const modal=state.modal,status=el('game-detection-status'),oldCover=el('game-cover')?.value;
-   if(status)status.textContent='Searching Steam for an exact game title…';
+   const modal=state.modal,status=el('cover-search-status'),oldCover=el('game-cover')?.value;
+   if(status)status.textContent='Searching for an exact game title…';
    button.disabled=true;
    try{
     const found=await window.orbit.findOnlineCover(name);
-    if(state.modal!==modal||el('game-name')?.value.trim()!==name)return;
+    if(state.modal!==modal)return;
+    if((el('cover-search-title')?.value.trim()||'')!==entered||(!entered&&el('game-name')?.value.trim()!==gameTitle)){if(status)status.textContent='Title changed. Search again.';return;}
     if(found.cover&&el('game-cover')?.value===oldCover){
      el('game-cover').value=found.cover;
-     el('preview-cover').innerHTML=`<img src="${artwork(found.cover)}" alt="Cover from Steam"/>`;
+     el('preview-cover').innerHTML=`<img src="${artwork(found.cover)}" alt="Cover found online"/>`;
     }
-    if(status)status.textContent=found.message||'No cover found.';
-   }catch(e){if(status)status.textContent=e.message||'Steam artwork search unavailable.';toast(e.message,true)}
+    if(status)status.textContent=found.cover&&el('game-cover')?.value!==found.cover?'Cover changed while searching; your selection was kept.':found.message||'No cover found.';
+   }catch(e){if(status)status.textContent=e.message||'Online artwork search unavailable.';toast(e.message,true)}
    finally{button.disabled=false}
    break;
   }
@@ -483,6 +486,9 @@ let searchTimer;document.addEventListener('input',event=>{if(event.target.id!=='
 });
 document.addEventListener('submit',event=>{if(event.target.id==='game-form'){event.preventDefault();storeGame(event.target)}});
 document.addEventListener('keydown',event=>{
+ if(event.key==='Enter'&&!event.isComposing&&event.target.id==='cover-search-title'){
+  event.preventDefault();const search=el('modal-root')?.querySelector('[data-action="find-online-art"]');if(search&&!search.disabled)search.click();return;
+ }
  if(event.key==='F11'&&!event.ctrlKey&&!event.metaKey&&!event.altKey){event.preventDefault();if(!event.repeat)Promise.resolve().then(toggleControllerMode).catch(error=>toast(error.message,true));return;}
  if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();el('global-search')?.focus();el('global-search')?.select()}
  if(event.key==='Escape'&&state.modal){event.preventDefault();closeModal()}

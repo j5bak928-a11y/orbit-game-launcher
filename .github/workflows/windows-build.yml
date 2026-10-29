@@ -148,7 +148,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $version = (Get-Content package.json | ConvertFrom-Json).version -replace '\+(\d+)$', '.$1'
           $tag = "v$version"
           $files = @(Get-ChildItem release -File | Where-Object { $_.Name -match '\.(exe|yml|blockmap)$' -or $_.Name -eq 'SHA256SUMS.txt' } | ForEach-Object { $_.FullName })
           if (@($files | Where-Object { $_ -match '\.exe$' }).Count -lt 2) { throw 'Expected installer and portable EXE' }

@@ -71,6 +71,14 @@ test('repair identifies a previously added local game from its specific executab
  assert.equal(appId,'4435490');assert.equal(f.game.cover,f.replacement);
 });
 
+test('repair recognizes the year-qualified Modern Warfare 4 title already in the library',async t=>{
+ const f=fixture(t,600,900,{missing:true});f.game.source='folder';f.game.source_id='';
+ f.game.name='Call of Duty - Modern Warfare 4 (2026)';f.game.cover='';
+ let appId='';f.context.downloadSteamCover=async id=>{appId=id;return f.replacement;};
+ await f.context.cachedSteamCover({...f.game});
+ assert.equal(appId,'4435490');assert.equal(f.game.cover,f.replacement);
+});
+
 test('manual online cover search can find Fortnite on Epic when Steam has no match',async t=>{
  const bytes=Buffer.alloc(24);Buffer.from('89504e470d0a1a0a','hex').copy(bytes);bytes.writeUInt32BE(600,16);bytes.writeUInt32BE(900,20);
  const f=fixture(t,600,900,{missing:true,steamSearch:async()=>null,epicLookup:async game=>game.name==='Fortnite'?{bytes,ext:'.png'}:null});

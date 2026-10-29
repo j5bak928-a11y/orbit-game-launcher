@@ -97,6 +97,31 @@ test('repair reports that online searches are paused during a guarded game sessi
  await assert.rejects(f.handlers.get('orbit:findOnlineCover')({},'Fortnite'),/paused by Performance Guard/);
 });
 
+test('an edited cover wins over a pending Epic lookup',async t=>{
+ let start,finish;
+ const started=new Promise(resolve=>{start=resolve});
+ const gate=new Promise(resolve=>{finish=resolve});
+ const f=fixture(t,600,900,{missing:true,epicLookup:async()=>{start();await gate;return {bytes:Buffer.alloc(24),ext:'.png'};}});
+ f.game.source='epic';f.game.source_id='Fortnite';f.game.name='Fortnite';f.game.cover='';
+ const pending=f.context.cachedSteamCover({...f.game});
+ await started;
+ const chosen='33333333-3333-4333-8333-333333333333.png';
+ f.context.fixtureDb.update(f.game.id,{cover:chosen});
+ vm.runInContext('artworkEditRevisions.set(fixtureDb.get().id,1);',f.context);
+ finish();await pending;
+ assert.equal(f.game.cover,chosen);
+});
+
+test('a user-initiated cover search retries a previous Epic miss',async t=>{
+ const bytes=Buffer.alloc(24);Buffer.from('89504e470d0a1a0a','hex').copy(bytes);bytes.writeUInt32BE(600,16);bytes.writeUInt32BE(900,20);
+ let attempts=0;
+ const f=fixture(t,600,900,{missing:true,steamSearch:async()=>null,epicLookup:async()=>++attempts===1?null:{bytes,ext:'.png'}});
+ f.context.handlers();
+ const search=f.handlers.get('orbit:findOnlineCover');
+ assert.equal((await search({},'Fortnite')).cover,'');
+ assert.match((await search({},'Fortnite')).cover,/\.png$/);
+});
+
 test('repair replaces an existing landscape cover with a portrait candidate', async t => {
   const f = fixture(t, 1280, 720);
   const result = await f.context.repairMissingSteamCovers({ replaceLandscape: true });

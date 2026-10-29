@@ -175,7 +175,7 @@ async def run():
     await large.locator('#main-scroll').evaluate('(el) => { el.scrollTop = 50000; el.dispatchEvent(new Event("scroll")); }')
     await large.wait_for_timeout(80)
     assert await large.locator('.game-card').count()<65
-    await large.locator('#source-filter').select_option('gog')
+    await large.locator('.platform-chip[data-source="gog"]').click()
     assert await large.locator('.game-card').count()>0, 'filtering after deep scrolling must show items'
     assert await large.locator('#main-scroll').evaluate('(el) => el.scrollTop') == 0, 'filtering must return to top'
     print(f'5,000-game renderer mock: startup {start_ms:.1f} ms, initial library {render_ms:.1f} ms, search excluding debounce {max(0,search_ms):.1f} ms, visible cards {visible}')

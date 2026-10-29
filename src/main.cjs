@@ -356,7 +356,7 @@ function handlers(){
   bind('checkForUpdates',()=>updateService?.check({manual:true})||{state:'unsupported'});
   bind('installUpdate',()=>updateService?.install());
   bind('setFullscreen',enabled=>fullscreenController.set(enabled));
-  bind('bootstrap',()=>({...librarySnapshot(),settings:db.getSettings(),platform:process.platform,version:app.getVersion()}));
+  bind('bootstrap',()=>({...librarySnapshot(),settings:db.getSettings(),platform:process.platform,version:app.getVersion().replace(/\+(\d+)$/,'.$1')}));
   bind('librarySnapshot',librarySnapshot);
   bind('listGames',()=>db.list());
   bind('runningGames',runningGameIds);

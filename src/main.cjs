@@ -48,6 +48,7 @@ function currentArtworkGame(game,revision){
   return current&&artIdentity(current)===artIdentity(game)?current:null;
 }
 const artworkRequests=games=>games.map(game=>({game,revision:artworkRevision(game)}));
+const displayVersion=()=>app.getVersion().replace(/\+(\d+)$/,'.$1');
 const artworkDir=()=>path.join(app.getPath('userData'),'artwork');
 function decodableArtwork(bytes){
   const dims=imageDimensions(bytes);
@@ -356,7 +357,7 @@ function handlers(){
   bind('checkForUpdates',()=>updateService?.check({manual:true})||{state:'unsupported'});
   bind('installUpdate',()=>updateService?.install());
   bind('setFullscreen',enabled=>fullscreenController.set(enabled));
-  bind('bootstrap',()=>({...librarySnapshot(),settings:db.getSettings(),platform:process.platform,version:app.getVersion().replace(/\+(\d+)$/,'.$1')}));
+  bind('bootstrap',()=>({...librarySnapshot(),settings:db.getSettings(),platform:process.platform,version:displayVersion()}));
   bind('librarySnapshot',librarySnapshot);
   bind('listGames',()=>db.list());
   bind('runningGames',runningGameIds);
@@ -489,7 +490,7 @@ function handlers(){
     }
     gamesChanged({reset:true,reason:'restore'});return {imported,skipped,errors,settingsRestored};
   });
-  bind('getAppInfo',()=>({platform:process.platform,version:app.getVersion(),dataPath:app.getPath('userData')}));
+  bind('getAppInfo',()=>({platform:process.platform,version:displayVersion(),dataPath:app.getPath('userData')}));
 }
 app.on('second-instance',()=>{if(initialized)background.open();});
 app.whenReady().then(async()=>{

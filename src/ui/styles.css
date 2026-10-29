@@ -71,3 +71,7 @@ body[data-density=compact]{--card-min:138px;--grid-gap:14px;--card-label-height:
 .platform-chip.active{background:rgba(var(--accent-rgb),.13);border-color:rgba(var(--accent-rgb),.32)}
 .game-card:focus-visible .cover{border-color:var(--accent)}
 .cover-search{margin-top:16px}.cover-search small{display:block;margin-top:7px}.cover-search [role=status]{display:block;margin-top:6px;color:var(--muted);font-size:11px;line-height:1.5}.cover-search [role=status]:empty{display:none}
+
+/* Improve readability without changing virtualized card dimensions. */
+.nav-item{font-size:13px}.page-intro{font-size:12px}.platform-chip,.select-wrap select,.library-count{font-size:11px}
+.game-name{font-size:13px}.game-meta{font-size:11px}.side-tip p{font-size:11px}

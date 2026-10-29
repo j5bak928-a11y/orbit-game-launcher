@@ -36,6 +36,7 @@ const settle=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
   await page.evaluate(()=>window.experience.launchResolve({message:'Fixture launched'}));
   await page.waitForFunction(()=>!document.querySelector('.hero [data-action=launch]').disabled);
   await page.locator('nav [data-route=library]').click();
+  assert.equal(await page.locator('#source-filter').count(),0,'platform filters should have one visible control');
   await page.locator('.platform-chip[data-source=epic]').click();
   assert.equal(await page.locator('#game-result-count').textContent(),'2500 games');
   assert.match(await page.locator('#active-filters').textContent(),/Epic Games/);

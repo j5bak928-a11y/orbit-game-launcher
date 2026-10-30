@@ -352,8 +352,8 @@ function syncActivity(){
  controllerMode?.update();
 }
 async function performLaunch(id){const game=state.games.find(g=>g.id===id);if(!game||state.pendingLaunches.has(id)||state.runningIds.includes(id))return;
- const started=performance.now();state.pendingLaunches.add(id);syncActivity();
- try{const result=await window.orbit.launchGame(id);toast(result.message||`Launched ${game.name}`);}
+ const started=performance.now();state.pendingLaunches.add(id);
+ try{const launch=window.orbit.launchGame(id);syncActivity();const result=await launch;toast(result.message||`Launched ${game.name}`);}
  catch(e){toast(e.message||`Could not launch ${game.name}`,true)}
  finally{setTimeout(()=>{state.pendingLaunches.delete(id);syncActivity();},Math.max(0,650-(performance.now()-started)));}
 }

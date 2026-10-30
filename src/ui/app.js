@@ -276,9 +276,9 @@ function closeModal(){state.modal=null;el('modal-root').innerHTML='';if(modalRet
 function dialogFrame(title,description,body,footer='',wide=false){return `<div class="dialog-scrim" data-action="scrim"><section class="dialog ${wide?'wide':''}" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div class="dialog-header"><div><h2 id="dialog-title">${esc(title)}</h2><p>${esc(description)}</p></div><button class="ghost-btn" data-action="close-modal" aria-label="Close dialog">${ic('close',21)}</button></div>${body}${footer}</section></div>`}
 function editor(g){const isEdit=!!g;const title=isEdit?'Edit game':'Add a game';const params=Array.isArray(g?.launch_args)?JSON.stringify(g.launch_args):'[]';
  const imgSection=(key,label)=>`<div class="image-upload"><div id="preview-${key}">${artwork(g?.[key])?`<img src="${artwork(g[key])}" alt="${label} preview" />`:key==='cover'&&artwork(g?.icon)?`<div class="auto-icon-preview"><img src="${artwork(g.icon)}" alt="Icon fallback" /></div>`:`<div class="image-placeholder">${ic('image',21)}</div>`}</div><div style="flex:1"><p>${label}</p><small>${key==='icon'?'Used when no cover exists':'PNG, JPEG or WebP'}</small></div><button type="button" class="secondary-btn" data-action="choose-art" data-key="${key}">Choose</button><button type="button" class="small-link" data-action="clear-art" data-key="${key}" aria-label="Clear ${label}">Clear</button></div>`;
- return dialogFrame(title,isEdit?'Update this game without changing its installation.':'Select any locally installed game executable. Orbit recognizes known game filenames and looks for cover art or an icon.',`<form id="game-form" data-form="game" data-id="${esc(g?.id||'')}"><div class="dialog-body">
+ return dialogFrame(title,isEdit?'Update this game without changing its installation.':'Select a game executable or Windows shortcut. Orbit looks for a title and icon.',`<form id="game-form" data-form="game" data-id="${esc(g?.id||'')}"><div class="dialog-body">
   <div class="field"><label for="game-name">Game title *</label><input id="game-name" name="name" type="text" maxlength="140" value="${esc(g?.name||'')}" placeholder="For example, Hollow Knight" required /></div>
-  <div class="field"><label for="game-executable">Executable</label><div class="file-field"><input id="game-executable" name="executable" type="text" value="${esc(g?.executable||'')}" placeholder="Select the game executable" /><button type="button" class="secondary-btn" data-action="choose-exe">${ic('folder',16)} Browse .exe</button></div><div class="file-extras"><button type="button" class="small-link" data-action="find-art">${ic('sparkles',14)} Detect game &amp; icon</button><span id="game-detection-status" role="status" aria-live="polite"></span></div></div>
+  <div class="field"><label for="game-executable">Executable</label><div class="file-field"><input id="game-executable" name="executable" type="text" value="${esc(g?.executable||'')}" placeholder="Select an executable or Windows shortcut" /><button type="button" class="secondary-btn" data-action="choose-exe">${ic('folder',16)} Browse files</button></div><div class="file-extras"><button type="button" class="small-link" data-action="find-art">${ic('sparkles',14)} Detect game &amp; icon</button><span id="game-detection-status" role="status" aria-live="polite"></span></div></div>
   <div class="field"><label for="game-uri">Launcher URI (optional)</label><input id="game-uri" name="launch_uri" value="${esc(g?.launch_uri||'')}" type="text" placeholder="steam://rungameid/12345" /><small>Orbit launches through the associated game launcher. On Windows, add the actual game executable for playtime tracking.</small></div>
   <div class="field-grid"><div class="field"><label for="game-workdir">Working directory</label><input id="game-workdir" name="working_dir" type="text" value="${esc(g?.working_dir||'')}" placeholder="Defaults to executable folder" /></div><div class="field"><label for="game-genre">Genre</label><input id="game-genre" name="genre" type="text" maxlength="100" value="${esc(g?.genre||'')}" placeholder="Adventure, RPG, Strategy…" /></div></div>
   <div class="field-grid"><div class="field"><label for="game-tags">Tags</label><input id="game-tags" name="tags" value="${esc((g?.tags||[]).join(', '))}" type="text" placeholder="Co-op, Story, Competitive" /><small>Separate multiple tags with commas.</small></div><div class="field"><label for="game-args">Launch arguments</label><input id="game-args" name="launch_args" type="text" value="${esc(params)}" placeholder='["--fullscreen"]' /><small>Enter a JSON array, e.g. ["--fullscreen", "--safe-mode"].</small></div></div>
@@ -380,7 +380,7 @@ async function detectGameFile(file){
    title.value=found.name;title.dataset.detectedName=found.name;
   }
   const workdir=el('game-workdir');
-  if(workdir&&!workdir.value.trim())workdir.value=found.working_dir;
+  if(workdir&&!workdir.value.trim()&&!/\.lnk$/i.test(file))workdir.value=found.working_dir;
   let artworkFound=false;
   for(const kind of ['cover','icon']){
    const token=found[kind];
@@ -393,7 +393,7 @@ async function detectGameFile(file){
   }
   const nameMessage=found.recognized?`Recognized as ${found.name}. `:'';
   const artMessage=found.cover_source==='steam'?'Cover downloaded from Steam.':found.cover?'Cover found in game folder.':found.icon?'Game icon detected.':'No artwork found; you can add your own.';
-  status.textContent=nameMessage+artMessage;
+  status.textContent=(/\.lnk$/i.test(file)?'Shortcut target will be checked each time you launch. ':'')+nameMessage+artMessage;
   if(artworkFound&&!found.cover&&found.icon){
    const preview=el('preview-cover');
    if(preview&&!el('game-cover').value)preview.innerHTML=`<div class="auto-icon-preview"><img src="${artwork(found.icon)}" alt="Icon fallback" /></div>`;

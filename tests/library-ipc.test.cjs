@@ -94,6 +94,20 @@ test('a saved Windows shortcut launches its latest target without replacing the 
  assert.equal(result.tracked,true);assert.equal(used.executable,target);assert.equal(f.database.get(game.id).executable,shortcut);
 });
 
+test('shortcut launch respects the explicitly configured working directory',async t=>{
+ let used;const f=fixture(t,{platform:'win32',readShortcutLink:()=>({target:path.join(f.root,'game.exe'),cwd:path.join(f.root,'default'),args:''}),launchGame:async game=>{used=game;return {mode:'process',tracked:true,message:'Game launched.'};}});
+ const shortcut=path.join(f.root,'game.lnk');fs.writeFileSync(shortcut,'fixture');
+ const custom=path.join(f.root,'custom');const game=f.database.upsert({name:'Game',executable:shortcut,working_dir:custom}).game;
+ await f.invoke('launchGame',game.id);assert.equal(used.working_dir,custom);
+});
+test('open game folder resolves a shortcut to the target folder',async t=>{
+ const f=fixture(t,{platform:'win32',readShortcutLink:()=>({target:path.join(f.root,'game','game.exe'),cwd:path.join(f.root,'game'),args:''})});
+ const shortcut=path.join(f.root,'game.lnk');fs.writeFileSync(shortcut,'fixture');fs.mkdirSync(path.join(f.root,'game'));
+ const game=f.database.upsert({name:'Game',executable:shortcut}).game;f.context.fixtureOpen=async dir=>{f.context.opened=dir;return ''};
+ vm.runInContext("require('electron').shell.openPath=fixtureOpen",f.context);
+ await f.invoke('openGameFolder',game.id);assert.equal(f.context.opened,path.join(f.root,'game'));
+});
+
 test('linked launch checks for a game process after releasing the pending launch',async t=>{
  const f=fixture(t,{platform:'win32'});
  const game=f.database.upsert({name:'Linked game',source:'steam',source_id:'123',install_path:'C:\\Games\\Game',launch_uri:'steam://rungameid/123'}).game;

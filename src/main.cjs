@@ -18,6 +18,7 @@ const {findExactSteamApp}=require('./core/steam-search.cjs');
 const {findLocalPortrait,findEpicPortrait}=require('./core/nonsteam-artwork.cjs');
 const {WindowsActivityTracker}=require('./core/windows-activity.cjs');
 const {backgroundWindow}=require('./core/background-window.cjs');
+const {resolveWindowsShortcut}=require('./core/windows-shortcut.cjs');
 const {sessionClock}=require('./core/session-clock.cjs');
 const {createUpdateService}=require('./core/updates.cjs');
 const {catalogMatch,identifyGame}=require('./core/game-identity.cjs');
@@ -367,8 +368,8 @@ function handlers(){
   bind('removeGame',id=>{if(!okId(id))throw Error('Invalid game identifier.');const found=db.remove(id);if(found){artworkEditRevisions.delete(id);gamesChanged({removedIds:[id],reason:'remove'});}return found});
   bind('favoriteGame',id=>{if(!okId(id))throw Error('Invalid game identifier.');const result=db.toggleFavorite(id);gamesChanged({games:[result],reason:'favorite'});return result});
   bind('saveSettings',patch=>{const settings=db.saveSettings(patch||{});nativeTheme.themeSource=settings.theme;broadcast({type:'settingsChanged',settings});return settings});
-  bind('chooseExecutable',async()=>{const result=await dialog.showOpenDialog(win,{title:'Choose game executable',properties:['openFile'],filters:process.platform==='win32'?[{name:'Programs',extensions:['exe','com']},{name:'All files',extensions:['*']}]:[{name:'All files',extensions:['*']}]});return result.canceled?null:result.filePaths[0]});
-  bind('inspectGameFile',executable=>inspectGameFile(executable,{
+  bind('chooseExecutable',async()=>{const result=await dialog.showOpenDialog(win,{title:'Choose game executable',properties:['openFile'],filters:process.platform==='win32'?[{name:'Programs and shortcuts',extensions:['exe','com','lnk']},{name:'All files',extensions:['*']}]:[{name:'All files',extensions:['*']}]});return result.canceled?null:result.filePaths[0]});
+  bind('inspectGameFile',executable=>inspectGameFile(process.platform==='win32'&&path.extname(executable).toLowerCase()==='.lnk'?resolveWindowsShortcut(executable,shell.readShortcutLink).executable:executable,{
     saveArtwork,extractIcon:extractNativeIcon,
     lookupCover:async ({name,steamId})=>{
       const id=steamId||(onlineArtwork()?(await findExactSteamApp(name))?.steamId:'');
@@ -420,7 +421,8 @@ function handlers(){
         catch(e){broadcast({type:'error',message:`Could not save play time: ${e.message}`})}
         sessions.delete(id);sessionClocks.delete(id);gamesChanged({games:[db.get(id)],reason:'playtime'});
       });
-      const result=await executeGame(game,url=>shell.openExternal(url),exit.onExit);
+      const launchTarget=process.platform==='win32'&&!game.launch_uri&&path.extname(game.executable).toLowerCase()==='.lnk'?{...game,...resolveWindowsShortcut(game.executable,shell.readShortcutLink)}:game;
+      const result=await executeGame(launchTarget,url=>shell.openExternal(url),exit.onExit);
       if(result.tracked){
         try{sessionId=db.startSession(id);sessions.set(id,sessionId);sessionClocks.set(id,sessionClock());exit.ready();performanceGuard();}
         catch(e){

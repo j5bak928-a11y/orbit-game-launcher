@@ -88,8 +88,8 @@ body[data-density=compact]{--card-label-height:72px}
 
 /* Give missing covers a consistent, quiet treatment without obscuring icons. */
 .cover:not(:has(.cover-image:not(.bad-aspect))){background:radial-gradient(ellipse at 50% 25%,rgba(var(--accent-rgb),.16),transparent 56%),linear-gradient(155deg,var(--panel3),var(--panel2))}
-.cover-placeholder-symbol{color:rgba(var(--accent-rgb),.65)}
-.cover-placeholder-title{overflow-wrap:anywhere}
+.cover .cover-placeholder-symbol{color:rgba(var(--accent-rgb),.65)}
+.cover .cover-placeholder-title{overflow-wrap:anywhere}
 .cover-icon-frame{inset:18% 0 50%}
 .cover-icon{max-width:58px;filter:drop-shadow(0 5px 10px #0003)}
 
@@ -105,7 +105,7 @@ body[data-density=compact]{--card-label-height:72px}
 .detail-cover{grid-template-columns:minmax(120px,184px) minmax(0,1fr);gap:24px}
 .detail-title,.dialog-header h2{overflow-wrap:anywhere}
 .detail-title{font-size:clamp(21px,2.3vw,28px);font-weight:700;letter-spacing:-.035em}
-.detail-cover>.cover{box-shadow:0 12px 24px #0003}
+.detail-cover>.cover.cover{box-shadow:0 12px 24px #0003}
 .detail-playtime{margin:16px 0;border-radius:10px}
 .detail-stat{min-width:0;overflow-wrap:anywhere}
 .detail-note{padding:12px 14px;border:1px solid var(--border);border-radius:9px;background:var(--panel2)}

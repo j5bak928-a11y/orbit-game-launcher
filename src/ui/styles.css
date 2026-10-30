@@ -75,3 +75,38 @@ body[data-density=compact]{--card-min:138px;--grid-gap:14px;--card-label-height:
 /* Improve readability without changing virtualized card dimensions. */
 .nav-item{font-size:13px}.page-intro{font-size:12px}.platform-chip,.select-wrap select,.library-count{font-size:11px}
 .game-name{font-size:13px}.game-meta{font-size:11px}.side-tip p{font-size:11px}
+
+/* Library labels stay aligned with the virtual grid while allowing two lines. */
+:root{--card-label-height:74px}
+body[data-density=compact]{--card-label-height:72px}
+.game-label{padding-top:10px}
+.game-label>div{flex:1;min-width:0}
+.game-name{display:-webkit-box;white-space:normal;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;line-height:16px;max-height:32px;margin-bottom:4px}
+.game-meta{line-height:14px}
+.game-menu{min-width:24px;min-height:24px;justify-content:center;border-radius:6px}
+.game-menu:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* Give missing covers a consistent, quiet treatment without obscuring icons. */
+.cover:not(:has(.cover-image:not(.bad-aspect))){background:radial-gradient(ellipse at 50% 25%,rgba(var(--accent-rgb),.16),transparent 56%),linear-gradient(155deg,var(--panel3),var(--panel2))}
+.cover .cover-placeholder-symbol{color:rgba(var(--accent-rgb),.65)}
+.cover .cover-placeholder-title{overflow-wrap:anywhere}
+.cover-icon-frame{inset:18% 0 50%}
+.cover-icon{max-width:58px;filter:drop-shadow(0 5px 10px #0003)}
+
+/* Sidebar contents remain reachable on shorter windows. */
+.sidebar{overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
+.brand{padding-bottom:30px}
+.side-divider{margin:20px 13px 16px}
+.side-bottom{padding-top:24px}
+.side-tip{margin-bottom:14px}
+@media(max-height:720px){.sidebar{padding-top:20px}.brand{padding-bottom:20px}.side-bottom{padding-top:16px}.side-tip{padding-block:11px}.side-tip-icon{margin-bottom:8px}.side-tip p{margin-bottom:10px}}
+
+/* Keep detail metadata and long names readable at all widths. */
+.detail-cover{grid-template-columns:minmax(120px,184px) minmax(0,1fr);gap:24px}
+.detail-title,.dialog-header h2{overflow-wrap:anywhere}
+.detail-title{font-size:clamp(21px,2.3vw,28px);font-weight:700;letter-spacing:-.035em}
+.detail-cover>.cover.cover{box-shadow:0 12px 24px #0003}
+.detail-playtime{margin:16px 0;border-radius:10px}
+.detail-stat{min-width:0;overflow-wrap:anywhere}
+.detail-note{padding:12px 14px;border:1px solid var(--border);border-radius:9px;background:var(--panel2)}
+@media(max-width:500px){:root,body[data-density=compact]{--card-label-height:71px}.detail-cover{grid-template-columns:1fr}.sidebar{overflow-x:hidden}}

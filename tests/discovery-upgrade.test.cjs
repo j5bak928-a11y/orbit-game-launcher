@@ -23,7 +23,7 @@ test('Steam excludes incomplete state and manifest symlinks escaping the install
  await file(root,'outside/Game.exe');
  try{await fs.symlink(path.join(root,'outside'),path.join(root,'steamapps/common/Escape'),'dir')}catch{}
  await file(root,'steamapps/appmanifest_82.acf',vdf('82','Escape'));
- assert.deepEqual((await discovery.discoverSteam([root])).games,[]);
+ assert.deepEqual((await discovery.discoverSteam([root],{queryRegistry:async()=>''})).games,[]);
 });
 test('Epic uses catalog launch identity, rejects incomplete/DLC installs and merges duplicate metadata',async t=>{
  const root=await fixture(t),install=path.join(root,'Rocket League');await file(install,'Binaries/Win64/RocketLeague.exe');

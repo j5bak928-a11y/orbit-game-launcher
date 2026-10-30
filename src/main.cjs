@@ -18,7 +18,7 @@ const {findExactSteamApp}=require('./core/steam-search.cjs');
 const {findLocalPortrait,findEpicPortrait}=require('./core/nonsteam-artwork.cjs');
 const {WindowsActivityTracker}=require('./core/windows-activity.cjs');
 const {backgroundWindow}=require('./core/background-window.cjs');
-const {resolveWindowsShortcut}=require('./core/windows-shortcut.cjs');
+const {resolveWindowsShortcut,trackingShortcutGames}=require('./core/windows-shortcut.cjs');
 const {sessionClock}=require('./core/session-clock.cjs');
 const {createUpdateService}=require('./core/updates.cjs');
 const {catalogMatch,identifyGame}=require('./core/game-identity.cjs');
@@ -421,7 +421,7 @@ function handlers(){
         catch(e){broadcast({type:'error',message:`Could not save play time: ${e.message}`})}
         sessions.delete(id);sessionClocks.delete(id);gamesChanged({games:[db.get(id)],reason:'playtime'});
       });
-      const launchTarget=process.platform==='win32'&&!game.launch_uri&&path.extname(game.executable).toLowerCase()==='.lnk'?{...game,...resolveWindowsShortcut(game.executable,shell.readShortcutLink)}:game;
+      const launchTarget=process.platform==='win32'&&!game.launch_uri&&path.extname(game.executable).toLowerCase()==='.lnk'?(()=>{const target=resolveWindowsShortcut(game.executable,shell.readShortcutLink);return {...game,...target,working_dir:game.working_dir||target.working_dir};})():game;
       const result=await executeGame(launchTarget,url=>shell.openExternal(url),exit.onExit);
       if(result.tracked){
         try{sessionId=db.startSession(id);sessions.set(id,sessionId);sessionClocks.set(id,sessionClock());exit.ready();performanceGuard();}
@@ -443,7 +443,7 @@ function handlers(){
       return result;
     }finally{pendingLaunches.delete(id);if(activityTracker?.noteLaunch)activityTracker.noteLaunch();else activityTracker?.poll?.().catch(()=>{});}
   });
-  bind('openGameFolder',async id=>{if(!okId(id))throw Error('Invalid game identifier.');const game=db.get(id);if(!game)throw Error('Game not found.');const dir=game.install_path|| (game.executable?path.dirname(game.executable):'');if(!dir||!path.isAbsolute(dir)||!fs.existsSync(dir)||!fs.statSync(dir).isDirectory())throw Error('Installation folder is unavailable.');const error=await shell.openPath(dir);if(error)throw Error(error);return true});
+  bind('openGameFolder',async id=>{if(!okId(id))throw Error('Invalid game identifier.');const game=db.get(id);if(!game)throw Error('Game not found.');const executable=process.platform==='win32'&&game.executable&&path.extname(game.executable).toLowerCase()==='.lnk'?resolveWindowsShortcut(game.executable,shell.readShortcutLink).executable:game.executable;const dir=game.install_path|| (executable?path.dirname(executable):'');if(!dir||!path.isAbsolute(dir)||!fs.existsSync(dir)||!fs.statSync(dir).isDirectory())throw Error('Installation folder is unavailable.');const error=await shell.openPath(dir);if(error)throw Error(error);return true});
   bind('openAppData',async()=>{const error=await shell.openPath(app.getPath('userData'));if(error)throw Error(error);return true});
   bind('exportLibrary',async()=>{
     const result=await dialog.showSaveDialog(win,{title:'Export Orbit library',defaultPath:`Orbit-Library-${new Date().toISOString().slice(0,10)}.orbit`,filters:[{name:'Portable Orbit backup (includes artwork)',extensions:['orbit']},{name:'Metadata only (JSON)',extensions:['json']} ]});
@@ -517,7 +517,7 @@ app.whenReady().then(async()=>{
   createWindow();
   if(process.platform==='win32'){
     activityTracker=new WindowsActivityTracker({
-      listGames:()=>db.listActivityGames(),isDirectSession:id=>sessions.has(id)||pendingLaunches.has(id),
+      listGames:()=>trackingShortcutGames(db.listActivityGames(),shell.readShortcutLink),isDirectSession:id=>sessions.has(id)||pendingLaunches.has(id),
       start:id=>db.startSession(id),finish:(sessionId,seconds)=>db.finishSession(sessionId,seconds),
       onChange:ids=>{gamesChanged({games:ids.map(id=>db.get(id)),reason:'playtime'});if(ids.some(id=>activityTracker?.isRunning(id)))performanceGuard();},
       onError:error=>broadcast({type:'error',message:'Windows playtime detection is temporarily unavailable: '+error.message})

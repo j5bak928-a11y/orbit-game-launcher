@@ -17,3 +17,21 @@ test('rejects missing, unsafe and argument-bearing shortcuts explicitly',t=>{
  assert.throws(()=>resolveWindowsShortcut(f.shortcut,()=>({target:path.join(f.dir,'cmd.bat'),args:''})),/target/i);
  assert.throws(()=>resolveWindowsShortcut(path.join(f.dir,'missing.lnk'),()=>({target:f.target})),/shortcut/i);
 });
+test('activity matching follows shortcut targets and survives broken shortcuts',t=>{
+ const f=fixture(t);const {trackingShortcutGames}=require('../src/core/windows-shortcut.cjs');
+ const games=[{id:'roblox',executable:f.shortcut},{id:'broken',executable:path.join(f.dir,'missing.lnk')},{id:'other',executable:f.target}];
+ const resolved=trackingShortcutGames(games,()=>({target:f.target,cwd:f.dir,args:''}));
+ assert.equal(resolved[0].executable,f.target);assert.equal(resolved[1].executable,games[1].executable);assert.equal(resolved[2].executable,f.target);
+ assert.equal(games[0].executable,f.shortcut);
+});
+test('a shortcut-backed game started outside Orbit is tracked after restart and target updates',async t=>{
+ const f=fixture(t),{trackingShortcutGames}=require('../src/core/windows-shortcut.cjs');
+ const {WindowsActivityTracker}=require('../src/core/windows-activity.cjs');
+ let target=f.target,started=[];const games=[{id:'roblox',source:'manual',executable:f.shortcut}];
+ const read=()=>({target,cwd:f.dir,args:''});
+ const makeTracker=()=>new WindowsActivityTracker({listGames:()=>trackingShortcutGames(games,read),isDirectSession:()=>false,start:id=>{started.push(id);return 'session';},finish:()=>{},enumerate:async()=>[target]});
+ let tracker=makeTracker();await tracker.poll();assert.equal(tracker.isRunning('roblox'),true);tracker.stop();
+ target=path.join(f.dir,'updated.exe');fs.writeFileSync(target,'fixture');
+ tracker=makeTracker();await tracker.poll();assert.equal(tracker.isRunning('roblox'),true);tracker.stop();
+ assert.deepEqual(started,['roblox','roblox']);
+});

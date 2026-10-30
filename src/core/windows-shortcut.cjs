@@ -13,4 +13,10 @@ function resolveWindowsShortcut(file,readShortcut){
  if(!path.isAbsolute(cwd))throw Error('The shortcut working directory is invalid.');
  return {executable:path.normalize(target),working_dir:path.normalize(cwd)};
 }
-module.exports={resolveWindowsShortcut};
+function trackingShortcutGames(games,readShortcut){
+ return games.map(game=>{
+  if(!game?.executable||path.extname(game.executable).toLowerCase()!=='.lnk')return game;
+  try{return {...game,executable:resolveWindowsShortcut(game.executable,readShortcut).executable};}catch{return game;}
+ });
+}
+module.exports={resolveWindowsShortcut,trackingShortcutGames};

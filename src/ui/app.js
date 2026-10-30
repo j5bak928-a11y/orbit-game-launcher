@@ -362,7 +362,7 @@ async function storeGame(form){const data=Object.fromEntries(new FormData(form))
  try{data.launch_args=JSON.parse(data.launch_args||'[]');if(!Array.isArray(data.launch_args))throw Error()}catch{toast('Launch arguments must be a JSON array, for example ["--fullscreen"].',true);return}
  if(!data.executable?.trim()&&!data.launch_uri?.trim()){toast('Choose an executable or enter a supported game-launch URI.',true);return}
  const button=form.querySelector('[type=submit]');button.disabled=true;
- try{if(form.dataset.id)await window.orbit.updateGame(form.dataset.id,data);else await window.orbit.addGame({...data,source:'manual'});closeModal();toast(form.dataset.id?'Game updated.':'Game added to your library.');}
+ try{const result=form.dataset.id?await window.orbit.updateGame(form.dataset.id,data):await window.orbit.addGame({...data,source:'manual'});closeModal();toast(form.dataset.id?'Game updated.':result?.added===false?'Game is already in your library.':'Game added to your library.');}
  catch(e){toast(e.message||'Could not save game.',true)}finally{button.disabled=false}
 }
 async function detectGameFile(file){

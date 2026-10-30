@@ -11,7 +11,7 @@ const { LibraryDatabase } = require('../src/core/database.cjs');
 
 // Exercise the real IPC handlers and SQLite storage without native startup,
 // process enumeration, user data, artwork downloads or actual game launches.
-function fixture(t, {discoverAll, platform, getFileIcon, findSteamCover, findSteamBanner, findExactSteamApp, setImmediateFn} = {}) {
+function fixture(t, {discoverAll, platform, getFileIcon, findSteamCover, findSteamBanner, findExactSteamApp, setImmediateFn, readShortcutLink, launchGame} = {}) {
   const temporary = path.resolve(os.tmpdir());
   const root = fs.mkdtempSync(path.join(temporary, 'orbit-library-ipc-'));
   const database = new LibraryDatabase(path.join(root, 'library.sqlite'));
@@ -38,7 +38,7 @@ function fixture(t, {discoverAll, platform, getFileIcon, findSteamCover, findSte
       whenReady:()=>new Promise(()=>{}), on() {},
     },
     protocol:{registerSchemesAsPrivileged() {}},
-    shell:{openExternal:async()=>{}},
+    shell:{openExternal:async()=>{},readShortcutLink},
     ipcMain:{handle:(name, handler)=>handlers.set(name, handler)},
   };
   const runtime = platform ? Object.create(process) : process;
@@ -46,6 +46,7 @@ function fixture(t, {discoverAll, platform, getFileIcon, findSteamCover, findSte
   const context = vm.createContext({
     require:name=>{
       if(name==='electron')return electron;
+      if(name==='./core/launch.cjs'&&launchGame)return {...realRequire(name),launchGame};
       if(name==='./core/discovery.cjs'&&discoverAll)return {...realRequire(name),discoverAll};
       if(name==='./core/steam-cover.cjs'&&(findSteamCover||findSteamBanner))return {
         ...realRequire(name),...(findSteamCover?{findSteamCover}:{}),...(findSteamBanner?{findSteamBanner}:{}),
@@ -81,6 +82,66 @@ test('numeric build metadata displays consistently as a four-part release versio
  vm.runInContext("require('electron').app.getVersion=()=> '0.2.4+1';",f.context);
  assert.equal((await f.invoke('bootstrap')).version,'0.2.4.1');
  assert.equal((await f.invoke('getAppInfo')).version,'0.2.4.1');
+});
+
+test('a saved Windows shortcut launches its latest target without replacing the shortcut',async t=>{
+ let target,used;
+ const f=fixture(t,{platform:'win32',readShortcutLink:()=>({target,cwd:path.dirname(target),args:''}),launchGame:async game=>{used=game;return {mode:'process',tracked:true,message:'Game launched.'};}});
+ const shortcut=path.join(f.root,'Roblox.lnk');fs.writeFileSync(shortcut,'fixture');
+ target=path.join(f.root,'RobloxPlayerBeta.exe');fs.writeFileSync(target,'fixture');
+ const game=f.database.upsert({name:'Roblox',executable:shortcut}).game;
+ const result=await f.invoke('launchGame',game.id);
+ assert.equal(result.tracked,true);assert.equal(used.executable,target);assert.equal(f.database.get(game.id).executable,shortcut);
+});
+
+test('shortcut launch respects the explicitly configured working directory',async t=>{
+ let used;const f=fixture(t,{platform:'win32',readShortcutLink:()=>({target:path.join(f.root,'game.exe'),cwd:path.join(f.root,'default'),args:''}),launchGame:async game=>{used=game;return {mode:'process',tracked:true,message:'Game launched.'};}});
+ const shortcut=path.join(f.root,'game.lnk');fs.writeFileSync(shortcut,'fixture');
+ const custom=path.join(f.root,'custom');const game=f.database.upsert({name:'Game',executable:shortcut,working_dir:custom}).game;
+ await f.invoke('launchGame',game.id);assert.equal(used.working_dir,custom);
+});
+test('open game folder resolves a shortcut to the target folder',async t=>{
+ const f=fixture(t,{platform:'win32',readShortcutLink:()=>({target:path.join(f.root,'game','game.exe'),cwd:path.join(f.root,'game'),args:''})});
+ const shortcut=path.join(f.root,'game.lnk');fs.writeFileSync(shortcut,'fixture');fs.mkdirSync(path.join(f.root,'game'));
+ const game=f.database.upsert({name:'Game',executable:shortcut}).game;f.context.fixtureOpen=async dir=>{f.context.opened=dir;return ''};
+ vm.runInContext("require('electron').shell.openPath=fixtureOpen",f.context);
+ await f.invoke('openGameFolder',game.id);assert.equal(f.context.opened,path.join(f.root,'game'));
+});
+
+test('adding a shortcut for a saved executable returns the existing game',async t=>{
+ const f=fixture(t,{platform:'win32',readShortcutLink:()=>({target:path.join(f.root,'game.exe'),cwd:f.root,args:''})});
+ const shortcut=path.join(f.root,'game.lnk'),exe=path.join(f.root,'game.exe');fs.writeFileSync(shortcut,'fixture');fs.writeFileSync(exe,'fixture');
+ const existing=f.database.upsert({name:'Game',executable:exe}).game;
+ const result=await f.invoke('addGame',{name:'Shortcut',executable:shortcut});
+ assert.equal(result.added,false);assert.equal(result.game.id,existing.id);assert.equal(f.database.count(),1);
+});
+test('adding an executable already represented by a shortcut returns the existing game',async t=>{
+ const f=fixture(t,{platform:'win32',readShortcutLink:()=>({target:path.join(f.root,'game.exe'),cwd:f.root,args:''})});
+ const shortcut=path.join(f.root,'game.lnk'),exe=path.join(f.root,'game.exe');fs.writeFileSync(shortcut,'fixture');fs.writeFileSync(exe,'fixture');
+ const existing=f.database.upsert({name:'Game',executable:shortcut}).game;
+ const result=await f.invoke('addGame',{name:'Direct game',executable:exe});
+ assert.equal(result.added,false);assert.equal(result.game.id,existing.id);assert.equal(f.database.count(),1);
+});
+test('editing a game to a shortcut already represented in the library is rejected',async t=>{
+ const f=fixture(t,{platform:'win32',readShortcutLink:()=>({target:path.join(f.root,'game.exe'),cwd:f.root,args:''})});
+ const shortcut=path.join(f.root,'game.lnk'),exe=path.join(f.root,'game.exe');fs.writeFileSync(shortcut,'fixture');fs.writeFileSync(exe,'fixture');
+ f.database.upsert({name:'Game',executable:exe});const other=f.database.upsert({name:'Other'}).game;
+ await assert.rejects(f.invoke('updateGame',other.id,{executable:shortcut}),/already in your library/i);
+ assert.equal(f.database.get(other.id).executable,'');
+});
+
+test('editing other fields of an unavailable shortcut preserves the saved entry',async t=>{
+ const f=fixture(t,{platform:'win32',readShortcutLink:()=>{throw Error('unavailable')}});
+ const shortcut=path.join(f.root,'missing.lnk');const game=f.database.upsert({name:'Game',executable:shortcut}).game;
+ const updated=await f.invoke('updateGame',game.id,{name:'Renamed',executable:shortcut,tags:['Favorite']});
+ assert.equal(updated.name,'Renamed');assert.equal(updated.executable,shortcut);
+});
+test('discovery and import recognize an executable already represented by a shortcut',async t=>{
+ let discovered;const f=fixture(t,{platform:'win32',discoverAll:async()=>({games:[discovered],warnings:[]}),readShortcutLink:()=>({target:path.join(f.root,'game.exe'),cwd:f.root,args:''})});
+ const shortcut=path.join(f.root,'game.lnk'),exe=path.join(f.root,'game.exe');fs.writeFileSync(shortcut,'fixture');fs.writeFileSync(exe,'fixture');
+ f.database.upsert({name:'Game',executable:shortcut});discovered={name:'Game',source:'folder',executable:exe};
+ const scan=await f.invoke('discoverGames');assert.equal(scan.games[0].alreadyAdded,true);
+ const imported=await f.invoke('importGames',[discovered]);assert.equal(imported.imported,0);assert.equal(imported.skipped,1);assert.equal(f.database.count(),1);
 });
 
 test('linked launch checks for a game process after releasing the pending launch',async t=>{

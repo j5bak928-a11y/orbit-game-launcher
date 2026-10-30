@@ -342,7 +342,8 @@ async function discover(){
     const library=db.list();
     const hasStoreIdentity=g=>g.source_id&&g.source&&g.source!=='manual'&&g.source!=='folder';
     const knownSources=new Set(library.filter(hasStoreIdentity).map(duplicateKey));
-    const knownFiles=new Set(library.filter(g=>g.executable).map(g=>normalizedPath(g.executable,process.platform)));
+    const trackedFiles=process.platform==='win32'?trackingShortcutGames(library,shell.readShortcutLink):library;
+    const knownFiles=new Set(trackedFiles.filter(g=>g.executable).map(g=>normalizedPath(g.executable,process.platform)));
     const knownUris=new Set(library.filter(g=>g.launch_uri).map(g=>g.launch_uri.toLowerCase()));
     const games=result.games.map(g=>({...g,alreadyAdded:!!(
       (hasStoreIdentity(g)&&knownSources.has(duplicateKey(g))) ||
@@ -377,7 +378,7 @@ function handlers(){
   bind('runningGames',runningGameIds);
   bind('getGame',id=>{if(!okId(id))throw Error('Invalid game identifier.');return db.get(id)});
   bind('addGame',data=>{const duplicate=shortcutDuplicate(data?.executable);if(duplicate)return {game:duplicate,added:false};const result=db.upsert(data);gamesChanged({games:[result.game],reason:'add'});if(result.added)enrichGameArtwork(result.game).catch(()=>{});return result});
-  bind('updateGame',(id,patch)=>{if(!okId(id))throw Error('Invalid game identifier.');if(patch?.executable&&shortcutDuplicate(patch.executable,id))throw Error('This executable is already in your library.');const result=db.update(id,patch);artworkEditRevisions.set(id,(artworkEditRevisions.get(id)||0)+1);gamesChanged({games:[result],reason:'edit'});return result});
+  bind('updateGame',(id,patch)=>{if(!okId(id))throw Error('Invalid game identifier.');const previous=db.get(id);if(patch?.executable&&patch.executable!==previous?.executable&&shortcutDuplicate(patch.executable,id))throw Error('This executable is already in your library.');const result=db.update(id,patch);artworkEditRevisions.set(id,(artworkEditRevisions.get(id)||0)+1);gamesChanged({games:[result],reason:'edit'});return result});
   bind('removeGame',id=>{if(!okId(id))throw Error('Invalid game identifier.');const found=db.remove(id);if(found){artworkEditRevisions.delete(id);gamesChanged({removedIds:[id],reason:'remove'});}return found});
   bind('favoriteGame',id=>{if(!okId(id))throw Error('Invalid game identifier.');const result=db.toggleFavorite(id);gamesChanged({games:[result],reason:'favorite'});return result});
   bind('saveSettings',patch=>{const settings=db.saveSettings(patch||{});nativeTheme.themeSource=settings.theme;broadcast({type:'settingsChanged',settings});return settings});
@@ -409,9 +410,12 @@ function handlers(){
   bind('importGames',async games=>{
     if(!Array.isArray(games)||games.length>10000)throw Error('Invalid import batch.');
     let imported=0,skipped=0;const artwork=[];const errors=[];
+    const shortcuts=process.platform==='win32'?db.listActivityGames().filter(g=>path.extname(g.executable||'').toLowerCase()==='.lnk'):[];
+    const shortcutTargets=new Set(trackingShortcutGames(shortcuts,shell.readShortcutLink).filter(g=>path.extname(g.executable||'').toLowerCase()!=='.lnk').map(g=>normalizedPath(g.executable,'win32')));
     // Local icons are useful even when Steam downloads are turned off.
     for(let i=0;i<games.length;i+=50){
-      const batch=db.upsertBatch(games.slice(i,i+50));
+      const candidates=games.slice(i,i+50).filter(game=>{if(typeof game?.executable==='string'&&shortcutTargets.has(normalizedPath(game.executable,'win32'))){skipped++;return false;}return true;});
+      const batch=db.upsertBatch(candidates);
       imported+=batch.imported;skipped+=batch.skipped;errors.push(...batch.errors);
       artwork.push(...artworkRequests(batch.addedGames));
       await new Promise(resolve=>setImmediate(resolve));

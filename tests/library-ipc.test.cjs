@@ -130,6 +130,20 @@ test('editing a game to a shortcut already represented in the library is rejecte
  assert.equal(f.database.get(other.id).executable,'');
 });
 
+test('editing other fields of an unavailable shortcut preserves the saved entry',async t=>{
+ const f=fixture(t,{platform:'win32',readShortcutLink:()=>{throw Error('unavailable')}});
+ const shortcut=path.join(f.root,'missing.lnk');const game=f.database.upsert({name:'Game',executable:shortcut}).game;
+ const updated=await f.invoke('updateGame',game.id,{name:'Renamed',executable:shortcut,tags:['Favorite']});
+ assert.equal(updated.name,'Renamed');assert.equal(updated.executable,shortcut);
+});
+test('discovery and import recognize an executable already represented by a shortcut',async t=>{
+ let discovered;const f=fixture(t,{platform:'win32',discoverAll:async()=>({games:[discovered],warnings:[]}),readShortcutLink:()=>({target:path.join(f.root,'game.exe'),cwd:f.root,args:''})});
+ const shortcut=path.join(f.root,'game.lnk'),exe=path.join(f.root,'game.exe');fs.writeFileSync(shortcut,'fixture');fs.writeFileSync(exe,'fixture');
+ f.database.upsert({name:'Game',executable:shortcut});discovered={name:'Game',source:'folder',executable:exe};
+ const scan=await f.invoke('discoverGames');assert.equal(scan.games[0].alreadyAdded,true);
+ const imported=await f.invoke('importGames',[discovered]);assert.equal(imported.imported,0);assert.equal(imported.skipped,1);assert.equal(f.database.count(),1);
+});
+
 test('linked launch checks for a game process after releasing the pending launch',async t=>{
  const f=fixture(t,{platform:'win32'});
  const game=f.database.upsert({name:'Linked game',source:'steam',source_id:'123',install_path:'C:\\Games\\Game',launch_uri:'steam://rungameid/123'}).game;

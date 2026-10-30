@@ -10,11 +10,11 @@ test('Steam discovery reads appmanifest and follows libraryfolders',()=>fixture(
  const lib=path.join(root,'Steam'),secondary=path.join(root,'SteamLibrary');await fsp.mkdir(path.join(lib,'steamapps'),{recursive:true});await fsp.mkdir(path.join(secondary,'steamapps','common','Space Game'),{recursive:true});
  await fsp.writeFile(path.join(lib,'steamapps','libraryfolders.vdf'),`"libraryfolders" { "1" { "path" "${secondary.replace(/\\/g,'\\\\')}" } }`);
  await fsp.writeFile(path.join(secondary,'steamapps','appmanifest_123.acf'),'"AppState" { "appid" "123" "name" "Space Game" "installdir" "Space Game" }');
- const data=await discoverSteam([lib]);assert.equal(data.games.length,1);assert.equal(data.games[0].name,'Space Game');assert.equal(data.games[0].launch_uri,'steam://rungameid/123');
+ const data=await discoverSteam([lib],{queryRegistry:async()=>''});assert.equal(data.games.length,1);assert.equal(data.games[0].name,'Space Game');assert.equal(data.games[0].launch_uri,'steam://rungameid/123');
 }));
 test('Steam invalid/missing directories are ignored',()=>fixture(async root=>{
  const appDir=path.join(root,'steamapps');await fsp.mkdir(appDir,{recursive:true});await fsp.writeFile(path.join(appDir,'appmanifest_30.acf'),'"AppState" { "appid" "30" "name" "Missing" "installdir" "notinstalled" }');
- const data=await discoverSteam([root]);assert.equal(data.games.length,0);
+ const data=await discoverSteam([root],{queryRegistry:async()=>''});assert.equal(data.games.length,0);
 }));
 test('Epic manifest uses verified installation path and known launcher protocol',()=>fixture(async root=>{
  const install=path.join(root,'Title');await fsp.mkdir(install);const executable=path.join(install,'Game.exe');await fsp.writeFile(executable,'placeholder');
@@ -38,7 +38,7 @@ test('Steam rejects directory traversal in install manifests',()=>fixture(async 
  for(const [id,dir] of [['20','../escape'],['21','..\\escape'],['22','nested/subfolder']]){
    await fsp.writeFile(path.join(folder,`appmanifest_${id}.acf`),`"AppState" { "appid" "${id}" "name" "Wrong location" "installdir" "${dir}" }`);
  }
- const result=await discoverSteam([root]);assert.deepEqual(result.games,[]);
+ const result=await discoverSteam([root],{queryRegistry:async()=>''});assert.deepEqual(result.games,[]);
 }));
 test('macOS GOG search paths are independent of Windows environment variables',()=>{
  const roots=gogRoots('darwin');assert.equal(roots.length,1);

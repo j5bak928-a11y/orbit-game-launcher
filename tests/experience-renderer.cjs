@@ -36,6 +36,21 @@ const settle=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
   await page.evaluate(()=>window.experience.launchResolve({message:'Fixture launched'}));
   await page.waitForFunction(()=>!document.querySelector('.hero [data-action=launch]').disabled);
   await page.locator('nav [data-route=library]').click();
+  // Exercise long names and missing covers in the real layout before large-library checks.
+  await page.evaluate(()=>window.fixture.patch(window.fixture.id(1),{name:'A Remarkably Long Game Title With Several Words And A Final Subtitle'}));
+  await page.locator('#global-search').fill('A Remarkably Long Game Title');
+  await page.waitForFunction(()=>document.querySelectorAll('.game-card').length===1);
+  const label=page.locator('.game-card .game-name');
+  assert.equal(await label.evaluate(el=>getComputedStyle(el).webkitLineClamp),'2');
+  assert(await label.evaluate(el=>el.getBoundingClientRect().height>16),'long names use a second line');
+  assert.equal(await page.locator('.game-card .cover-placeholder-title').count(),1);
+  await page.locator('.game-card').click();
+  assert.equal(await page.locator('[role=dialog] .detail-playtime').count(),1);
+  assert.equal(await page.locator('[role=dialog] [data-action=edit]').count(),1);
+  await page.keyboard.press('Escape');
+  await page.evaluate(()=>window.fixture.patch(window.fixture.id(1),{name:'Game 00000'}));
+  await page.locator('#global-search').fill('');
+  await page.waitForFunction(()=>document.querySelectorAll('.game-card').length>1);
   assert.equal(await page.locator('#source-filter').count(),0,'platform filters should have one visible control');
   await page.locator('.platform-chip[data-source=epic]').click();
   assert.equal(await page.locator('#game-result-count').textContent(),'2500 games');

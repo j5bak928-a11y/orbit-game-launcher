@@ -351,6 +351,19 @@ async function discover(){
     broadcast({type:'scanFinished',count:games.length});return {games,warnings:result.warnings,diagnostics:result.diagnostics||[]};
   }finally{scanning=false;}
 }
+function shortcutDuplicate(executable,exceptId=''){
+ if(process.platform!=='win32'||typeof executable!=='string'||!executable)return null;
+ const isShortcut=file=>path.extname(file).toLowerCase()==='.lnk';
+ const shortcut=isShortcut(executable);
+ const target=shortcut?resolveWindowsShortcut(executable,shell.readShortcutLink).executable:executable;
+ for(const game of db.listActivityGames()){
+  if(game.id===exceptId||!game.executable||(!shortcut&&!isShortcut(game.executable)))continue;
+  let existing=game.executable;
+  if(isShortcut(existing))try{existing=resolveWindowsShortcut(existing,shell.readShortcutLink).executable;}catch{continue;}
+  if(normalizedPath(target,'win32')===normalizedPath(existing,'win32'))return db.get(game.id);
+ }
+ return null;
+}
 function handlers(){
   const bind=(name,fn)=>ipcMain.handle('orbit:'+name,async(event, ...args)=>{try{if(!authorizedSender(event))throw Error('Untrusted IPC sender.');return await fn(...args)}catch(e){throw new Error(e?.message||'Unexpected error.')}});
   bind('getWindowState',()=>fullscreenController.get());
@@ -363,8 +376,8 @@ function handlers(){
   bind('listGames',()=>db.list());
   bind('runningGames',runningGameIds);
   bind('getGame',id=>{if(!okId(id))throw Error('Invalid game identifier.');return db.get(id)});
-  bind('addGame',data=>{const result=db.upsert(data);gamesChanged({games:[result.game],reason:'add'});if(result.added)enrichGameArtwork(result.game).catch(()=>{});return result});
-  bind('updateGame',(id,patch)=>{if(!okId(id))throw Error('Invalid game identifier.');const result=db.update(id,patch);artworkEditRevisions.set(id,(artworkEditRevisions.get(id)||0)+1);gamesChanged({games:[result],reason:'edit'});return result});
+  bind('addGame',data=>{const duplicate=shortcutDuplicate(data?.executable);if(duplicate)return {game:duplicate,added:false};const result=db.upsert(data);gamesChanged({games:[result.game],reason:'add'});if(result.added)enrichGameArtwork(result.game).catch(()=>{});return result});
+  bind('updateGame',(id,patch)=>{if(!okId(id))throw Error('Invalid game identifier.');if(patch?.executable&&shortcutDuplicate(patch.executable,id))throw Error('This executable is already in your library.');const result=db.update(id,patch);artworkEditRevisions.set(id,(artworkEditRevisions.get(id)||0)+1);gamesChanged({games:[result],reason:'edit'});return result});
   bind('removeGame',id=>{if(!okId(id))throw Error('Invalid game identifier.');const found=db.remove(id);if(found){artworkEditRevisions.delete(id);gamesChanged({removedIds:[id],reason:'remove'});}return found});
   bind('favoriteGame',id=>{if(!okId(id))throw Error('Invalid game identifier.');const result=db.toggleFavorite(id);gamesChanged({games:[result],reason:'favorite'});return result});
   bind('saveSettings',patch=>{const settings=db.saveSettings(patch||{});nativeTheme.themeSource=settings.theme;broadcast({type:'settingsChanged',settings});return settings});

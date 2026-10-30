@@ -108,6 +108,28 @@ test('open game folder resolves a shortcut to the target folder',async t=>{
  await f.invoke('openGameFolder',game.id);assert.equal(f.context.opened,path.join(f.root,'game'));
 });
 
+test('adding a shortcut for a saved executable returns the existing game',async t=>{
+ const f=fixture(t,{platform:'win32',readShortcutLink:()=>({target:path.join(f.root,'game.exe'),cwd:f.root,args:''})});
+ const shortcut=path.join(f.root,'game.lnk'),exe=path.join(f.root,'game.exe');fs.writeFileSync(shortcut,'fixture');fs.writeFileSync(exe,'fixture');
+ const existing=f.database.upsert({name:'Game',executable:exe}).game;
+ const result=await f.invoke('addGame',{name:'Shortcut',executable:shortcut});
+ assert.equal(result.added,false);assert.equal(result.game.id,existing.id);assert.equal(f.database.count(),1);
+});
+test('adding an executable already represented by a shortcut returns the existing game',async t=>{
+ const f=fixture(t,{platform:'win32',readShortcutLink:()=>({target:path.join(f.root,'game.exe'),cwd:f.root,args:''})});
+ const shortcut=path.join(f.root,'game.lnk'),exe=path.join(f.root,'game.exe');fs.writeFileSync(shortcut,'fixture');fs.writeFileSync(exe,'fixture');
+ const existing=f.database.upsert({name:'Game',executable:shortcut}).game;
+ const result=await f.invoke('addGame',{name:'Direct game',executable:exe});
+ assert.equal(result.added,false);assert.equal(result.game.id,existing.id);assert.equal(f.database.count(),1);
+});
+test('editing a game to a shortcut already represented in the library is rejected',async t=>{
+ const f=fixture(t,{platform:'win32',readShortcutLink:()=>({target:path.join(f.root,'game.exe'),cwd:f.root,args:''})});
+ const shortcut=path.join(f.root,'game.lnk'),exe=path.join(f.root,'game.exe');fs.writeFileSync(shortcut,'fixture');fs.writeFileSync(exe,'fixture');
+ f.database.upsert({name:'Game',executable:exe});const other=f.database.upsert({name:'Other'}).game;
+ await assert.rejects(f.invoke('updateGame',other.id,{executable:shortcut}),/already in your library/i);
+ assert.equal(f.database.get(other.id).executable,'');
+});
+
 test('linked launch checks for a game process after releasing the pending launch',async t=>{
  const f=fixture(t,{platform:'win32'});
  const game=f.database.upsert({name:'Linked game',source:'steam',source_id:'123',install_path:'C:\\Games\\Game',launch_uri:'steam://rungameid/123'}).game;

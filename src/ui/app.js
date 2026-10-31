@@ -3,10 +3,10 @@
 const el=id=>document.getElementById(id);
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const iconPaths={
- home:'<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
- library:'<rect x="3" y="4" width="7" height="16" rx="1.5"/><rect x="13" y="4" width="8" height="16" rx="1.5"/><path d="M3 9h7M13 15h8"/>',
+ home:"<path d=\"M3 10.5 12 3l9 7.5\"/><path d=\"M5.5 9.5V20h13V9.5M10 20v-6h4v6\"/>",
+ library:"<rect x=\"3\" y=\"4\" width=\"8\" height=\"7\" rx=\"1.5\"/><rect x=\"13\" y=\"4\" width=\"8\" height=\"7\" rx=\"1.5\"/><rect x=\"3\" y=\"13\" width=\"8\" height=\"7\" rx=\"1.5\"/><rect x=\"13\" y=\"13\" width=\"8\" height=\"7\" rx=\"1.5\"/>",
  heart:'<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z"/>',
- clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>',
+ clock:"<circle cx=\"12\" cy=\"12\" r=\"8.5\"/><path d=\"M12 7.5v5l3.3 2\"/>",
  settings:'<path d="M12 3.2 14 4l2.1-1 2.5 2.5-1 2.1.8 2 2.3.8v3.5l-2.3.8-.8 2 1 2.1-2.5 2.5-2.1-1-2 .8-1 2.3H10.5l-.8-2.3-2-.8-2.1 1-2.5-2.5 1-2.1-.8-2L1 13.9v-3.5l2.3-.8.8-2-1-2.1L5.6 3l2.1 1 2-.8 1-2.2h3.5" transform="translate(1 1) scale(.84)"/><circle cx="12" cy="12" r="3"/>',
  search:'<circle cx="10.6" cy="10.6" r="6.6"/><path d="m16 16 5 5"/>',
  plus:'<path d="M12 5v14M5 12h14"/>',play:'<path d="m8 5 12 7-12 7V5Z"/>',
@@ -14,7 +14,7 @@ const iconPaths={
  chevron:'<path d="m9 18 6-6-6-6"/>',
  grid:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
  list:'<path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.1M3 12h.1M3 18h.1" stroke-width="3"/>',
- refresh:'<path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 9a7 7 0 0 1 12-2l2 5M4 12l2 5a7 7 0 0 0 12-2"/>',
+ refresh:"<path d=\"M20 7v5h-5M4 17v-5h5\"/><path d=\"M5.3 9A7 7 0 0 1 18 6.5L20 12M4 12l2 5.5A7 7 0 0 0 18.7 15\"/>",
  download:'<path d="M12 3v12m-5-5 5 5 5-5M4 17v3h16v-3"/>',
  folder:'<path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6Z"/>',
  monitor:'<rect x="2" y="3" width="20" height="15" rx="2"/><path d="M8 22h8m-4-4v4"/>',
@@ -28,7 +28,7 @@ const iconPaths={
  check:'<path d="m4 12 5 5L20 6"/>',
  alert:'<path d="M12 3 2 21h20L12 3Zm0 7v5m0 3v.1"/>',
  lightning:'<path d="m13 2-9 12h7l-1 8 10-13h-7l0-7Z"/>',
- gamepad:'<path d="M7 7h10a5 5 0 0 1 5 5l-1 6a2 2 0 0 1-3 1l-3-3H9l-3 3a2 2 0 0 1-3-1l-1-6a5 5 0 0 1 5-5Zm-1 5h5M8.5 9.5v5M16 12h.1M19 14h.1"/>',
+ gamepad:"<path d=\"M7 7h10a5 5 0 0 1 4.9 5.9l-.8 4.3a2.2 2.2 0 0 1-3.7 1.2L15 16H9l-2.4 2.4a2.2 2.2 0 0 1-3.7-1.2l-.8-4.3A5 5 0 0 1 7 7Z\"/><path d=\"M6.5 11.5h4M8.5 9.5v4M16 11h.01M18 13h.01\" stroke-width=\"2.4\"/>",
  external:'<path d="M13 4h7v7M20 4l-9 9M20 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h5"/>',
  image:'<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="2"/><path d="m3 17 6-6 4 4 2-2 6 6"/>',
  sort:'<path d="M5 3v18m-3-3 3 3 3-3M12 7h9M12 12h7M12 17h4"/>',
@@ -71,20 +71,20 @@ function card(g){return `<article class="game-card" data-action="detail" data-id
   <div class="cover">${coverImage(g)}<span class="cover-letter">${esc(g.name.slice(0,2))}</span><span class="cover-source">${esc(sourceLabel(g))}</span>
   <button class="favorite-float ${g.favorite?'active':''}" data-action="favorite" data-id="${esc(g.id)}" aria-label="${g.favorite?'Remove favorite':'Add favorite'}">${ic('heart',16)}</button>
   <button class="cover-play" data-action="launch" data-id="${esc(g.id)}" aria-label="Launch ${esc(g.name)}">${ic('play',17)}</button></div>
-  <div class="game-label"><div style="min-width:0"><span class="game-name" title="${esc(g.name)}">${esc(g.name)}</span><span class="game-meta">${state.runningIds?.includes(g.id)?'● Playing now':g.total_play_seconds?esc(timeLabel(g.total_play_seconds)):esc(sourceLabel(g))}</span></div>
+  <div class="game-label"><div style="min-width:0"><span class="game-name" title="${esc(g.name)}">${esc(g.name)}</span><span class="game-meta">${state.runningIds?.includes(g.id)?'● Playing now':esc(timeLabel(g.total_play_seconds))}</span></div>
   <button class="game-menu" data-action="detail" data-id="${esc(g.id)}" aria-label="More about ${esc(g.name)}">${ic('dots',18)}</button></div></article>`}
 function rowGame(g){return `<article class="game-row" data-action="detail" data-id="${esc(g.id)}" tabindex="0" role="button" aria-label="View ${esc(g.name)}">
   <div class="row-cover">${esc(g.name.slice(0,1))}${artwork(g.icon)?`<img src="${artwork(g.icon)}" alt="" loading="lazy" class="list-game-icon" />`:''}${artwork(g.cover)?`<img src="${artwork(g.cover)}" alt="" loading="lazy" />`:''}</div>
   <div class="row-info"><h3>${esc(g.name)}</h3><p>${esc(sourceLabel(g))}${g.tags?.length?' · '+esc(g.tags.slice(0,2).join(', ')):''}</p></div>
   <div class="row-right"><span class="playtime">${esc(timeLabel(g.total_play_seconds))}</span><button class="ghost-btn" data-action="favorite" data-id="${esc(g.id)}" aria-label="Toggle favorite" style="${g.favorite?'color:#ffc171':''}">${ic('heart',17)}</button><button class="ghost-btn row-play" data-action="launch" data-id="${esc(g.id)}">${ic('play',15)} Play</button></div></article>`}
 function sidebar(){const links=[['home','home','Overview'],['library','library','All games'],['favorites','heart','Favorites'],['recent','clock','Recently played']];return `<aside class="sidebar">
- <div class="brand" role="img" aria-label="Orbit Launcher"><img class="brand-logo brand-logo-dark" src="../../assets/branding/orbit-logo-dark.png" alt="" width="512" height="145" /><img class="brand-logo brand-logo-light" src="../../assets/branding/orbit-logo-light.png" alt="" width="512" height="145" /><img class="brand-mark brand-mark-dark" src="../../assets/branding/orbit-mark-dark.png" alt="" width="256" height="256" /><img class="brand-mark brand-mark-light" src="../../assets/branding/orbit-mark-light.png" alt="" width="256" height="256" /></div>
+ <div class="brand" role="img" aria-label="Orbit Launcher"><img class="orbit-brand-mark" src="../../assets/branding/orbit-generated-mark.png" alt="" /><span class="orbit-brand-word" aria-hidden="true">orbit</span></div>
  <div class="side-label">LIBRARY</div><nav class="nav" aria-label="Main navigation">${links.map(([id,icon,name])=>`<button class="nav-item ${state.route===id?'active':''}" data-action="navigate" data-route="${id}" title="${name}" ${state.route===id?'aria-current="page"':''}>${ic(icon,18)}<span>${name}</span>${id==='library'?`<span class="count">${state.games.length}</span>`:''}</button>`).join('')}</nav>
  <div class="side-divider"></div><nav class="nav"><button class="nav-item" data-action="shuffle" title="Choose a game" ${state.games.length?'':'disabled'}>${ic('sparkles',18)}<span>Choose a game</span></button><button class="nav-item ${state.route==='settings'?'active':''}" data-action="navigate" data-route="settings" title="Settings">${ic('settings',18)}<span>Settings</span></button></nav>
- <div class="side-bottom"><div class="side-tip"><div class="side-tip-icon">${ic('folder',19)}</div><strong>Keep your library together.</strong><p>Find games from your launchers and selected folders.</p><button data-action="scan">${ic('plus',14)} Find installed games</button></div><div class="side-version"><span class="status-dot"></span><span>${state.scanning?'Scanning your games…':'Local library'} <span class="version-number">v${esc(state.version)}</span></span></div></div></aside>`}
+ <div class="side-bottom"><div class="side-version"><span class="status-dot"></span><span>${state.scanning?'Scanning your games…':'Local library'} <span class="version-number">v${esc(state.version)}</span></span></div></div></aside>`}
 function topbar(){const name={home:'Overview',library:'My library',favorites:'Favorites',recent:'Recently played',settings:'Settings'}[state.route]||'Overview';return `<header class="topbar"><div class="breadcrumb">${name}</div>
  <div class="topbar-right"><label class="searchbox">${ic('search',18)}<input id="global-search" type="search" placeholder="Search your library" value="${esc(state.query)}" autocomplete="off" aria-label="Search games"/><kbd>Ctrl K</kbd></label>
- <button class="top-icon" data-action="controller-mode" title="Controller mode (F11)" aria-label="Enter controller mode">${ic('gamepad',18)}</button><button class="top-icon" data-action="scan" title="Discover installed games" aria-label="Discover installed games">${ic('refresh',18)}</button>
+ <button class="top-icon" data-action="controller-mode" title="Controller mode (F11)" aria-label="Enter controller mode">${ic('gamepad',18)}</button>${['library','favorites','recent'].includes(state.route)?'':`<button class="top-icon" data-action="scan" title="Discover installed games" aria-label="Discover installed games">${ic('refresh',18)}</button>`}
  <button class="primary-btn" data-action="add">${ic('plus',18)}<span>Add game</span></button></div></header>`}
 function headline(eyebrow,title,subtitle,buttons=''){return `<div class="page-heading"><div><div class="eyebrow"><i></i>${esc(eyebrow)}</div><h1 class="page-title">${esc(title)}</h1><p class="page-intro">${esc(subtitle)}</p></div>${buttons}</div>`}
 function platformFilters(){
@@ -115,7 +115,7 @@ function home(){
 }
 function emptyState(title,body,extra=''){return `<div class="empty-state"><div class="empty-illustration">${ic('gamepad',47)}</div><h2>${esc(title)}</h2><p>${esc(body)}</p><div class="empty-actions">${extra||`<button class="primary-btn" data-action="scan">${ic('refresh',16)} Discover games</button><button class="secondary-btn" data-action="add">${ic('plus',16)} Add game</button>`}</div></div>`}
 function libraryView(){const subtitle={library:'A home for everything you play.',favorites:'The games you love, always one click away.',recent:'Pick up where you left off.'};const title={library:'Your game library',favorites:'Your favorites',recent:'Recently played'};const tags=[...new Set(state.games.flatMap(g=>g.tags||[]))].sort((a,b)=>a.localeCompare(b)).slice(0,100);const genres=[...new Set(state.games.map(g=>g.genre).filter(Boolean))].sort((a,b)=>a.localeCompare(b)).slice(0,100);
- return `<section class="page">${headline('Your collection',title[state.route],subtitle[state.route],`<button class="secondary-btn" data-action="scan">${ic('refresh',15)} Scan for games</button>`)}
+ return `<section class="page library-page">${headline('Your collection',title[state.route],subtitle[state.route],`<button class="secondary-btn" data-action="scan">${ic('refresh',15)} Scan for games</button>`)}
  <div id="platform-filter-slot">${platformFilters()}</div><div class="library-controls"><div class="control-left"><span class="library-count" id="game-result-count">${filtered().length} games</span>
  <div class="select-wrap"><select id="genre-filter" aria-label="Filter by category"><option value="all" ${state.genre==='all'?'selected':''}>All categories</option>${genres.map(g=>`<option value="${esc(g)}" ${state.genre===g?'selected':''}>${esc(g)}</option>`).join('')}</select></div>
  <div class="select-wrap"><select id="tag-filter" aria-label="Filter by tag"><option value="all" ${state.tag==='all'?'selected':''}>All tags</option>${tags.map(t=>`<option value="${esc(t)}" ${state.tag===t?'selected':''}>${esc(t)}</option>`).join('')}</select></div></div>

@@ -46,7 +46,7 @@ test('startup scan gives every newly imported game an icon without replacing exi
  }
  const app={requestSingleInstanceLock:()=>true,getPath:()=>root,getVersion:()=> 'fixture',whenReady:()=>Promise.resolve(),on(){},getFileIcon:async()=>({isEmpty:()=>false,toPNG:()=>icon})};
  const electron={app,BrowserWindow:FakeWindow,dialog:{showErrorBox(){throw Error('Database startup failed');}},
-  ipcMain:{handle(){}},protocol:{registerSchemesAsPrivileged(){},handle(){}},nativeTheme:{themeSource:'dark'},shell:{readShortcutLink(){throw Error('Unexpected shortcut');}}};
+  ipcMain:{handle(){}},protocol:{registerSchemesAsPrivileged(){},handle(){}},nativeTheme:{themeSource:'dark'}};
  const main=path.join(__dirname,'../src/main.cjs'),realRequire=createRequire(main);
  context=vm.createContext({
   require:name=>{

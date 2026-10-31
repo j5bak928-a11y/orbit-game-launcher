@@ -8,7 +8,7 @@ test('release version and installer identity are consistent',()=>{
  assert.deepEqual(validateReleaseConfig(pkg,lock),[]);
 });
 test('rejects stale installer names and mismatched lockfile versions',()=>{
- const changed=structuredClone(pkg);changed.version='0.2.5';
+ const changed=structuredClone(pkg);changed.version='999.0.0';
  const problems=validateReleaseConfig(changed,lock);
  assert(problems.some(x=>x.includes('lockfile')));
  assert(problems.some(x=>x.includes('buildVersion')));

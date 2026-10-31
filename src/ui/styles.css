@@ -110,3 +110,21 @@ body[data-density=compact]{--card-label-height:72px}
 .detail-stat{min-width:0;overflow-wrap:anywhere}
 .detail-note{padding:12px 14px;border:1px solid var(--border);border-radius:9px;background:var(--panel2)}
 @media(max-width:500px){:root,body[data-density=compact]{--card-label-height:71px}.detail-cover{grid-template-columns:1fr}.sidebar{overflow-x:hidden}}
+
+/* Refined, low-cost library presentation. */
+:root{--muted:#a7abb3;--soft:#969ca6}
+body[data-theme=light]{--muted:#565e67;--soft:#626b75}
+.brand{background:transparent;gap:5px;min-width:0}
+.orbit-brand-mark{display:block;flex:none;width:56px;height:56px;object-fit:contain}
+.orbit-brand-word{font-size:29px;font-weight:750;letter-spacing:-1.7px;line-height:1;color:var(--text)}
+.nav-item svg,.top-icon svg{stroke-width:2}
+.version-number{opacity:1}
+.library-page .page-heading{margin-bottom:18px}
+.library-page .platform-filters{margin-bottom:10px}
+.library-page .library-controls{margin:0 0 14px}
+.library-page .active-filters{margin-bottom:12px}
+.game-menu{display:grid;place-items:center;flex:none;width:32px;height:32px;margin:-6px -5px 0 0;padding:0;border:1px solid transparent;border-radius:7px;color:var(--muted)}
+.game-menu:hover,.game-menu:focus-visible{background:var(--panel2);border-color:var(--border);color:var(--text)}
+.cover-source{backdrop-filter:none;background:#101112e8}
+@media(max-width:750px){.brand{justify-content:center}.orbit-brand-mark{width:40px;height:40px}.orbit-brand-word{display:none}}
+@media(max-width:500px){.orbit-brand-mark{width:34px;height:34px}}

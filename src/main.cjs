@@ -18,7 +18,6 @@ const {findExactSteamApp}=require('./core/steam-search.cjs');
 const {findLocalPortrait,findEpicPortrait}=require('./core/nonsteam-artwork.cjs');
 const {WindowsActivityTracker}=require('./core/windows-activity.cjs');
 const {backgroundWindow}=require('./core/background-window.cjs');
-const {resolveWindowsShortcut,trackingShortcutGames}=require('./core/windows-shortcut.cjs');
 const {sessionClock}=require('./core/session-clock.cjs');
 const {createUpdateService}=require('./core/updates.cjs');
 const {catalogMatch,identifyGame}=require('./core/game-identity.cjs');
@@ -342,8 +341,7 @@ async function discover(){
     const library=db.list();
     const hasStoreIdentity=g=>g.source_id&&g.source&&g.source!=='manual'&&g.source!=='folder';
     const knownSources=new Set(library.filter(hasStoreIdentity).map(duplicateKey));
-    const trackedFiles=process.platform==='win32'?trackingShortcutGames(library,shell.readShortcutLink):library;
-    const knownFiles=new Set(trackedFiles.filter(g=>g.executable).map(g=>normalizedPath(g.executable,process.platform)));
+    const knownFiles=new Set(library.filter(g=>g.executable).map(g=>normalizedPath(g.executable,process.platform)));
     const knownUris=new Set(library.filter(g=>g.launch_uri).map(g=>g.launch_uri.toLowerCase()));
     const games=result.games.map(g=>({...g,alreadyAdded:!!(
       (hasStoreIdentity(g)&&knownSources.has(duplicateKey(g))) ||
@@ -351,19 +349,6 @@ async function discover(){
       (g.launch_uri&&knownUris.has(g.launch_uri.toLowerCase())))}));
     broadcast({type:'scanFinished',count:games.length});return {games,warnings:result.warnings,diagnostics:result.diagnostics||[]};
   }finally{scanning=false;}
-}
-function shortcutDuplicate(executable,exceptId=''){
- if(process.platform!=='win32'||typeof executable!=='string'||!executable)return null;
- const isShortcut=file=>path.extname(file).toLowerCase()==='.lnk';
- const shortcut=isShortcut(executable);
- const target=shortcut?resolveWindowsShortcut(executable,shell.readShortcutLink).executable:executable;
- for(const game of db.listActivityGames()){
-  if(game.id===exceptId||!game.executable||(!shortcut&&!isShortcut(game.executable)))continue;
-  let existing=game.executable;
-  if(isShortcut(existing))try{existing=resolveWindowsShortcut(existing,shell.readShortcutLink).executable;}catch{continue;}
-  if(normalizedPath(target,'win32')===normalizedPath(existing,'win32'))return db.get(game.id);
- }
- return null;
 }
 function handlers(){
   const bind=(name,fn)=>ipcMain.handle('orbit:'+name,async(event, ...args)=>{try{if(!authorizedSender(event))throw Error('Untrusted IPC sender.');return await fn(...args)}catch(e){throw new Error(e?.message||'Unexpected error.')}});
@@ -377,13 +362,13 @@ function handlers(){
   bind('listGames',()=>db.list());
   bind('runningGames',runningGameIds);
   bind('getGame',id=>{if(!okId(id))throw Error('Invalid game identifier.');return db.get(id)});
-  bind('addGame',data=>{const duplicate=shortcutDuplicate(data?.executable);if(duplicate)return {game:duplicate,added:false};const result=db.upsert(data);gamesChanged({games:[result.game],reason:'add'});if(result.added)enrichGameArtwork(result.game).catch(()=>{});return result});
-  bind('updateGame',(id,patch)=>{if(!okId(id))throw Error('Invalid game identifier.');const previous=db.get(id);if(patch?.executable&&patch.executable!==previous?.executable&&shortcutDuplicate(patch.executable,id))throw Error('This executable is already in your library.');const result=db.update(id,patch);artworkEditRevisions.set(id,(artworkEditRevisions.get(id)||0)+1);gamesChanged({games:[result],reason:'edit'});return result});
+  bind('addGame',data=>{const result=db.upsert(data);gamesChanged({games:[result.game],reason:'add'});if(result.added)enrichGameArtwork(result.game).catch(()=>{});return result});
+  bind('updateGame',(id,patch)=>{if(!okId(id))throw Error('Invalid game identifier.');const result=db.update(id,patch);artworkEditRevisions.set(id,(artworkEditRevisions.get(id)||0)+1);gamesChanged({games:[result],reason:'edit'});return result});
   bind('removeGame',id=>{if(!okId(id))throw Error('Invalid game identifier.');const found=db.remove(id);if(found){artworkEditRevisions.delete(id);gamesChanged({removedIds:[id],reason:'remove'});}return found});
   bind('favoriteGame',id=>{if(!okId(id))throw Error('Invalid game identifier.');const result=db.toggleFavorite(id);gamesChanged({games:[result],reason:'favorite'});return result});
   bind('saveSettings',patch=>{const settings=db.saveSettings(patch||{});nativeTheme.themeSource=settings.theme;broadcast({type:'settingsChanged',settings});return settings});
-  bind('chooseExecutable',async()=>{const result=await dialog.showOpenDialog(win,{title:'Choose game executable',properties:['openFile'],filters:process.platform==='win32'?[{name:'Programs and shortcuts',extensions:['exe','com','lnk']},{name:'All files',extensions:['*']}]:[{name:'All files',extensions:['*']}]});return result.canceled?null:result.filePaths[0]});
-  bind('inspectGameFile',executable=>inspectGameFile(process.platform==='win32'&&path.extname(executable).toLowerCase()==='.lnk'?resolveWindowsShortcut(executable,shell.readShortcutLink).executable:executable,{
+  bind('chooseExecutable',async()=>{const result=await dialog.showOpenDialog(win,{title:'Choose game executable',properties:['openFile'],filters:process.platform==='win32'?[{name:'Programs',extensions:['exe','com']},{name:'All files',extensions:['*']}]:[{name:'All files',extensions:['*']}]});return result.canceled?null:result.filePaths[0]});
+  bind('inspectGameFile',executable=>inspectGameFile(executable,{
     saveArtwork,extractIcon:extractNativeIcon,
     lookupCover:async ({name,steamId})=>{
       const id=steamId||(onlineArtwork()?(await findExactSteamApp(name))?.steamId:'');
@@ -410,12 +395,9 @@ function handlers(){
   bind('importGames',async games=>{
     if(!Array.isArray(games)||games.length>10000)throw Error('Invalid import batch.');
     let imported=0,skipped=0;const artwork=[];const errors=[];
-    const shortcuts=process.platform==='win32'?db.listActivityGames().filter(g=>path.extname(g.executable||'').toLowerCase()==='.lnk'):[];
-    const shortcutTargets=new Set(trackingShortcutGames(shortcuts,shell.readShortcutLink).filter(g=>path.extname(g.executable||'').toLowerCase()!=='.lnk').map(g=>normalizedPath(g.executable,'win32')));
     // Local icons are useful even when Steam downloads are turned off.
     for(let i=0;i<games.length;i+=50){
-      const candidates=games.slice(i,i+50).filter(game=>{if(typeof game?.executable==='string'&&shortcutTargets.has(normalizedPath(game.executable,'win32'))){skipped++;return false;}return true;});
-      const batch=db.upsertBatch(candidates);
+      const batch=db.upsertBatch(games.slice(i,i+50));
       imported+=batch.imported;skipped+=batch.skipped;errors.push(...batch.errors);
       artwork.push(...artworkRequests(batch.addedGames));
       await new Promise(resolve=>setImmediate(resolve));
@@ -438,8 +420,7 @@ function handlers(){
         catch(e){broadcast({type:'error',message:`Could not save play time: ${e.message}`})}
         sessions.delete(id);sessionClocks.delete(id);gamesChanged({games:[db.get(id)],reason:'playtime'});
       });
-      const launchTarget=process.platform==='win32'&&!game.launch_uri&&path.extname(game.executable).toLowerCase()==='.lnk'?(()=>{const target=resolveWindowsShortcut(game.executable,shell.readShortcutLink);return {...game,...target,working_dir:game.working_dir||target.working_dir};})():game;
-      const result=await executeGame(launchTarget,url=>shell.openExternal(url),exit.onExit);
+      const result=await executeGame(game,url=>shell.openExternal(url),exit.onExit);
       if(result.tracked){
         try{sessionId=db.startSession(id);sessions.set(id,sessionId);sessionClocks.set(id,sessionClock());exit.ready();performanceGuard();}
         catch(e){
@@ -460,7 +441,7 @@ function handlers(){
       return result;
     }finally{pendingLaunches.delete(id);if(activityTracker?.noteLaunch)activityTracker.noteLaunch();else activityTracker?.poll?.().catch(()=>{});}
   });
-  bind('openGameFolder',async id=>{if(!okId(id))throw Error('Invalid game identifier.');const game=db.get(id);if(!game)throw Error('Game not found.');const executable=process.platform==='win32'&&game.executable&&path.extname(game.executable).toLowerCase()==='.lnk'?resolveWindowsShortcut(game.executable,shell.readShortcutLink).executable:game.executable;const dir=game.install_path|| (executable?path.dirname(executable):'');if(!dir||!path.isAbsolute(dir)||!fs.existsSync(dir)||!fs.statSync(dir).isDirectory())throw Error('Installation folder is unavailable.');const error=await shell.openPath(dir);if(error)throw Error(error);return true});
+  bind('openGameFolder',async id=>{if(!okId(id))throw Error('Invalid game identifier.');const game=db.get(id);if(!game)throw Error('Game not found.');const dir=game.install_path|| (game.executable?path.dirname(game.executable):'');if(!dir||!path.isAbsolute(dir)||!fs.existsSync(dir)||!fs.statSync(dir).isDirectory())throw Error('Installation folder is unavailable.');const error=await shell.openPath(dir);if(error)throw Error(error);return true});
   bind('openAppData',async()=>{const error=await shell.openPath(app.getPath('userData'));if(error)throw Error(error);return true});
   bind('exportLibrary',async()=>{
     const result=await dialog.showSaveDialog(win,{title:'Export Orbit library',defaultPath:`Orbit-Library-${new Date().toISOString().slice(0,10)}.orbit`,filters:[{name:'Portable Orbit backup (includes artwork)',extensions:['orbit']},{name:'Metadata only (JSON)',extensions:['json']} ]});
@@ -534,7 +515,7 @@ app.whenReady().then(async()=>{
   createWindow();
   if(process.platform==='win32'){
     activityTracker=new WindowsActivityTracker({
-      listGames:()=>trackingShortcutGames(db.listActivityGames(),shell.readShortcutLink),isDirectSession:id=>sessions.has(id)||pendingLaunches.has(id),
+      listGames:()=>db.listActivityGames(),isDirectSession:id=>sessions.has(id)||pendingLaunches.has(id),
       start:id=>db.startSession(id),finish:(sessionId,seconds)=>db.finishSession(sessionId,seconds),
       onChange:ids=>{gamesChanged({games:ids.map(id=>db.get(id)),reason:'playtime'});if(ids.some(id=>activityTracker?.isRunning(id)))performanceGuard();},
       onError:error=>broadcast({type:'error',message:'Windows playtime detection is temporarily unavailable: '+error.message})

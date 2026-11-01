@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Orbit Launcher Rust Preview",
+  "version": "0.2.4",
+  "identifier": "com.orbitlauncher.rustpreview",
+  "build": {
+    "beforeDevCommand": "node scripts/prepare-tauri.cjs",
+    "beforeBuildCommand": "node scripts/prepare-tauri.cjs",
+    "frontendDist": "../tauri-web"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Orbit Launcher",
+        "width": 1440,
+        "height": 920,
+        "minWidth": 910,
+        "minHeight": 610,
+        "backgroundColor": "#101016",
+        "visible": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "icon": ["icons/icon.ico", "icons/icon.png"]
+  }
+}

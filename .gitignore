@@ -24,3 +24,8 @@ Thumbs.db
 *.db-shm
 *.orbit
 userData/
+
+# Tauri/Rust build outputs
+tauri-web/
+src-tauri/target/
+src-tauri/gen/

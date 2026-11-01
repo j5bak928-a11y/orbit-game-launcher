@@ -372,16 +372,20 @@ fn game_file_title(file: &Path, product: Option<&str>) -> (String, String, &'sta
     // Prefer a richer title from a containing folder if it includes the short
     // executable identity (Creed.exe -> Assassin's Creed Mirage), even when
     // another nested folder has just "Creed".
-    let folder_title = folders
-        .iter()
-        .filter(|name| {
-            executable_title
-                .as_deref()
-                .map_or(true, |exe| title_contains_stem(name, exe))
-        })
-        .max_by_key(|name| name.chars().count())
-        .or_else(|| folders.first())
-        .cloned();
+    let folder_title = if let Some(exe) = executable_title.as_deref() {
+        // A short executable such as Creed.exe can justify a more specific
+        // enclosing title. Do not prefer longer unrelated ancestor folders.
+        folders
+            .iter()
+            .filter(|name| title_contains_stem(name, exe))
+            .max_by_key(|name| name.chars().count())
+            .or_else(|| folders.first())
+            .cloned()
+    } else {
+        // Generic Unreal bootstrappers carry no title identity. The nearest
+        // plausible folder is more trustworthy than a long parent/temp name.
+        folders.first().cloned()
+    };
     let fallback = match (&executable_title, &folder_title) {
         (None, Some(folder)) => folder.clone(),
         (Some(_), Some(folder)) if shipping_binary => folder.clone(),
@@ -2336,6 +2340,14 @@ mod tests {
             None,
         );
         assert_eq!(title, "Bodycam");
+        assert_eq!(source, "folder");
+        let (title, _, source) = game_file_title(
+            Path::new(
+                "/Temp/orbit-inspect-long-random-name/UnrealGame/Binaries/Win64/BootstrapPackagedGame-Win64-Shipping.exe",
+            ),
+            None,
+        );
+        assert_eq!(title, "UnrealGame");
         assert_eq!(source, "folder");
     }
 

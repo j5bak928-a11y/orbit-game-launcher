@@ -17,6 +17,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: orbit-tauri-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   windows-tauri:
     runs-on: windows-latest
@@ -48,6 +52,23 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked
       - name: Build unsigned Windows desktop installers
         run: npm run tauri:build
+      - name: Compare JavaScript and Rust SQLite engines on this runner
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          New-Item -ItemType Directory -Force -Path reports/native-benchmarks | Out-Null
+          npm run bench | Tee-Object -FilePath reports/native-benchmarks/electron-node.txt
+          if ($LASTEXITCODE -ne 0) { throw 'JavaScript benchmark failed' }
+          cargo run --release --manifest-path src-tauri/Cargo.toml --locked --example benchmark | Tee-Object -FilePath reports/native-benchmarks/rust.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Rust benchmark failed' }
+      - name: Upload benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Orbit-Benchmarks-${{ github.sha }}
+          path: reports/native-benchmarks/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Upload review builds
         uses: actions/upload-artifact@v4
         with:

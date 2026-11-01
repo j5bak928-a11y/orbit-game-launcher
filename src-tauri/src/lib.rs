@@ -138,6 +138,15 @@ fn changed(
     emit(app, msg);
 }
 
+// Fetch the record before emitting: emitting may need the active-session lock.
+// Never hold the SQLite mutex while acquiring the active-session mutex.
+fn notify_game(app: &tauri::AppHandle, state: &OrbitState, id: &str, reason: &str) {
+    let game = state.db.lock().ok().and_then(|db| db.get(id).ok());
+    if let Some(game) = game.filter(|g| !g.is_null()) {
+        changed(app, state, vec![game], vec![], reason, false);
+    }
+}
+
 fn argument<'a>(args: &'a [Value], index: usize) -> Result<&'a Value, String> {
     args.get(index)
         .ok_or_else(|| format!("Missing argument {index}"))
@@ -460,7 +469,8 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
                 }
             }
             if result["tracked"].as_bool() == Some(true) {
-                match state.db.lock().unwrap().start_session(id) {
+                let session_result = state.db.lock().unwrap().start_session(id);
+                match session_result {
                     Ok(session_id) => {
                         state
                             .active
@@ -479,15 +489,9 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
                     }
                 }
             }
-            changed(
-                app,
-                &state,
-                vec![state.db.lock().unwrap().get(id)?],
-                vec![],
-                "launch",
-                false,
-            );
-            if let Ok(settings) = state.db.lock().unwrap().get_settings() {
+            notify_game(app, &state, id, "launch");
+            let settings = state.db.lock().ok().and_then(|db| db.get_settings().ok());
+            if let Some(settings) = settings {
                 let _ = tray::hide_for_performance_guard(
                     app,
                     settings["performanceGuard"] == true,
@@ -742,15 +746,16 @@ fn poll_sessions(app: &tauri::AppHandle) {
         if let Ok(mut db) = state.db.lock() {
             let _ = db.finish_session(&session_id, seconds);
         }
-        if let Ok(db) = state.db.lock() {
-            if let Ok(game) = db.get(id) {
-                changed(app, &state, vec![game], vec![], "playtime", false);
-            }
-        }
+        notify_game(app, &state, id, "playtime");
     }
     // External launcher processes are tracked from verified install paths by
     // the Rust Windows process-inventory implementation.
-    if let Ok(watchlist) = state.db.lock().unwrap().list_activity_games() {
+    let watchlist = state
+        .db
+        .lock()
+        .ok()
+        .and_then(|db| db.list_activity_games().ok());
+    if let Some(watchlist) = watchlist {
         if let Ok(activity) = native::poll_activity(&watchlist) {
             if let Some(checkpoints) = activity["checkpoints"].as_array() {
                 for checkpoint in checkpoints {
@@ -767,16 +772,20 @@ fn poll_sessions(app: &tauri::AppHandle) {
                     if state.active.lock().unwrap().contains_key(id) {
                         continue;
                     }
-                    if let Ok(session) = state.db.lock().unwrap().start_session(id) {
+                    let session = state
+                        .db
+                        .lock()
+                        .map_err(|e| e.to_string())
+                        .and_then(|mut db| db.start_session(id));
+                    if let Ok(session) = session {
                         state
                             .active
                             .lock()
                             .unwrap()
                             .insert(id.into(), (session, Instant::now()));
-                        if let Ok(game) = state.db.lock().unwrap().get(id) {
-                            changed(app, &state, vec![game], vec![], "playtime", false);
-                        }
-                        if let Ok(settings) = state.db.lock().unwrap().get_settings() {
+                        notify_game(app, &state, id, "playtime");
+                        let settings = state.db.lock().ok().and_then(|db| db.get_settings().ok());
+                        if let Some(settings) = settings {
                             let _ = tray::hide_for_performance_guard(
                                 app,
                                 settings["performanceGuard"] == true,
@@ -800,11 +809,7 @@ fn poll_sessions(app: &tauri::AppHandle) {
                     if let Ok(mut db) = state.db.lock() {
                         let _ = db.finish_session(&session_id, seconds);
                     }
-                    if let Ok(db) = state.db.lock() {
-                        if let Ok(game) = db.get(id) {
-                            changed(app, &state, vec![game], vec![], "playtime", false);
-                        }
-                    }
+                    notify_game(app, &state, id, "playtime");
                 }
             }
         }
@@ -839,8 +844,13 @@ fn settle_sessions(app: &tauri::AppHandle) {
             ))
         })
         .collect();
-    if let (Ok(mut active), Ok(mut db)) = (state.active.lock(), state.db.lock()) {
-        for (id, (session_id, started)) in active.drain() {
+    let ended: Vec<_> = state
+        .active
+        .lock()
+        .map(|mut active| active.drain().collect())
+        .unwrap_or_default();
+    if let Ok(mut db) = state.db.lock() {
+        for (id, (session_id, started)) in ended {
             let seconds = elapsed
                 .get(&id)
                 .copied()

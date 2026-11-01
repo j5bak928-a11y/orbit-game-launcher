@@ -996,7 +996,7 @@ impl LibraryDatabase {
             .filter(|n| {
                 n.is_finite() && *n >= 0.0 && *n <= 9_007_199_254_740_991.0 && n.fract() == 0.0
             })
-            .map(|n| n.min((100 * 365 * 24 * 3600) as f64) as i64)
+            .map(|n| n.min((100_i64 * 365 * 24 * 3600) as f64) as i64)
             .unwrap_or(0);
         let last_played = raw.get("last_played_at").and_then(iso_date);
         let created = raw.get("created_at").and_then(iso_date);

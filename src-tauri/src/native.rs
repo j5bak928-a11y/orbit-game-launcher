@@ -337,6 +337,33 @@ fn game_file_title(file: &Path, product: Option<&str>) -> (String, String, &'sta
             break;
         };
         let folder = filename(dir);
+        // Directory names above the game installation are not product
+        // evidence. In particular, never turn a Windows account name into
+        // the title of a generic Unreal bootstrap executable.
+        let boundary = matches!(
+            normalized_name(&folder).as_str(),
+            "downloads"
+                | "desktop"
+                | "documents"
+                | "users"
+                | "games"
+                | "steamapps"
+                | "common"
+                | "programfiles"
+                | "programfilesx86"
+                | "appdata"
+                | "local"
+                | "roaming"
+                | "temp"
+                | "tmp"
+        );
+        let profile_root = dir
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| normalized_name(&name.to_string_lossy()) == "users");
+        if boundary || profile_root {
+            break;
+        }
         if let Some(title) = clean_product_folder(&folder) {
             folders.push(title);
         }
@@ -2295,6 +2322,21 @@ mod tests {
             (name.as_str(), suggested.as_str(), source),
             ("Untitled game", "Untitled game", "filename")
         );
+        for path in [
+            "/Users/Alice/Downloads/BootstrapPackagedGame.exe",
+            "/Users/Alice/BootstrapPackagedGame.exe",
+            "/Temp/BootstrapPackagedGame.exe",
+        ] {
+            let (name, _, source) = game_file_title(Path::new(path), None);
+            assert_eq!(name, "Untitled game", "account/root leaked: {path}");
+            assert_eq!(source, "filename");
+        }
+        let (title, _, source) = game_file_title(
+            Path::new("/Users/Alice/Downloads/Bodycam/Binaries/Win64/BootstrapPackagedGame.exe"),
+            None,
+        );
+        assert_eq!(title, "Bodycam");
+        assert_eq!(source, "folder");
     }
 
     #[cfg(windows)]

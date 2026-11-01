@@ -20,7 +20,6 @@ struct OrbitState {
     active: Mutex<HashMap<String, (String, Instant)>>,
     artwork_pending: AtomicU64,
     artwork_busy: AtomicBool,
-    name_scan_cursor: AtomicU64,
     data_dir: PathBuf,
     artwork_dir: PathBuf,
 }
@@ -208,7 +207,10 @@ fn trustworthy_detected_name(previous: &str, info: &Value) -> bool {
         && !name.eq_ignore_ascii_case(previous)
 }
 
-fn refresh_generated_names(app: &tauri::AppHandle) {
+/// Returns true when another bounded background pass is needed. The visited
+/// set belongs to one scan generation, so stale entries cannot be retried
+/// indefinitely or prevent later entries from being inspected.
+fn refresh_generated_names(app: &tauri::AppHandle, visited: &mut HashSet<String>) -> bool {
     let state = app.state::<OrbitState>();
     let Some(games) = state
         .db
@@ -217,30 +219,33 @@ fn refresh_generated_names(app: &tauri::AppHandle) {
         .and_then(|db| db.list("name").ok())
         .and_then(|games| games.as_array().cloned())
     else {
-        return;
+        return false;
     };
-    // Rotate through all candidates rather than repeatedly spending the 150
-    // inspection slots on stale executables at the front of the sorted list.
-    // The scan is background-only and capped by elapsed time, not library size.
+    // Work through every candidate once, including those after missing files.
+    // Each pass is bounded by time, not a fixed first 150 game rows.
     let candidates = games
         .iter()
         .filter(|game| replaceable_name(game))
+        .filter(|game| {
+            game["id"]
+                .as_str()
+                .is_some_and(|id| !visited.contains(id))
+        })
         .collect::<Vec<_>>();
     if candidates.is_empty() {
-        state.name_scan_cursor.store(0, Ordering::SeqCst);
-        return;
+        return false;
     }
-    let start = (state.name_scan_cursor.load(Ordering::SeqCst) as usize) % candidates.len();
     let started = Instant::now();
     let mut examined = 0;
     while examined < candidates.len() && started.elapsed() < Duration::from_secs(8) {
-        let game = candidates[(start + examined) % candidates.len()];
+        let game = candidates[examined];
         examined += 1;
-        let (Some(id), Some(path), Some(previous)) = (
-            game["id"].as_str(),
-            game["executable"].as_str(),
-            game["name"].as_str(),
-        ) else {
+        let Some(id) = game["id"].as_str() else {
+            continue;
+        };
+        visited.insert(id.to_owned());
+        let (Some(path), Some(previous)) = (game["executable"].as_str(), game["name"].as_str())
+        else {
             continue;
         };
         let Ok(info) = native::inspect_game_file(path) else {
@@ -261,10 +266,7 @@ fn refresh_generated_names(app: &tauri::AppHandle) {
             changed(app, &state, vec![updated], vec![], "name-detection", false);
         }
     }
-    state.name_scan_cursor.store(
-        ((start + examined) % candidates.len()) as u64,
-        Ordering::SeqCst,
-    );
+    examined < candidates.len()
 }
 
 // Cover repair runs outside the UI thread, after boot and when the library
@@ -283,10 +285,18 @@ fn queue_artwork_scan(app: &tauri::AppHandle) {
             std::thread::sleep(Duration::from_millis(900));
             let state = handle.state::<OrbitState>();
             let generation = state.artwork_pending.load(Ordering::SeqCst);
-            refresh_generated_names(&handle);
+            let mut visited_names = HashSet::new();
+            let mut more_names = refresh_generated_names(&handle, &mut visited_names);
             if let Err(error) = handle_command(&handle, "repairSteamArtwork", &[json!("automatic")])
             {
                 eprintln!("Orbit automatic artwork scan: {error}");
+            }
+            // A large or slow library is processed in bounded passes, with
+            // a brief yield between passes. No stale first page can starve
+            // later titles just because the user never changes the library.
+            while more_names {
+                std::thread::sleep(Duration::from_millis(100));
+                more_names = refresh_generated_names(&handle, &mut visited_names);
             }
             if state.artwork_pending.load(Ordering::SeqCst) == generation {
                 break generation;
@@ -1172,7 +1182,6 @@ pub fn run() {
                 active: Mutex::new(HashMap::new()),
                 artwork_pending: AtomicU64::new(0),
                 artwork_busy: AtomicBool::new(false),
-                name_scan_cursor: AtomicU64::new(0),
                 data_dir,
                 artwork_dir,
             });

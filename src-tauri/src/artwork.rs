@@ -1385,6 +1385,85 @@ mod tests {
     }
 
     #[test]
+    fn background_scan_preserves_user_landscape_jpeg_without_network_requests() {
+        let root =
+            std::env::temp_dir().join(format!("orbit-auto-preserve-{}", uuid::Uuid::new_v4()));
+        let install = root.join("SteamLibrary/steamapps/common/Example");
+        let cache = root.join("SteamLibrary/appcache/librarycache");
+        let artwork = root.join("artwork");
+        fs::create_dir_all(&install).unwrap();
+        fs::create_dir_all(&cache).unwrap();
+        let chosen_bytes = jpeg(900, 600);
+        let chosen = store(&chosen_bytes, "jpg", &artwork).unwrap();
+        fs::write(cache.join("730_library_600x900.jpg"), jpeg(600, 900)).unwrap();
+        let game = json!({"id":"11111111-1111-4111-8111-111111111111",
+            "source":"steam","source_id":"730","name":"Example","install_path":install,
+            "cover":chosen,"icon":"already-selected-icon"});
+        // An enabled online setting must not cause any permission checks or
+        // network activity for a game with an existing valid cover and icon.
+        let auto = repair_artwork_auto_guarded(&[game.clone()], &artwork, true, false, &|| {
+            panic!("A complete game must never request online permission")
+        })
+        .unwrap();
+        assert_eq!(auto["attempted"], 0);
+        assert_eq!(auto["updates"], json!([]));
+        assert_eq!(fs::read(artwork.join(&chosen)).unwrap(), chosen_bytes);
+
+        // User-initiated repair keeps the old replace-landscape behavior.
+        let manual = repair_artwork_guarded(&[game], &artwork, false, false, &|| false).unwrap();
+        assert_eq!(manual["found"], 1);
+        assert_ne!(manual["updates"][0]["cover"], chosen);
+        assert_eq!(fs::read(artwork.join(&chosen)).unwrap(), chosen_bytes);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn background_scan_repairs_only_missing_cover_without_touching_existing_one() {
+        let root =
+            std::env::temp_dir().join(format!("orbit-auto-missing-{}", uuid::Uuid::new_v4()));
+        let install = root.join("Installed Game");
+        let artwork = root.join("artwork");
+        fs::create_dir_all(&install).unwrap();
+        fs::write(install.join("poster.png"), png(600, 900)).unwrap();
+        let missing = "11111111-1111-4111-8111-111111111111.jpg";
+        let game = json!({"id":"22222222-2222-4222-8222-222222222222",
+            "source":"manual","name":"Installed Game","install_path":install,
+            "cover":missing,"icon":""});
+        let result = repair_artwork_auto_guarded(&[game], &artwork, false, false, &|| {
+            panic!("Offline enrichment must not check network permission")
+        })
+        .unwrap();
+        assert_eq!(result["attempted"], 1);
+        assert_eq!(result["found"], 1);
+        assert!(artwork_token(
+            result["updates"][0]["cover"].as_str().unwrap()
+        ));
+        assert_ne!(result["updates"][0]["cover"], missing);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn background_icon_only_scan_never_downloads_a_new_cover() {
+        let root =
+            std::env::temp_dir().join(format!("orbit-auto-icon-only-{}", uuid::Uuid::new_v4()));
+        let install = root.join("SteamLibrary/steamapps/common/Example");
+        let artwork = root.join("artwork");
+        fs::create_dir_all(&install).unwrap();
+        let chosen = store(&jpeg(900, 600), "jpg", &artwork).unwrap();
+        let game = json!({"id":"33333333-3333-4333-8333-333333333333",
+            "source":"steam","source_id":"730","name":"Example",
+            "install_path":install,"cover":chosen,"icon":""});
+        let result = repair_artwork_auto_guarded(&[game], &artwork, true, false, &|| {
+            panic!("Searching a missing local icon must never request a replacement cover")
+        })
+        .unwrap();
+        assert_eq!(result["found"], 0);
+        assert_eq!(result["updates"], json!([]));
+        assert_eq!(fs::read(artwork.join(&chosen)).unwrap(), jpeg(900, 600));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn offline_manual_and_epic_repair_find_local_portraits_without_network() {
         let root =
             std::env::temp_dir().join(format!("orbit-local-nonsteam-{}", uuid::Uuid::new_v4()));

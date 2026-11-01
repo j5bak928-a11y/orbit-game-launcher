@@ -716,26 +716,25 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             let originals = games.as_array().ok_or("Invalid game list")?;
             // Automatic enrichment fills missing artwork only. The explicit
             // Repair button remains allowed to replace a landscape cover.
-            // A non-token marker below influences only the read-only repair
-            // candidate list; it is never written back to SQLite.
             let automatic = args.first().and_then(Value::as_str) == Some("automatic");
-            let mut candidates = originals.clone();
-            if automatic {
-                for game in &mut candidates {
-                    if let Some(token) = game["cover"].as_str() {
-                        if valid_art_name(token) && state.artwork_dir.join(token).is_file() {
-                            game["cover"] = json!("keep-existing-cover");
-                        }
-                    }
-                }
-            }
-            let mut result = artwork::repair_artwork_guarded(
-                &candidates,
-                &state.artwork_dir,
-                enabled,
-                paused,
-                &|| online_artwork_allowed(&state),
-            )?;
+            let allowed = || online_artwork_allowed(&state);
+            let mut result = if automatic {
+                artwork::repair_artwork_auto_guarded(
+                    originals,
+                    &state.artwork_dir,
+                    enabled,
+                    paused,
+                    &allowed,
+                )?
+            } else {
+                artwork::repair_artwork_guarded(
+                    originals,
+                    &state.artwork_dir,
+                    enabled,
+                    paused,
+                    &allowed,
+                )?
+            };
             let original_by_id: HashMap<String, &Value> = originals
                 .iter()
                 .filter_map(|game| Some((game["id"].as_str()?.to_string(), game)))

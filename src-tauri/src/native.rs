@@ -391,8 +391,8 @@ fn game_file_title(file: &Path, product: Option<&str>) -> (String, String, &'sta
     } else {
         // For generic Unreal binaries prefer an expanded display title when
         // an enclosing directory is the same name with word separators.
-        // If the parent is an unrelated project/container name, the guess
-        // remains unverified and must never trigger an automatic DB rename.
+        // Never promote an unrelated (possibly temporary) parent directory
+        // into a game title. Distinct nested names remain unverified instead.
         folders.first().map(|closest| {
             folders
                 .iter()
@@ -400,20 +400,6 @@ fn game_file_title(file: &Path, product: Option<&str>) -> (String, String, &'sta
                 .filter(|outer| normalized_name(outer) == normalized_name(closest))
                 .max_by_key(|outer| outer.chars().count())
                 .cloned()
-                .or_else(|| {
-                    folders
-                        .iter()
-                        .skip(1)
-                        .filter(|outer| {
-                            outer.split_whitespace().count() >= 3
-                                && outer.chars().count() > closest.chars().count()
-                                && !outer.split_whitespace().any(|word| {
-                                    word.chars().all(|character| character.is_ascii_digit())
-                                })
-                        })
-                        .max_by_key(|outer| outer.chars().count())
-                        .cloned()
-                })
                 .unwrap_or_else(|| closest.clone())
         })
     };
@@ -2397,7 +2383,7 @@ mod tests {
             ),
             None,
         );
-        assert_eq!(title, "Long Display Game Title");
+        assert_eq!(title, "InternalProject");
         assert_eq!(source, "folder-unverified");
     }
 

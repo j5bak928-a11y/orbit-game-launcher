@@ -226,11 +226,7 @@ fn refresh_generated_names(app: &tauri::AppHandle, visited: &mut HashSet<String>
     let candidates = games
         .iter()
         .filter(|game| replaceable_name(game))
-        .filter(|game| {
-            game["id"]
-                .as_str()
-                .is_some_and(|id| !visited.contains(id))
-        })
+        .filter(|game| game["id"].as_str().is_some_and(|id| !visited.contains(id)))
         .collect::<Vec<_>>();
     if candidates.is_empty() {
         return false;

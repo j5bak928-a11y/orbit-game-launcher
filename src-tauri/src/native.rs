@@ -174,6 +174,7 @@ fn sensible_product_name(name: &str) -> bool {
     let lower = name.trim().to_ascii_lowercase();
     valid_title(name)
         && name.chars().count() >= 3
+        && !generic_game_label(name)
         && ![
             "microsoft",
             "windows",
@@ -186,6 +187,267 @@ fn sensible_product_name(name: &str) -> bool {
         ]
         .iter()
         .any(|prefix| lower.starts_with(prefix))
+}
+
+/// Unreal's bootstrap and shipping binaries describe the runtime, not the
+/// installed game's identity. These are also directory components that should
+/// never outrank an actual product folder.
+fn generic_game_label(value: &str) -> bool {
+    matches!(
+        normalized_name(value).as_str(),
+        "" | "game"
+            | "gamewin32shipping"
+            | "gamewin64shipping"
+            | "bootstrappackagedgame"
+            | "bootstrapper"
+            | "bootstrap"
+            | "launcher"
+            | "launch"
+            | "start"
+            | "play"
+            | "run"
+            | "shipping"
+            | "win32shipping"
+            | "win64shipping"
+            | "unityplayer"
+            | "unrealengine"
+            | "unreal"
+            | "ue4game"
+            | "ue5game"
+            | "application"
+            | "program"
+            | "project"
+            | "setup"
+            | "install"
+            | "binaries"
+            | "bin"
+            | "win32"
+            | "win64"
+            | "x64"
+            | "x86"
+            | "x8664"
+            | "engine"
+            | "content"
+            | "retail"
+            | "release"
+            | "windows"
+            | "games"
+            | "gamefiles"
+            | "downloads"
+            | "desktop"
+            | "documents"
+            | "users"
+            | "programfiles"
+            | "programfilesx86"
+            | "steamapps"
+            | "common"
+            | "redist"
+            | "prerequisites"
+    )
+}
+
+fn without_shipping_suffix(value: &str) -> &str {
+    let lower = value.to_ascii_lowercase();
+    for suffix in [
+        "-win64-shipping",
+        "_win64_shipping",
+        "-win32-shipping",
+        "_win32_shipping",
+        "-shipping",
+        "_shipping",
+    ] {
+        if lower.ends_with(suffix) {
+            return value[..value.len() - suffix.len()]
+                .trim_end_matches(|c: char| c == '-' || c == '_' || c == ' ');
+        }
+    }
+    value
+}
+
+/// Strip well-known distribution labels, not arbitrary words such as "Games"
+/// which may legitimately be part of a game's title.
+fn clean_product_folder(value: &str) -> Option<String> {
+    let mut label = value.trim();
+    for marker in [
+        "-steamrip.com",
+        "_steamrip.com",
+        "-ankergames",
+        "_ankergames",
+        "-steamunlocked.net",
+        "_steamunlocked.net",
+        "-gog-games.com",
+        "-fitgirl-repacks",
+        "-fitgirl-repack",
+        "-dodi-repacks",
+        "-dodi-repack",
+        "-elamigos",
+        "-skidrow",
+        "-tenoke",
+    ] {
+        let lowercase = label.to_ascii_lowercase();
+        if lowercase.ends_with(marker) {
+            label = label[..label.len() - marker.len()]
+                .trim_end_matches(|c: char| matches!(c, '-' | '_' | '.' | ' '));
+            break;
+        }
+    }
+    // Other suffixes that look like download-site domains are not game names.
+    // Only remove a trailing hyphen/underscore-delimited domain.
+    if let Some(index) = label.rfind(|c: char| c == '-' || c == '_') {
+        let suffix = &label[index + 1..];
+        let lower = suffix.to_ascii_lowercase();
+        if [".com", ".net", ".org", ".to"]
+            .iter()
+            .any(|tld| lower.ends_with(tld))
+            && suffix
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.')
+        {
+            label = label[..index].trim_end_matches(|c: char| matches!(c, '-' | '_' | '.' | ' '));
+        }
+    }
+    let cleaned = clean_name(label);
+    (!generic_game_label(&cleaned) && valid_title(&cleaned) && cleaned.chars().count() >= 3)
+        .then_some(cleaned)
+}
+
+fn title_contains_stem(title: &str, stem: &str) -> bool {
+    let stem = normalized_name(stem);
+    if stem.len() < 3 {
+        return false;
+    }
+    let title = normalized_name(title);
+    title.contains(&stem) || (title.starts_with("assassinscreed") && stem.starts_with("ac"))
+}
+
+/// Pure identity heuristic, separate from file validation and OS metadata I/O,
+/// so Unreal layouts and unpacked-folder names can be regression tested.
+/// Returns (display name, suggestion, evidence source).
+fn game_file_title(file: &Path, product: Option<&str>) -> (String, String, &'static str) {
+    let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let shortened = without_shipping_suffix(stem);
+    let executable_title = clean_product_folder(shortened);
+    let shipping_binary = shortened != stem;
+    let mut folders = Vec::new();
+    let mut parent = file.parent();
+    // Win64 -> Binaries -> <game> and nested UE5 engine layouts fit within
+    // five ancestors. Stop at a filesystem root; do not use generic folders.
+    for _ in 0..5 {
+        let Some(dir) = parent else {
+            break;
+        };
+        let folder = filename(dir);
+        // Directory names above the game installation are not product
+        // evidence. In particular, never turn a Windows account name into
+        // the title of a generic Unreal bootstrap executable.
+        let boundary = matches!(
+            normalized_name(&folder).as_str(),
+            "downloads"
+                | "desktop"
+                | "documents"
+                | "users"
+                | "games"
+                | "steamapps"
+                | "common"
+                | "programfiles"
+                | "programfilesx86"
+                | "appdata"
+                | "local"
+                | "roaming"
+                | "temp"
+                | "tmp"
+        );
+        let profile_root = dir
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| normalized_name(&name.to_string_lossy()) == "users");
+        if boundary || profile_root {
+            break;
+        }
+        if let Some(title) = clean_product_folder(&folder) {
+            folders.push(title);
+        }
+        parent = dir.parent();
+    }
+    // Prefer a richer title from a containing folder if it includes the short
+    // executable identity (Creed.exe -> Assassin's Creed Mirage), even when
+    // another nested folder has just "Creed".
+    let ambiguous_folder = executable_title.is_none()
+        && folders.first().is_some_and(|closest| {
+            folders
+                .iter()
+                .skip(1)
+                .any(|outer| normalized_name(outer) != normalized_name(closest))
+        });
+    let folder_title = if let Some(exe) = executable_title.as_deref() {
+        // A short executable such as Creed.exe can justify a more specific
+        // enclosing title. Do not prefer longer unrelated ancestor folders.
+        folders
+            .iter()
+            .filter(|name| title_contains_stem(name, exe))
+            .max_by_key(|name| name.chars().count())
+            .or_else(|| folders.first())
+            .cloned()
+    } else {
+        // For generic Unreal binaries prefer an expanded display title when
+        // an enclosing directory is the same name with word separators.
+        // Never promote an unrelated (possibly temporary) parent directory
+        // into a game title. Distinct nested names remain unverified instead.
+        folders.first().map(|closest| {
+            folders
+                .iter()
+                .skip(1)
+                .filter(|outer| normalized_name(outer) == normalized_name(closest))
+                .max_by_key(|outer| outer.chars().count())
+                .cloned()
+                .unwrap_or_else(|| closest.clone())
+        })
+    };
+    let fallback = match (&executable_title, &folder_title) {
+        (None, Some(folder)) => folder.clone(),
+        (Some(_), Some(folder)) if shipping_binary => folder.clone(),
+        (Some(exe), Some(folder))
+            if title_contains_stem(folder, exe) && folder.chars().count() > exe.chars().count() =>
+        {
+            folder.clone()
+        }
+        (Some(exe), _) => exe.clone(),
+        (None, None) => "Untitled game".to_string(),
+    };
+    if let Some(known) = known_game(stem).or_else(|| known_game(shortened)) {
+        return (known.to_string(), fallback, "executable");
+    }
+    let product = product
+        .filter(|name| sensible_product_name(name))
+        .and_then(clean_product_folder);
+    if let Some(known) = product.as_deref().and_then(known_game) {
+        return (known.to_string(), fallback, "metadata");
+    }
+    for folder in &folders {
+        if let Some(known) = known_game(folder) {
+            return (known.to_string(), fallback, "folder");
+        }
+    }
+    if let Some(product) = product {
+        // VersionInfo may contain just an internal project codename, even
+        // when a more complete game name is visible in an enclosing folder.
+        if let Some(folder) = &folder_title {
+            if title_contains_stem(folder, &product)
+                && folder.chars().count() > product.chars().count()
+            {
+                return (folder.clone(), fallback, "folder");
+            }
+        }
+        return (product, fallback, "metadata");
+    }
+    let kind = if ambiguous_folder {
+        "folder-unverified"
+    } else if folder_title.as_deref() == Some(fallback.as_str()) {
+        "folder"
+    } else {
+        "filename"
+    };
+    (fallback.clone(), fallback, kind)
 }
 
 #[cfg(windows)]
@@ -1465,65 +1727,14 @@ pub fn stop_sessions() -> Result<Value, String> {
 
 pub fn inspect_game_file(executable: &str) -> Result<Value, String> {
     let file = require_absolute_file(executable)?;
-    let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    let generic = [
-        "game",
-        "game-win64-shipping",
-        "launcher",
-        "start",
-        "play",
-        "run",
-        "shipping",
-        "unityplayer",
-        "unrealengine",
-        "application",
-        "win64-shipping",
-        "setup",
-        "install",
-    ];
     let parent = file.parent().ok_or("Game directory unavailable.")?;
-    let mut label = if generic.contains(&stem.to_ascii_lowercase().as_str()) {
-        filename(parent)
-    } else {
-        stem.trim_end_matches("-Win64-Shipping")
-            .trim_end_matches("_Win64_Shipping")
-            .to_string()
-    };
-    if ["binaries", "win32", "win64", "x64"].contains(&label.to_ascii_lowercase().as_str()) {
-        label = parent.parent().map(filename).unwrap_or(label);
-    }
-    let fallback = clean_name(&label);
     let product = read_windows_product_name(&file);
-    let mut recognized_name = known_game(stem).map(|s| (s.to_string(), "executable"));
-    if recognized_name.is_none() {
-        recognized_name = product
-            .as_deref()
-            .and_then(known_game)
-            .map(|s| (s.to_string(), "metadata"));
-    }
-    if recognized_name.is_none() {
-        let mut ancestor = file.parent();
-        for _ in 0..3 {
-            let Some(folder) = ancestor else {
-                break;
-            };
-            if let Some(title) = known_game(&filename(folder)) {
-                recognized_name = Some((title.to_string(), "folder"));
-                break;
-            }
-            ancestor = folder.parent();
-        }
-    }
-    if recognized_name.is_none() {
-        if let Some(value) = product.filter(|s| sensible_product_name(s)) {
-            recognized_name = Some((value, "metadata"));
-        }
-    }
-    let (name, kind) = recognized_name.unwrap_or((fallback.clone(), "filename"));
+    let (name, fallback, kind) = game_file_title(&file, product.as_deref());
     let local_artwork = find_nearby_artwork(&file, &name);
     Ok(
         json!({"executable":file,"name":name,"suggested_name":fallback,
-        "recognized":kind!="filename","name_source":kind,"working_dir":parent,
+        "recognized":matches!(kind, "executable" | "metadata" | "folder"),
+        "name_source":kind,"working_dir":parent,
         "cover":"","icon":"","cover_source":"","local_artwork":local_artwork}),
     )
 }
@@ -2079,6 +2290,133 @@ mod tests {
         assert!(clean_name(&"x".repeat(500)).chars().count() <= 140);
         assert!(!valid_title("Title\r\nInjected"));
         assert!(!valid_app_id("../outside"));
+    }
+
+    #[test]
+    fn local_game_identity_prefers_full_folder_title_over_technical_executables() {
+        let parcel =
+            Path::new("/Downloads/Parcel-Simulator-AnkerGames/Parcel Simulator/parcel.exe");
+        let (name, suggested, source) = game_file_title(parcel, Some("BootstrapPackagedGame"));
+        assert_eq!(
+            (name.as_str(), suggested.as_str(), source),
+            ("Parcel Simulator", "Parcel Simulator", "folder")
+        );
+
+        let bodycam = Path::new("/Downloads/Bodycam-SteamRIP.com/Bodycam/Bodycam.exe");
+        let (name, suggested, _) = game_file_title(bodycam, Some("BootstrapPackagedGame"));
+        assert_eq!((name.as_str(), suggested.as_str()), ("Bodycam", "Bodycam"));
+
+        let shipping = Path::new("/Downloads/Bodycam-SteamRIP.com/Bodycam/Binaries/Win64/BootstrapPackagedGame-Win64-Shipping.exe");
+        let (name, suggested, source) = game_file_title(shipping, Some("BootstrapPackagedGame"));
+        assert_eq!(
+            (name.as_str(), suggested.as_str(), source),
+            ("Bodycam", "Bodycam", "folder")
+        );
+        assert!(!sensible_product_name("BootstrapPackagedGame"));
+        assert!(!sensible_product_name("Game-Win64-Shipping"));
+
+        let creed = Path::new("/Downloads/Assassins-Creed-Mirage/Creed/Creed.exe");
+        let (name, suggested, source) = game_file_title(creed, Some("Creed"));
+        assert_eq!(
+            (name.as_str(), suggested.as_str(), source),
+            ("Assassins Creed Mirage", "Assassins Creed Mirage", "folder")
+        );
+
+        let creed_abbreviated = Path::new("/Games/Assassins-Creed-Shadows/ACShadows.exe");
+        let (name, suggested, source) = game_file_title(creed_abbreviated, None);
+        assert_eq!(
+            (name.as_str(), suggested.as_str(), source),
+            (
+                "Assassins Creed Shadows",
+                "Assassins Creed Shadows",
+                "folder"
+            )
+        );
+
+        let explicit = Path::new("/Games/HollowKnight.exe");
+        let (name, suggested, source) = game_file_title(explicit, None);
+        assert_eq!(
+            (name.as_str(), suggested.as_str(), source),
+            ("Hollow Knight", "HollowKnight", "executable")
+        );
+
+        let unknown = Path::new("/Downloads/Win64/Shipping.exe");
+        let (name, suggested, source) = game_file_title(unknown, None);
+        assert_eq!(
+            (name.as_str(), suggested.as_str(), source),
+            ("Untitled game", "Untitled game", "filename")
+        );
+        for path in [
+            "/Users/Alice/Downloads/BootstrapPackagedGame.exe",
+            "/Users/Alice/BootstrapPackagedGame.exe",
+            "/Temp/BootstrapPackagedGame.exe",
+        ] {
+            let (name, _, source) = game_file_title(Path::new(path), None);
+            assert_eq!(name, "Untitled game", "account/root leaked: {path}");
+            assert_eq!(source, "filename");
+        }
+        let (title, _, source) = game_file_title(
+            Path::new("/Users/Alice/Downloads/Bodycam/Binaries/Win64/BootstrapPackagedGame.exe"),
+            None,
+        );
+        assert_eq!(title, "Bodycam");
+        assert_eq!(source, "folder");
+        let (title, _, source) = game_file_title(
+            Path::new(
+                "/Temp/orbit-inspect-long-random-name/UnrealGame/Binaries/Win64/BootstrapPackagedGame-Win64-Shipping.exe",
+            ),
+            None,
+        );
+        assert_eq!(title, "UnrealGame");
+        assert_eq!(source, "folder-unverified");
+        let (title, _, source) = game_file_title(
+            Path::new(
+                "/Games/Parcel Simulator/ParcelSimulator/Binaries/Win64/BootstrapPackagedGame.exe",
+            ),
+            None,
+        );
+        assert_eq!(title, "Parcel Simulator");
+        assert_eq!(source, "folder");
+        let (title, _, source) = game_file_title(
+            Path::new(
+                "/Games/Long Display Game Title/InternalProject/Binaries/Win64/BootstrapPackagedGame.exe",
+            ),
+            None,
+        );
+        assert_eq!(title, "InternalProject");
+        assert_eq!(source, "folder-unverified");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn inspected_manual_executables_expose_repaired_title_and_suggestion() {
+        let sandbox = std::env::temp_dir().join(format!("orbit-inspect-{}", std::process::id()));
+        let root = sandbox.join("Games");
+        let cases = [
+            (
+                "Parcel-Simulator-AnkerGames/Parcel Simulator/parcel.exe",
+                "Parcel Simulator",
+            ),
+            ("Bodycam-SteamRIP.com/Bodycam/Bodycam.exe", "Bodycam"),
+            ("Assassins-Creed-Mirage/Creed.exe", "Assassins Creed Mirage"),
+            (
+                "UnrealGame/Binaries/Win64/BootstrapPackagedGame-Win64-Shipping.exe",
+                "UnrealGame",
+            ),
+        ];
+        for (relative, expected) in cases {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"not a PE; metadata lookup must be optional").unwrap();
+            let result = inspect_game_file(path.to_str().unwrap()).unwrap();
+            assert_eq!(result["name"], expected, "failed inspecting {relative}");
+            assert_eq!(
+                result["suggested_name"], expected,
+                "failed suggesting {relative}"
+            );
+            assert_eq!(result["name_source"], "folder");
+        }
+        std::fs::remove_dir_all(&sandbox).unwrap();
     }
 
     #[test]

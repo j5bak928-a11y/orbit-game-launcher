@@ -74,11 +74,7 @@ fn approved_url(raw: &str) -> bool {
     ) || (u.host_str() == Some("shared.fastly.steamstatic.com")
         && u.path().starts_with("/store_item_assets/steam/apps/"))
 }
-fn read_response(
-    mut response: Response,
-    limit: usize,
-    image: bool,
-) -> Result<Option<Vec<u8>>, String> {
+fn read_response(response: Response, limit: usize, image: bool) -> Result<Option<Vec<u8>>, String> {
     if response.status().as_u16() == 404 {
         return Ok(None);
     }

@@ -847,7 +847,7 @@ fn settle_sessions(app: &tauri::AppHandle) {
                 .unwrap_or(started.elapsed().as_secs() as i64);
             let _ = db.finish_session(&session_id, seconds);
         }
-    }
+    };
 }
 
 pub fn run() {

@@ -160,3 +160,33 @@ test('renderer boot waits for the event bridge but does not wait for optional up
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(state.updateStatus.message,'Update available');
 });
+
+test('Windows WebView2 art uses the local protocol origin; Electron URLs stay unchanged', async () => {
+  const token = '01234567-89ab-cdef-0123-456789abcdef.png';
+  const makeWindow = (platform, protocol) => ({
+    __TAURI__: {
+      core: {invoke:async()=>null},
+      event: {listen:async()=>()=>{}}
+    },
+    navigator: {platform, userAgent:platform},
+    location: {protocol}
+  });
+  const windows = makeWindow('Win32', 'http:');
+  load(windows);
+  assert.equal(windows.OrbitArtworkUrl(token), `http://orbit-art.localhost/file/${token}`);
+  assert.equal(windows.OrbitArtworkUrl('../outside.png'), null);
+  const secure = makeWindow('Win32', 'https:');
+  load(secure);
+  assert.equal(secure.OrbitArtworkUrl(token), `https://orbit-art.localhost/file/${token}`);
+  const mac = makeWindow('MacIntel', 'tauri:');
+  load(mac);
+  assert.equal(mac.OrbitArtworkUrl(token), `orbit-art://file/${token}`);
+  assert.equal(load({}), undefined);
+
+  // Both renderer views must use the Tauri helper rather than raw orbit-art:
+  // so the artwork scheme remains correct when switching to controller mode.
+  for (const source of ['app.js', 'controller-mode.js']) {
+    assert.match(fs.readFileSync(path.join(ui, source),'utf8'), /window\.OrbitArtworkUrl\?\.\(token\)/);
+  }
+  await Promise.all([windows.orbit.ready,secure.orbit.ready,mac.orbit.ready]);
+});

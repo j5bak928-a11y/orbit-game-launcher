@@ -4,6 +4,17 @@
   if (window.orbit || !window.__TAURI__?.core?.invoke) return;
 
   const {core, event} = window.__TAURI__;
+  // Wry/WebView2 registers custom protocols on a local HTTP(S) origin rather
+  // than as a navigable orbit-art: scheme. Convert local artwork URLs only
+  // under Windows Tauri; Electron and other platforms keep the original URI.
+  window.OrbitArtworkUrl = token => {
+    if (!/^[a-f\d-]{36}\.(jpg|jpeg|png|webp)$/.test(token || '')) return null;
+    const onWindows = /^Win/i.test(window.navigator?.platform || '') ||
+      /Windows/i.test(window.navigator?.userAgent || '');
+    if (!onWindows) return `orbit-art://file/${token}`;
+    const scheme = window.location?.protocol === 'https:' ? 'https' : 'http';
+    return `${scheme}://orbit-art.localhost/file/${token}`;
+  };
   const methods = [
     'bootstrap', 'getWindowState', 'setFullscreen', 'librarySnapshot',
     'listGames', 'runningGames', 'getGame', 'addGame', 'updateGame',

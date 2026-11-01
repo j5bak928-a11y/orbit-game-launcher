@@ -111,7 +111,21 @@ fn read_response(response: Response, limit: usize, image: bool) -> Result<Option
         .map_err(|e| e.to_string())?;
     Ok((bytes.len() <= limit).then_some(bytes))
 }
-fn request(http: &Client, url: &str, max: usize, image: bool) -> Result<Option<Vec<u8>>, String> {
+fn require_online(allowed: &dyn Fn() -> bool) -> Result<(), String> {
+    if allowed() {
+        Ok(())
+    } else {
+        Err("Online Steam artwork was disabled or paused during the request.".into())
+    }
+}
+fn request(
+    http: &Client,
+    url: &str,
+    max: usize,
+    image: bool,
+    allowed: &dyn Fn() -> bool,
+) -> Result<Option<Vec<u8>>, String> {
+    require_online(allowed)?;
     if !approved_url(url) {
         return Err("Blocked unapproved Steam artwork endpoint".into());
     }
@@ -121,15 +135,24 @@ fn request(http: &Client, url: &str, max: usize, image: bool) -> Result<Option<V
         .map_err(|e| format!("Steam request failed: {e}"))?;
     read_response(response, max, image)
 }
-fn json_request(http: &Client, url: &str, max: usize) -> Result<Option<Value>, String> {
-    let Some(bytes) = request(http, url, max, false)? else {
+fn json_request(
+    http: &Client,
+    url: &str,
+    max: usize,
+    allowed: &dyn Fn() -> bool,
+) -> Result<Option<Value>, String> {
+    let Some(bytes) = request(http, url, max, false, allowed)? else {
         return Ok(None);
     };
     serde_json::from_slice(&bytes)
         .map(Some)
         .map_err(|_| "Steam returned invalid JSON".into())
 }
-fn exact_app(http: &Client, name: &str) -> Result<Option<(String, String)>, String> {
+fn exact_app(
+    http: &Client,
+    name: &str,
+    allowed: &dyn Fn() -> bool,
+) -> Result<Option<(String, String)>, String> {
     if !valid_title(name) {
         return Ok(None);
     }
@@ -139,7 +162,7 @@ fn exact_app(http: &Client, name: &str) -> Result<Option<(String, String)>, Stri
         .append_pair("term", name)
         .append_pair("l", "english")
         .append_pair("cc", "US");
-    let Some(data) = json_request(http, url.as_str(), SEARCH_LIMIT)? else {
+    let Some(data) = json_request(http, url.as_str(), SEARCH_LIMIT, allowed)? else {
         return Ok(None);
     };
     let items = data["items"]
@@ -209,7 +232,11 @@ fn official_urls(id: &str, assets: &Value) -> Vec<String> {
         })
         .collect()
 }
-fn metadata_urls(http: &Client, id: &str) -> Result<Vec<String>, String> {
+fn metadata_urls(
+    http: &Client,
+    id: &str,
+    allowed: &dyn Fn() -> bool,
+) -> Result<Vec<String>, String> {
     let input = json!({"ids":[{"appid":id.parse::<u64>().map_err(|e|e.to_string())?}],
         "context":{"country_code":"US","language":"english"},
         "data_request":{"include_assets":true}});
@@ -217,7 +244,7 @@ fn metadata_urls(http: &Client, id: &str) -> Result<Vec<String>, String> {
         .map_err(|e| e.to_string())?;
     url.query_pairs_mut()
         .append_pair("input_json", &input.to_string());
-    let Some(data) = json_request(http, url.as_str(), JSON_LIMIT)? else {
+    let Some(data) = json_request(http, url.as_str(), JSON_LIMIT, allowed)? else {
         return Ok(vec![]);
     };
     if let Some(items) = data
@@ -470,13 +497,14 @@ fn local_icon(id: &str, install: Option<&str>) -> Option<(Vec<u8>, &'static str)
 }
 
 fn online_cover(http: &Client, id: &str) -> Result<Option<Vec<u8>>, String> {
-    online_cover_with_deadline(http, id, None)
+    online_cover_with_deadline(http, id, None, &|| true)
 }
 
 fn online_cover_with_deadline(
     http: &Client,
     id: &str,
     deadline: Option<Instant>,
+    allowed: &dyn Fn() -> bool,
 ) -> Result<Option<Vec<u8>>, String> {
     if !valid_id(id) {
         return Err("Invalid Steam app ID".into());
@@ -485,7 +513,7 @@ fn online_cover_with_deadline(
         return Err("Steam artwork repair time budget reached".into());
     }
     // Metadata can fail while official direct CDN paths remain available.
-    let (mut urls, mut error) = match metadata_urls(http, id) {
+    let (mut urls, mut error) = match metadata_urls(http, id, allowed) {
         Ok(urls) => (urls, None),
         Err(e) => (vec![], Some(e)),
     };
@@ -509,7 +537,9 @@ fn online_cover_with_deadline(
         if deadline.is_some_and(|end| Instant::now() >= end) {
             return Err("Steam artwork repair time budget reached".into());
         }
-        match request(http, &url, IMAGE_LIMIT, true) {
+        // Permission is evaluated before *every* HTTP request, including
+        // fallback CDN attempts following a failed metadata response.
+        match request(http, &url, IMAGE_LIMIT, true, allowed) {
             Ok(Some(bytes)) if portrait(&bytes) => return Ok(Some(bytes)),
             Ok(_) => (),
             Err(e) => error = Some(e),
@@ -525,19 +555,31 @@ fn online_cover_with_deadline(
 /// Caller MUST check useSteamArtwork and Performance Guard before invoking.
 /// Returns {cover, matchedName?, message}; failures return Err.
 pub fn find_online_cover(title: &str, artwork_dir: &Path) -> Result<Value, String> {
+    find_online_cover_guarded(title, artwork_dir, &|| true)
+}
+
+/// Recheck opt-in and Performance Guard immediately before each network call.
+/// The caller must supply a fresh settings/running-session check.
+pub fn find_online_cover_guarded(
+    title: &str,
+    artwork_dir: &Path,
+    allowed: &dyn Fn() -> bool,
+) -> Result<Value, String> {
+    require_online(allowed)?;
     let title = title.trim();
     if !valid_title(title) {
         return Err("Enter a valid game title (3–140 characters).".into());
     }
     let http = client()?;
-    let Some((name, id)) = exact_app(&http, title)? else {
+    let Some((name, id)) = exact_app(&http, title, allowed)? else {
         return Ok(json!({"cover":"",
             "message":"No exact Steam title match. Check the title or choose an image manually."}));
     };
-    let Some(bytes) = online_cover(&http, &id)? else {
+    let Some(bytes) = online_cover_with_deadline(&http, &id, None, allowed)? else {
         return Ok(json!({"cover":"","matchedName":name,
             "message":"No portrait cover found for the exact Steam title."}));
     };
+    require_online(allowed)?;
     let cover = store(&bytes, "jpg", artwork_dir)?;
     Ok(json!({"cover":cover,"matchedName":name,"message":"Cover found on Steam."}))
 }
@@ -609,6 +651,18 @@ pub fn repair_artwork_with_options(
     online_enabled: bool,
     paused: bool,
 ) -> Result<Value, String> {
+    repair_artwork_guarded(games, artwork_dir, online_enabled, paused, &|| true)
+}
+
+/// Supports opt-out while repair is running. Offline Steam cache inspection
+/// remains available, but each new network fetch checks the live permissions.
+pub fn repair_artwork_guarded(
+    games: &[Value],
+    artwork_dir: &Path,
+    online_enabled: bool,
+    paused: bool,
+    allowed: &dyn Fn() -> bool,
+) -> Result<Value, String> {
     let started = Instant::now();
     let mut found = 0usize;
     let mut icons = 0usize;
@@ -656,23 +710,25 @@ pub fn repair_artwork_with_options(
                 && http.is_some()
                 && online_count < ONLINE_LIMIT
                 && started.elapsed() < REPAIR_TIME
+                && allowed()
             {
                 online_count += 1;
                 let http = http.as_ref().unwrap();
                 let deadline = Some(started + REPAIR_TIME);
                 let result = if let Some(steam_id) = steam_id {
-                    online_cover_with_deadline(http, steam_id, deadline)
+                    online_cover_with_deadline(http, steam_id, deadline, allowed)
                 } else {
-                    match exact_app(http, game["name"].as_str().unwrap_or("")) {
+                    match exact_app(http, game["name"].as_str().unwrap_or(""), allowed) {
                         Ok(Some((_, steam_id))) => {
-                            online_cover_with_deadline(http, &steam_id, deadline)
+                            online_cover_with_deadline(http, &steam_id, deadline, allowed)
                         }
                         Ok(None) => Ok(None),
                         Err(e) => Err(e),
                     }
                 };
                 match result {
-                    Ok(result) => bytes = result,
+                    Ok(result) if allowed() => bytes = result,
+                    Ok(_) => (),
                     Err(e) => {
                         if failures.len() < 10 {
                             failures.push(format!("{id}: {e}"))
@@ -781,6 +837,22 @@ mod tests {
         assert_eq!(result["onlineEnabled"], false);
         assert_eq!(result["attempted"], 0);
         assert_eq!(result["updates"], json!([]));
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn online_opt_out_is_rechecked_before_each_request() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let enabled = AtomicBool::new(true);
+        let allowed = || enabled.load(Ordering::SeqCst);
+        assert!(require_online(&allowed).is_ok());
+        enabled.store(false, Ordering::SeqCst);
+        assert!(require_online(&allowed).is_err());
+        let http = client().unwrap();
+        let url = "https://store.steampowered.com/api/storesearch/?term=Test";
+        assert!(request(&http, url, SEARCH_LIMIT, false, &allowed).is_err());
+        let dir = std::env::temp_dir().join(format!("orbit-art-revoked-{}", uuid::Uuid::new_v4()));
+        assert!(find_online_cover_guarded("Example Game", &dir, &allowed).is_err());
         assert!(!dir.exists());
     }
 

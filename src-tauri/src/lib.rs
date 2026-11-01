@@ -114,6 +114,17 @@ fn running_ids(state: &OrbitState) -> Vec<String> {
     ids
 }
 
+fn online_artwork_allowed(state: &OrbitState) -> bool {
+    // Release SQLite before inspecting running games to avoid lock inversion
+    // with the session poller. This check is repeated for every Steam request.
+    let settings = state.db.lock().ok().and_then(|db| db.get_settings().ok());
+    let Some(settings) = settings else {
+        return false;
+    };
+    settings["useSteamArtwork"] == true
+        && !(settings["performanceGuard"] == true && !running_ids(state).is_empty())
+}
+
 fn snapshot(state: &OrbitState) -> Result<Value, String> {
     let games = state.db.lock().map_err(|e| e.to_string())?.list("name")?;
     Ok(
@@ -519,7 +530,9 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
                     "Online artwork is paused by Performance Guard while a game is running.".into(),
                 );
             }
-            artwork::find_online_cover(str_argument(args, 0)?, &state.artwork_dir)
+            artwork::find_online_cover_guarded(str_argument(args, 0)?, &state.artwork_dir, &|| {
+                online_artwork_allowed(&state)
+            })
         }
         "repairSteamArtwork" => {
             let db = state.db.lock().unwrap();
@@ -529,11 +542,12 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             let enabled = settings["useSteamArtwork"] == true;
             let paused = settings["performanceGuard"] == true && !running_ids(&state).is_empty();
             let originals = games.as_array().ok_or("Invalid game list")?;
-            let mut result = artwork::repair_artwork_with_options(
+            let mut result = artwork::repair_artwork_guarded(
                 originals,
                 &state.artwork_dir,
                 enabled,
                 paused,
+                &|| online_artwork_allowed(&state),
             )?;
             let original_by_id: HashMap<String, &Value> = originals
                 .iter()

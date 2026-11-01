@@ -20,11 +20,27 @@ The new Rust edition uses its own Tauri application data folder. On its first la
 
 Storefront detection is read-only and bounded. Game executables are launched directly with validated absolute paths and individual arguments. The Rust Windows tracker checks running processes against known install paths, and periodically records sessions. The first preview must be validated against real Steam/Epic/GOG installs before any release.
 
-## Verification targets
+## Verified Windows preview
 
-1. Run Rust `cargo test` and `cargo check` plus the frontend adapter tests.
-2. Build both native Windows installer formats in CI.
-3. On Windows with a real installed library, verify migration, artwork, folders, manual game addition, import, edit, launch, playtime, fullscreen controller mode, export and restore.
-4. Record cold startup, idle RSS, startup CPU and installer sizes against Electron on the same PC. **No speedup is claimed until these measurements are available.**
+The GitHub Actions workflow [Verify Orbit Rust / Tauri desktop](https://github.com/j5bak928-a11y/orbit-game-launcher/actions/workflows/tauri-windows.yml) compiled the Rust backend, passed its native Rust unit tests and the frontend adapter tests, produced both NSIS and MSI installers plus a portable EXE, and saved a same-runner benchmark comparison. The JavaScript CI and browser regressions also passed. Download build and benchmark artifacts from the successful workflow run; installers are unsigned.
 
-Native online artwork search, repair and automatic updates are deliberately unavailable while their Rust replacements are unfinished. The JS interface displays the returned error if invoked. Do not distribute the Rust build as a production replacement until these features are finished and real Windows smoke testing succeeds.
+On a local Windows machine, the downloaded portable `orbit-launcher.exe` opened the expected Overview UI with an empty test library. The window was captured after startup, and closing it left the main process running in the tray as designed. The observed *parent process* working set was approximately 39 MB after 5 seconds, excluding the WebView2 child processes. This value is **not** the complete application's RAM usage or a cross-app speed comparison.
+
+### Same-runner SQLite benchmark (5,000 games; median of three runs)
+
+| Operation | Node.js + existing SQLite implementation | Rust + rusqlite |
+| --- | ---: | ---: |
+| Insert 5,000 games | 5,169.4 ms | 3,108.0 ms |
+| List 5,000 games | 65.3 ms | 35.7 ms |
+| Look up 100 games | 4.5 ms | 2.5 ms |
+| Process working set | 87.6 MiB | 30.3 MiB |
+
+The benchmark includes Node/V8 versus native-runtime overhead in memory results and intentionally excludes the UI and Electron/WebView2. The performance advantage of the **whole application** is not established by these figures.
+
+### Remaining release verification
+
+1. On Windows with a real installed library, verify first-run migration, artwork, game discovery, manual game addition, updates, launch, playtime, controller mode, portable backup export and restore.
+2. Measure complete process-tree RSS (including Electron/WebView2 children), CPU and cold startup for both variants on the same computer, and compare installer sizes.
+3. Review signing/distribution and test safe exit via the tray. Keep this PR in draft until manual behavior parity is established.
+
+Native Steam artwork search and repair are supported through the Rust backend when the user enables online artwork in Settings, subject to request limits and Performance Guard. Automatic update installation remains disabled in the unsigned Rust preview; the interface reports an unsupported status. Do not distribute the Rust preview as a production replacement until the above checks succeed.

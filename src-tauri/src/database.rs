@@ -136,11 +136,14 @@ pub fn normalized_path(input: &str) -> String {
     let remainder = &text[prefix.len()..];
     let is_unc = windows && remainder.starts_with("\\\\");
     let rooted = remainder.starts_with(separator);
+    // A UNC server and share constitute the Windows volume root. `..` may
+    // remove directories within a share, but must never remove the share.
+    let protected_parts = if is_unc { 2 } else { 0 };
     let mut parts: Vec<&str> = Vec::new();
     for part in remainder.split(separator) {
         match part {
             "" | "." => {}
-            ".." if parts.last().is_some_and(|p| *p != "..") => {
+            ".." if parts.len() > protected_parts && parts.last().is_some_and(|p| *p != "..") => {
                 parts.pop();
             }
             ".." if !rooted => parts.push(".."),
@@ -282,11 +285,12 @@ fn normalized_executable(s: &str) -> String {
     let remainder = s[prefix.len()..].replace('/', "\\");
     let rooted = remainder.starts_with('\\');
     let unc = remainder.starts_with("\\\\");
+    let protected_parts = if unc { 2 } else { 0 };
     let mut parts = Vec::new();
     for component in remainder.split('\\') {
         match component {
             "" | "." => {}
-            ".." if parts.last().is_some_and(|v| *v != "..") => {
+            ".." if parts.len() > protected_parts && parts.last().is_some_and(|v| *v != "..") => {
                 parts.pop();
             }
             ".." if !rooted => parts.push(".."),
@@ -1251,6 +1255,25 @@ mod tests {
         test(&mut db, &file);
         drop(db);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_network_share_root_survives_dot_dot_and_stored_path_keeps_case() {
+        let path = r"\\Server\Share\Folder\..\..\Game.exe";
+        assert_eq!(normalized_path(path), r"\\server\share\game.exe");
+        assert_eq!(normalized_executable(path), r"\\Server\Share\Game.exe");
+        assert_eq!(
+            normalized_path(r"\\Server\Share\..\..\Game.exe"),
+            r"\\server\share\game.exe"
+        );
+        assert_eq!(
+            normalized_executable(r"C:\Games\Sub\..\Orbit.exe"),
+            r"C:\Games\Orbit.exe"
+        );
+        let stored = clean_game(&json!({"name":"Network game","executable":path}), None).unwrap();
+        assert_eq!(stored["executable"], r"\\Server\Share\Game.exe");
+        assert_eq!(duplicate_key(&stored), "file:\\\\server\\share\\game.exe");
     }
 
     #[test]

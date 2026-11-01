@@ -372,6 +372,13 @@ fn game_file_title(file: &Path, product: Option<&str>) -> (String, String, &'sta
     // Prefer a richer title from a containing folder if it includes the short
     // executable identity (Creed.exe -> Assassin's Creed Mirage), even when
     // another nested folder has just "Creed".
+    let ambiguous_folder = executable_title.is_none()
+        && folders.first().is_some_and(|closest| {
+            folders
+                .iter()
+                .skip(1)
+                .any(|outer| normalized_name(outer) != normalized_name(closest))
+        });
     let folder_title = if let Some(exe) = executable_title.as_deref() {
         // A short executable such as Creed.exe can justify a more specific
         // enclosing title. Do not prefer longer unrelated ancestor folders.
@@ -382,9 +389,33 @@ fn game_file_title(file: &Path, product: Option<&str>) -> (String, String, &'sta
             .or_else(|| folders.first())
             .cloned()
     } else {
-        // Generic Unreal bootstrappers carry no title identity. The nearest
-        // plausible folder is more trustworthy than a long parent/temp name.
-        folders.first().cloned()
+        // For generic Unreal binaries prefer an expanded display title when
+        // an enclosing directory is the same name with word separators.
+        // If the parent is an unrelated project/container name, the guess
+        // remains unverified and must never trigger an automatic DB rename.
+        folders.first().map(|closest| {
+            folders
+                .iter()
+                .skip(1)
+                .filter(|outer| normalized_name(outer) == normalized_name(closest))
+                .max_by_key(|outer| outer.chars().count())
+                .cloned()
+                .or_else(|| {
+                    folders
+                        .iter()
+                        .skip(1)
+                        .filter(|outer| {
+                            outer.split_whitespace().count() >= 3
+                                && outer.chars().count() > closest.chars().count()
+                                && !outer.split_whitespace().any(|word| {
+                                    word.chars().all(|character| character.is_ascii_digit())
+                                })
+                        })
+                        .max_by_key(|outer| outer.chars().count())
+                        .cloned()
+                })
+                .unwrap_or_else(|| closest.clone())
+        })
     };
     let fallback = match (&executable_title, &folder_title) {
         (None, Some(folder)) => folder.clone(),
@@ -423,7 +454,9 @@ fn game_file_title(file: &Path, product: Option<&str>) -> (String, String, &'sta
         }
         return (product, fallback, "metadata");
     }
-    let kind = if folder_title.as_deref() == Some(fallback.as_str()) {
+    let kind = if ambiguous_folder {
+        "folder-unverified"
+    } else if folder_title.as_deref() == Some(fallback.as_str()) {
         "folder"
     } else {
         "filename"
@@ -1714,7 +1747,8 @@ pub fn inspect_game_file(executable: &str) -> Result<Value, String> {
     let local_artwork = find_nearby_artwork(&file, &name);
     Ok(
         json!({"executable":file,"name":name,"suggested_name":fallback,
-        "recognized":kind!="filename","name_source":kind,"working_dir":parent,
+        "recognized":matches!(kind, "executable" | "metadata" | "folder"),
+        "name_source":kind,"working_dir":parent,
         "cover":"","icon":"","cover_source":"","local_artwork":local_artwork}),
     )
 }
@@ -2348,13 +2382,30 @@ mod tests {
             None,
         );
         assert_eq!(title, "UnrealGame");
+        assert_eq!(source, "folder-unverified");
+        let (title, _, source) = game_file_title(
+            Path::new(
+                "/Games/Parcel Simulator/ParcelSimulator/Binaries/Win64/BootstrapPackagedGame.exe",
+            ),
+            None,
+        );
+        assert_eq!(title, "Parcel Simulator");
         assert_eq!(source, "folder");
+        let (title, _, source) = game_file_title(
+            Path::new(
+                "/Games/Long Display Game Title/InternalProject/Binaries/Win64/BootstrapPackagedGame.exe",
+            ),
+            None,
+        );
+        assert_eq!(title, "Long Display Game Title");
+        assert_eq!(source, "folder-unverified");
     }
 
     #[cfg(windows)]
     #[test]
     fn inspected_manual_executables_expose_repaired_title_and_suggestion() {
-        let root = std::env::temp_dir().join(format!("orbit-inspect-{}", std::process::id()));
+        let sandbox = std::env::temp_dir().join(format!("orbit-inspect-{}", std::process::id()));
+        let root = sandbox.join("Games");
         let cases = [
             (
                 "Parcel-Simulator-AnkerGames/Parcel Simulator/parcel.exe",
@@ -2379,7 +2430,7 @@ mod tests {
             );
             assert_eq!(result["name_source"], "folder");
         }
-        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_dir_all(&sandbox).unwrap();
     }
 
     #[test]

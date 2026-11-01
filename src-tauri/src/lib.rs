@@ -199,8 +199,12 @@ fn trustworthy_detected_name(previous: &str, info: &Value) -> bool {
     info["recognized"] == true
         && !name.is_empty()
         && name.len() <= 140
-        && !["untitled game", "bootstrappackagedgame", "game-win64-shipping"]
-            .contains(&name.to_ascii_lowercase().as_str())
+        && ![
+            "untitled game",
+            "bootstrappackagedgame",
+            "game-win64-shipping",
+        ]
+        .contains(&name.to_ascii_lowercase().as_str())
         && !name.eq_ignore_ascii_case(previous)
 }
 
@@ -218,7 +222,10 @@ fn refresh_generated_names(app: &tauri::AppHandle) {
     // Rotate through all candidates rather than repeatedly spending the 150
     // inspection slots on stale executables at the front of the sorted list.
     // The scan is background-only and capped by elapsed time, not library size.
-    let candidates = games.iter().filter(|game| replaceable_name(game)).collect::<Vec<_>>();
+    let candidates = games
+        .iter()
+        .filter(|game| replaceable_name(game))
+        .collect::<Vec<_>>();
     if candidates.is_empty() {
         state.name_scan_cursor.store(0, Ordering::SeqCst);
         return;
@@ -254,7 +261,10 @@ fn refresh_generated_names(app: &tauri::AppHandle) {
             changed(app, &state, vec![updated], vec![], "name-detection", false);
         }
     }
-    state.name_scan_cursor.store(((start + examined) % candidates.len()) as u64, Ordering::SeqCst);
+    state.name_scan_cursor.store(
+        ((start + examined) % candidates.len()) as u64,
+        Ordering::SeqCst,
+    );
 }
 
 // Cover repair runs outside the UI thread, after boot and when the library

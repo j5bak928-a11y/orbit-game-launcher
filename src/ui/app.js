@@ -520,9 +520,10 @@ document.addEventListener('error',event=>{
 window.addEventListener('resize',()=>{if(['library','recent','favorites'].includes(state.route))renderVirtual()});
 window.matchMedia?.('(prefers-color-scheme:light)')?.addEventListener('change',()=>{if(state.settings?.theme==='system')setupTheme()});
 async function boot(){try{
- if(!window.orbit)throw Error('Desktop integration is unavailable. Start Orbit using Electron.');
+ if(!window.orbit)throw Error('Desktop integration is unavailable. Start Orbit using the desktop application.');
  const buffered=[];
  window.orbit.onEvent(event=>{if(libraryUpdates)handleOrbitEvent(event);else buffered.push(event);});
+ if(window.orbit.ready)await window.orbit.ready;
  const data=await window.orbit.bootstrap();
  libraryUpdates=new window.OrbitLibraryUpdates.LibraryUpdates({
   snapshot:data,loadSnapshot:loadLibrarySnapshot,onChange:applyLibraryUpdate,
@@ -530,9 +531,16 @@ async function boot(){try{
  });
  state.games=libraryUpdates.snapshot().games;state.runningIds=data.runningIds||[];state.settings=data.settings;
  state.sort=data.settings.sort||'name';state.view=data.settings.view||'grid';state.platform=data.platform;state.version=data.version;
- if(window.orbit.getUpdateStatus)state.updateStatus=await window.orbit.getUpdateStatus();
  setupTheme();renderShell();
  for(const event of buffered)handleOrbitEvent(event);
+ // Update-service availability must not delay or prevent library startup.
+ if(window.orbit.getUpdateStatus)Promise.resolve().then(()=>window.orbit.getUpdateStatus()).then(status=>{
+  if(status){state.updateStatus=status;const statusNode=el('update-status');if(statusNode)statusNode.textContent=status.message||'';}
+ }).catch(error=>{
+  state.updateStatus={state:'error',message:'Update status is unavailable.'};
+  const statusNode=el('update-status');if(statusNode)statusNode.textContent=state.updateStatus.message;
+  console.warn('Could not load update status:',error);
+ });
  }catch(e){el('app').innerHTML=`<div class="boot"><div class="boot-logo">!</div><h2>Orbit could not start</h2><p>${esc(e.message||'Unknown error.')}</p></div>`;}}
 
 boot();

@@ -64,8 +64,8 @@ const settle=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
   await page.keyboard.press('Tab');assert(await page.locator('[role=dialog]').evaluate(node=>node.contains(document.activeElement)));
   await page.keyboard.press('Escape');assert(await page.locator('.game-card').evaluate(node=>node===document.activeElement));
   await page.locator('#global-search').fill('');await settle(page);
-  await page.locator('header [data-action=scan]').click();
-  assert.equal(await page.locator('header [data-action=scan]').getAttribute('aria-busy'),'true');
+  await page.locator('.library-page .page-heading [data-action=scan]').click();
+  assert.equal(await page.locator('.library-page .page-heading [data-action=scan]').getAttribute('aria-busy'),'true');
   await page.evaluate(()=>window.experience.scanResolve({games:[],warnings:['Fixture warning'],diagnostics:[
    {provider:'steam',status:'ok',games:5000,warnings:0,durationMs:17},
    {provider:'epic',status:'warning',games:0,warnings:1,durationMs:2},
@@ -73,7 +73,7 @@ const settle=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
   ]}));
   await page.locator('.scan-diagnostics summary').click();
   assert.equal(await page.locator('.diagnostic').count(),3);await page.keyboard.press('Escape');
-  assert.equal(await page.locator('header [data-action=scan]').getAttribute('aria-busy'),'false');
+  assert.equal(await page.locator('.library-page .page-heading [data-action=scan]').getAttribute('aria-busy'),'false');
   const measurements=[];
   for(const width of [1440,1181,1180,910,750,500,390]){
    await page.setViewportSize({width,height:width===910?610:900});

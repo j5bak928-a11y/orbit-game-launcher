@@ -60,7 +60,7 @@ const padButton=async(page,button,held=90,slot=0)=>{
   assert(await mode.locator('[data-tv-key="detail:play"]').isDisabled());
   await page.evaluate(()=>window.controllerTest.finishLaunch());await pause(page);
   await page.waitForFunction(()=>document.querySelector('.tv-recent [data-tv-game="00000000-0000-4000-8000-000000000009"]').textContent.includes('Playing now'));
-  assert(!await mode.locator('.tv-recent [data-tv-game="00000000-0000-4000-8000-000000000009"]').textContent().then(text=>text.includes('Ready to play')),'a running game must not say ready to play');
+  assert(!await mode.locator('.tv-recent [data-tv-game="00000000-0000-4000-8000-000000000009"]').textContent().then(text=>text.includes('No playtime recorded')),'a running game must not say no playtime recorded');
   await padButton(page,1);assert.equal(await mode.locator('.tv-sheet').count(),0);
   await padButton(page,1);await mode.waitFor({state:'detached'});
   assert.equal(await page.locator('#app').evaluate(node=>node.inert),false);

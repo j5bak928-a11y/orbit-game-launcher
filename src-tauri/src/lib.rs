@@ -177,7 +177,13 @@ fn save_artwork(source: &Path, artwork_dir: &Path) -> Result<String, String> {
     if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 15 * 1024 * 1024 {
         return Err("Artwork must be an image file smaller than 15 MB".into());
     }
-    let bytes = std::fs::read(source).map_err(|e| e.to_string())?;
+    use std::io::Read;
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    std::fs::File::open(source)
+        .map_err(|e| e.to_string())?
+        .take(15 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
     if bytes.is_empty() || bytes.len() > 15 * 1024 * 1024 {
         return Err("Artwork must be smaller than 15 MB".into());
     }
@@ -223,6 +229,47 @@ fn save_artwork(source: &Path, artwork_dir: &Path) -> Result<String, String> {
         Err(error) => return Err(error.to_string()),
     }
     Ok(name)
+}
+
+fn restored_artwork_token(value: &Value, dir: &Path) -> String {
+    use std::io::Read;
+    let Some(token) = value.as_str() else {
+        return String::new();
+    };
+    if !valid_art_name(token) {
+        return String::new();
+    }
+    let path = dir.join(token);
+    let Ok(meta) = std::fs::symlink_metadata(&path) else {
+        return String::new();
+    };
+    if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 15 * 1024 * 1024 {
+        return String::new();
+    }
+    let Ok(mut file) = std::fs::File::open(&path) else {
+        return String::new();
+    };
+    let mut header = [0u8; 12];
+    let Ok(count) = file.read(&mut header) else {
+        return String::new();
+    };
+    let valid = match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => count >= 8 && header[..8] == [137, 80, 78, 71, 13, 10, 26, 10],
+        "jpg" | "jpeg" => count >= 3 && header[..3] == [255, 216, 255],
+        "webp" => count >= 12 && &header[..4] == b"RIFF" && &header[8..12] == b"WEBP",
+        _ => false,
+    };
+    if valid {
+        token.to_string()
+    } else {
+        String::new()
+    }
 }
 
 fn write_json_backup(path: &Path, payload: &Value) -> Result<(), String> {
@@ -592,7 +639,16 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             let mut errors = Vec::new();
             let mut db = state.db.lock().unwrap();
             for g in games {
-                match db.restore_game(g) {
+                let mut clean = g.clone();
+                if let Some(game) = clean.as_object_mut() {
+                    for field in ["cover", "banner", "icon"] {
+                        game.insert(
+                            field.into(),
+                            json!(restored_artwork_token(&g[field], &state.artwork_dir)),
+                        );
+                    }
+                }
+                match db.restore_game(&clean) {
                     Ok(out) => {
                         if out["added"].as_bool() == Some(true) {
                             imported += 1;

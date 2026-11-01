@@ -474,16 +474,18 @@ fn local_icon(id: &str, install: Option<&str>) -> Option<(Vec<u8>, &'static str)
 }
 
 fn online_cover(http: &Client, id: &str) -> Result<Option<Vec<u8>>, String> {
-    online_cover_with_deadline(http,id,None)
+    online_cover_with_deadline(http, id, None)
 }
 
 fn online_cover_with_deadline(
-    http: &Client, id: &str, deadline: Option<Instant>
+    http: &Client,
+    id: &str,
+    deadline: Option<Instant>,
 ) -> Result<Option<Vec<u8>>, String> {
     if !valid_id(id) {
         return Err("Invalid Steam app ID".into());
     }
-    if deadline.is_some_and(|end|Instant::now()>=end){
+    if deadline.is_some_and(|end| Instant::now() >= end) {
         return Err("Steam artwork repair time budget reached".into());
     }
     // Metadata can fail while official direct CDN paths remain available.
@@ -508,7 +510,7 @@ fn online_cover_with_deadline(
         .filter(|url| seen.insert(url.clone()))
         .take(6)
     {
-        if deadline.is_some_and(|end|Instant::now()>=end){
+        if deadline.is_some_and(|end| Instant::now() >= end) {
             return Err("Steam artwork repair time budget reached".into());
         }
         match request(http, &url, IMAGE_LIMIT, true) {
@@ -661,12 +663,14 @@ pub fn repair_artwork_with_options(
             {
                 online_count += 1;
                 let http = http.as_ref().unwrap();
-                let deadline=Some(started+REPAIR_TIME);
+                let deadline = Some(started + REPAIR_TIME);
                 let result = if let Some(steam_id) = steam_id {
                     online_cover_with_deadline(http, steam_id, deadline)
                 } else {
                     match exact_app(http, game["name"].as_str().unwrap_or("")) {
-                        Ok(Some((_, steam_id))) => online_cover_with_deadline(http, &steam_id, deadline),
+                        Ok(Some((_, steam_id))) => {
+                            online_cover_with_deadline(http, &steam_id, deadline)
+                        }
                         Ok(None) => Ok(None),
                         Err(e) => Err(e),
                     }

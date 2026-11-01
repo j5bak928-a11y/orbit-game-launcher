@@ -20,6 +20,7 @@ struct OrbitState {
     active: Mutex<HashMap<String, (String, Instant)>>,
     artwork_pending: AtomicU64,
     artwork_busy: AtomicBool,
+    name_scan_cursor: AtomicU64,
     data_dir: PathBuf,
     artwork_dir: PathBuf,
 }
@@ -214,7 +215,20 @@ fn refresh_generated_names(app: &tauri::AppHandle) {
     else {
         return;
     };
-    for game in games.iter().filter(|game| replaceable_name(game)).take(150) {
+    // Rotate through all candidates rather than repeatedly spending the 150
+    // inspection slots on stale executables at the front of the sorted list.
+    // The scan is background-only and capped by elapsed time, not library size.
+    let candidates = games.iter().filter(|game| replaceable_name(game)).collect::<Vec<_>>();
+    if candidates.is_empty() {
+        state.name_scan_cursor.store(0, Ordering::SeqCst);
+        return;
+    }
+    let start = (state.name_scan_cursor.load(Ordering::SeqCst) as usize) % candidates.len();
+    let started = Instant::now();
+    let mut examined = 0;
+    while examined < candidates.len() && started.elapsed() < Duration::from_secs(8) {
+        let game = candidates[(start + examined) % candidates.len()];
+        examined += 1;
         let (Some(id), Some(path), Some(previous)) = (
             game["id"].as_str(),
             game["executable"].as_str(),
@@ -240,6 +254,7 @@ fn refresh_generated_names(app: &tauri::AppHandle) {
             changed(app, &state, vec![updated], vec![], "name-detection", false);
         }
     }
+    state.name_scan_cursor.store(((start + examined) % candidates.len()) as u64, Ordering::SeqCst);
 }
 
 // Cover repair runs outside the UI thread, after boot and when the library
@@ -1147,6 +1162,7 @@ pub fn run() {
                 active: Mutex::new(HashMap::new()),
                 artwork_pending: AtomicU64::new(0),
                 artwork_busy: AtomicBool::new(false),
+                name_scan_cursor: AtomicU64::new(0),
                 data_dir,
                 artwork_dir,
             });

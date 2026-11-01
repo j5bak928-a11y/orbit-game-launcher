@@ -191,6 +191,18 @@ fn replaceable_name(game: &Value) -> bool {
     name.eq_ignore_ascii_case(stem)
 }
 
+fn trustworthy_detected_name(previous: &str, info: &Value) -> bool {
+    let Some(name) = info["name"].as_str().map(str::trim) else {
+        return false;
+    };
+    info["recognized"] == true
+        && !name.is_empty()
+        && name.len() <= 140
+        && !["untitled game", "bootstrappackagedgame", "game-win64-shipping"]
+            .contains(&name.to_ascii_lowercase().as_str())
+        && !name.eq_ignore_ascii_case(previous)
+}
+
 fn refresh_generated_names(app: &tauri::AppHandle) {
     let state = app.state::<OrbitState>();
     let Some(games) = state
@@ -213,23 +225,10 @@ fn refresh_generated_names(app: &tauri::AppHandle) {
         let Ok(info) = native::inspect_game_file(path) else {
             continue;
         };
-        let Some(name) = info["name"].as_str() else {
-            continue;
-        };
-        if name.eq_ignore_ascii_case(previous)
-            || name.trim().is_empty()
-            || name.len() > 140
-            || name.eq_ignore_ascii_case("BootstrapPackagedGame")
-        {
+        if !trustworthy_detected_name(previous, &info) {
             continue;
         }
-        // For a generic generated label a plausible enclosing folder also
-        // qualifies. For any other filename, demand recognized metadata.
-        let generic = previous.eq_ignore_ascii_case("BootstrapPackagedGame")
-            || previous.eq_ignore_ascii_case("Game-Win64-Shipping");
-        if !generic && info["recognized"] != true {
-            continue;
-        }
+        let name = info["name"].as_str().unwrap();
         let updated = state.db.lock().ok().and_then(|mut db| {
             let current = db.get(id).ok()?;
             if current["name"] != game["name"] || current["executable"] != game["executable"] {
@@ -312,6 +311,26 @@ mod automatic_artwork_tests {
             "manual",
             r"C:\Games\Foo\game.exe"
         )));
+    }
+
+    #[test]
+    fn rejects_untrusted_auto_title_without_downgrading_existing_name() {
+        assert!(!trustworthy_detected_name(
+            "BootstrapPackagedGame",
+            &json!({"name":"Untitled game","recognized":false,"name_source":"filename"})
+        ));
+        assert!(!trustworthy_detected_name(
+            "BootstrapPackagedGame",
+            &json!({"name":"Downloads","recognized":false,"name_source":"filename"})
+        ));
+        assert!(trustworthy_detected_name(
+            "BootstrapPackagedGame",
+            &json!({"name":"Bodycam","recognized":true,"name_source":"folder"})
+        ));
+        assert!(!trustworthy_detected_name(
+            "My Game",
+            &json!({"name":"My Game","recognized":true,"name_source":"metadata"})
+        ));
     }
 }
 

@@ -8,7 +8,7 @@ use database::LibraryDatabase;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
@@ -18,6 +18,8 @@ struct OrbitState {
     db: Mutex<LibraryDatabase>,
     revision: AtomicU64,
     active: Mutex<HashMap<String, (String, Instant)>>,
+    artwork_pending: AtomicU64,
+    artwork_busy: AtomicBool,
     data_dir: PathBuf,
     artwork_dir: PathBuf,
 }
@@ -155,6 +157,161 @@ fn notify_game(app: &tauri::AppHandle, state: &OrbitState, id: &str, reason: &st
     let game = state.db.lock().ok().and_then(|db| db.get(id).ok());
     if let Some(game) = game.filter(|g| !g.is_null()) {
         changed(app, state, vec![game], vec![], reason, false);
+    }
+}
+
+// Automatic suggestions never rewrite a user-supplied title. Only a clearly
+// generated executable label or an exact old executable-stem title qualifies.
+fn replaceable_name(game: &Value) -> bool {
+    if game["source"] != "manual" && game["source"] != "folder" {
+        return false;
+    }
+    let Some(name) = game["name"].as_str().map(str::trim) else {
+        return false;
+    };
+    if name.is_empty() || name.len() > 140 {
+        return false;
+    }
+    if [
+        "bootstrappackagedgame",
+        "game-win64-shipping",
+        "unityplayer",
+        "win64-shipping",
+    ]
+    .contains(&name.to_ascii_lowercase().as_str())
+    {
+        return true;
+    }
+    let Some(executable) = game["executable"].as_str() else {
+        return false;
+    };
+    let Some(stem) = Path::new(executable).file_stem().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    name.eq_ignore_ascii_case(stem)
+}
+
+fn refresh_generated_names(app: &tauri::AppHandle) {
+    let state = app.state::<OrbitState>();
+    let Some(games) = state
+        .db
+        .lock()
+        .ok()
+        .and_then(|db| db.list("name").ok())
+        .and_then(|games| games.as_array().cloned())
+    else {
+        return;
+    };
+    for game in games.iter().filter(|game| replaceable_name(game)).take(150) {
+        let (Some(id), Some(path), Some(previous)) = (
+            game["id"].as_str(),
+            game["executable"].as_str(),
+            game["name"].as_str(),
+        ) else {
+            continue;
+        };
+        let Ok(info) = native::inspect_game_file(path) else {
+            continue;
+        };
+        let Some(name) = info["name"].as_str() else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case(previous)
+            || name.trim().is_empty()
+            || name.len() > 140
+            || name.eq_ignore_ascii_case("BootstrapPackagedGame")
+        {
+            continue;
+        }
+        // For a generic generated label a plausible enclosing folder also
+        // qualifies. For any other filename, demand recognized metadata.
+        let generic = previous.eq_ignore_ascii_case("BootstrapPackagedGame")
+            || previous.eq_ignore_ascii_case("Game-Win64-Shipping");
+        if !generic && info["recognized"] != true {
+            continue;
+        }
+        let updated = state.db.lock().ok().and_then(|mut db| {
+            let current = db.get(id).ok()?;
+            if current["name"] != game["name"] || current["executable"] != game["executable"] {
+                return None;
+            }
+            db.update(id, &json!({"name":name})).ok()
+        });
+        if let Some(updated) = updated {
+            changed(app, &state, vec![updated], vec![], "name-detection", false);
+        }
+    }
+}
+
+// Cover repair runs outside the UI thread, after boot and when the library
+// changes. Keep a single worker so duplicate scans cannot race with edits.
+// A generation counter guarantees that a concurrent import triggers another
+// pass even when a slow online artwork request is already running.
+fn queue_artwork_scan(app: &tauri::AppHandle) {
+    let state = app.state::<OrbitState>();
+    state.artwork_pending.fetch_add(1, Ordering::SeqCst);
+    if state.artwork_busy.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let last_processed = loop {
+            std::thread::sleep(Duration::from_millis(900));
+            let state = handle.state::<OrbitState>();
+            let generation = state.artwork_pending.load(Ordering::SeqCst);
+            refresh_generated_names(&handle);
+            if let Err(error) = handle_command(&handle, "repairSteamArtwork", &[json!("automatic")])
+            {
+                eprintln!("Orbit automatic artwork scan: {error}");
+            }
+            if state.artwork_pending.load(Ordering::SeqCst) == generation {
+                break generation;
+            }
+        };
+        let state = handle.state::<OrbitState>();
+        state.artwork_busy.store(false, Ordering::SeqCst);
+        if state.artwork_pending.load(Ordering::SeqCst) != last_processed {
+            queue_artwork_scan(&handle);
+        }
+    });
+}
+
+#[cfg(test)]
+mod automatic_artwork_tests {
+    use super::*;
+
+    #[test]
+    fn repairs_only_auto_generated_manual_titles() {
+        let sample = |name: &str, source: &str, executable: &str| {
+            json!({
+                "name":name,"source":source,"executable":executable
+            })
+        };
+        assert!(replaceable_name(&sample(
+            "BootstrapPackagedGame",
+            "manual",
+            r"C:\Games\Bodycam\Bodycam.exe"
+        )));
+        assert!(replaceable_name(&sample(
+            "creed",
+            "manual",
+            r"C:\Games\Assassins Creed Mirage\creed.exe"
+        )));
+        assert!(!replaceable_name(&sample(
+            "Assassin's Creed Mirage",
+            "manual",
+            r"C:\Games\Assassins Creed Mirage\creed.exe"
+        )));
+        assert!(!replaceable_name(&sample(
+            "Fortnite",
+            "epic",
+            r"C:\Games\Fortnite\FortniteClient-Win64-Shipping.exe"
+        )));
+        assert!(!replaceable_name(&sample(
+            "My custom name",
+            "manual",
+            r"C:\Games\Foo\game.exe"
+        )));
     }
 }
 
@@ -337,6 +494,7 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             let result = state.db.lock().unwrap().upsert(argument(args, 0)?)?;
             if let Some(game) = result.get("game").cloned() {
                 changed(app, &state, vec![game], vec![], "add", false);
+                queue_artwork_scan(app);
             }
             Ok(result)
         }
@@ -344,6 +502,12 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             let id = game_id(args)?;
             let game = state.db.lock().unwrap().update(id, argument(args, 1)?)?;
             changed(app, &state, vec![game.clone()], vec![], "edit", false);
+            if argument(args, 1)?.get("executable").is_some()
+                || argument(args, 1)?.get("name").is_some()
+                || game["cover"].as_str().unwrap_or("").is_empty()
+            {
+                queue_artwork_scan(app);
+            }
             Ok(game)
         }
         "removeGame" => {
@@ -362,6 +526,11 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
         "saveSettings" => {
             let settings = state.db.lock().unwrap().save_settings(argument(args, 0)?)?;
             emit(app, json!({"type":"settingsChanged","settings":settings}));
+            if argument(args, 0)?.get("useSteamArtwork").is_some()
+                || argument(args, 0)?.get("performanceGuard").is_some()
+            {
+                queue_artwork_scan(app);
+            }
             Ok(settings)
         }
         "getWindowState" => {
@@ -457,6 +626,9 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
                 }
             }
             changed(app, &state, vec![], vec![], "import", true);
+            if result["imported"].as_u64().unwrap_or(0) > 0 {
+                queue_artwork_scan(app);
+            }
             Ok(result)
         }
         "launchGame" => {
@@ -542,8 +714,23 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             let enabled = settings["useSteamArtwork"] == true;
             let paused = settings["performanceGuard"] == true && !running_ids(&state).is_empty();
             let originals = games.as_array().ok_or("Invalid game list")?;
+            // Automatic enrichment fills missing artwork only. The explicit
+            // Repair button remains allowed to replace a landscape cover.
+            // A non-token marker below influences only the read-only repair
+            // candidate list; it is never written back to SQLite.
+            let automatic = args.first().and_then(Value::as_str) == Some("automatic");
+            let mut candidates = originals.clone();
+            if automatic {
+                for game in &mut candidates {
+                    if let Some(token) = game["cover"].as_str() {
+                        if valid_art_name(token) && state.artwork_dir.join(token).is_file() {
+                            game["cover"] = json!("keep-existing-cover");
+                        }
+                    }
+                }
+            }
             let mut result = artwork::repair_artwork_guarded(
-                originals,
+                &candidates,
                 &state.artwork_dir,
                 enabled,
                 paused,
@@ -685,6 +872,7 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             };
             drop(db);
             changed(app, &state, vec![], vec![], "restore", true);
+            queue_artwork_scan(app);
             Ok(
                 json!({"imported":imported,"skipped":skipped,"errors":errors,"settingsRestored":settings_restored}),
             )
@@ -939,11 +1127,14 @@ pub fn run() {
                 db: Mutex::new(db),
                 revision: AtomicU64::new(0),
                 active: Mutex::new(HashMap::new()),
+                artwork_pending: AtomicU64::new(0),
+                artwork_busy: AtomicBool::new(false),
                 data_dir,
                 artwork_dir,
             });
             #[cfg(target_os = "windows")]
             tray::install_tray(app).map_err(std::io::Error::other)?;
+            queue_artwork_scan(app.handle());
             let handle = app.handle().clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(Duration::from_secs(10));

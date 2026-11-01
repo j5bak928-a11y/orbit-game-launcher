@@ -30,7 +30,7 @@
 			? `${Math.floor(seconds / 3600)}h played`
 			: seconds
 				? `${Math.max(1, Math.round(seconds / 60))}m played`
-				: "Ready to play";
+				: "No playtime recorded";
 
 	class ControllerMode {
 		constructor(options) {

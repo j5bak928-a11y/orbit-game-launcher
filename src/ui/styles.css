@@ -117,7 +117,7 @@ body[data-theme=light]{--muted:#565e67;--soft:#626b75}
 .brand{background:transparent;gap:5px;min-width:0}
 .orbit-brand-mark{display:block;flex:none;width:56px;height:56px;object-fit:contain}
 .orbit-brand-word{font-size:29px;font-weight:750;letter-spacing:-1.7px;line-height:1;color:var(--text)}
-.nav-item svg,.top-icon svg{stroke-width:2}
+.sidebar .nav-item svg,.topbar .top-icon svg{stroke-width:2}
 .version-number{opacity:1}
 .library-page .page-heading{margin-bottom:18px}
 .library-page .platform-filters{margin-bottom:10px}
@@ -128,3 +128,29 @@ body[data-theme=light]{--muted:#565e67;--soft:#626b75}
 .cover-source{backdrop-filter:none;background:#101112e8}
 @media(max-width:750px){.brand{justify-content:center}.orbit-brand-mark{width:40px;height:40px}.orbit-brand-word{display:none}}
 @media(max-width:500px){.orbit-brand-mark{width:34px;height:34px}}
+
+/* Locally bundled UI type keeps Orbit readable without network requests. */
+@font-face{font-family:Orbit UI;src:url("../../assets/fonts/manrope-variable.ttf") format("truetype");font-style:normal;font-weight:200 800;font-display:swap}
+:root{font-family:Orbit UI,"Segoe UI Variable","Segoe UI",system-ui,sans-serif}
+.orbit-brand-word{font-family:Inter,"Segoe UI Variable","Segoe UI",system-ui,-apple-system,sans-serif}
+.page-title{font-weight:700;letter-spacing:-.04em}
+.home-page .page-heading,.library-page .page-heading{margin-bottom:20px}
+.hero p:empty{display:none}
+.settings-layout{grid-template-columns:minmax(0,1fr);max-width:1000px}
+/* A quieter, more legible family of controls with consistent interaction states. */
+.primary-btn.primary-btn,.secondary-btn.secondary-btn,.danger-btn.danger-btn{min-height:38px;padding:9px 15px;border-radius:9px;font-size:12px;font-weight:700;letter-spacing:-.01em;line-height:1.2;transition:background-color .15s,border-color .15s,color .15s,transform .15s}
+.primary-btn.primary-btn{background:var(--accent);border-color:transparent;color:var(--accent-ink)}
+.primary-btn:hover:not(:disabled){filter:none;background:color-mix(in srgb,var(--accent) 87%,white);transform:none}
+.secondary-btn{background:var(--panel2);border-color:rgba(var(--accent-rgb),.18);color:var(--text)}
+.secondary-btn:hover:not(:disabled){background:var(--panel3);border-color:rgba(var(--accent-rgb),.48)}
+.danger-btn:hover:not(:disabled){border-color:currentColor}
+.primary-btn:active:not(:disabled),.secondary-btn:active:not(:disabled),.danger-btn:active:not(:disabled),.top-icon:active:not(:disabled){transform:translateY(1px)}
+.primary-btn:disabled,.secondary-btn:disabled,.danger-btn:disabled{filter:none;opacity:.5}
+.topbar .primary-btn{min-height:38px;padding:9px 14px}
+.top-icon{width:38px;height:38px;border-radius:9px}
+.select-wrap select,.platform-chip{border-radius:8px}
+@media(max-width:500px){.primary-btn.primary-btn,.secondary-btn.secondary-btn,.danger-btn.danger-btn{font-size:11px}.topbar .primary-btn{padding:9px}}
+@media(prefers-reduced-motion:reduce){.primary-btn,.secondary-btn,.danger-btn,.top-icon{transition:none}}
+body[data-reduce-motion=true] .primary-btn,body[data-reduce-motion=true] .secondary-btn,body[data-reduce-motion=true] .danger-btn,body[data-reduce-motion=true] .top-icon{transition:none}
+
+.hero-metadata:has(+ p:empty) ~ .hero-buttons{margin-top:18px}

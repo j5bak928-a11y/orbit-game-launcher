@@ -13,7 +13,7 @@
 		);
 	const art = (token) =>
 		/^[a-f\d-]{36}\.(jpg|jpeg|png|webp)$/.test(token || "")
-			? `orbit-art://file/${token}`
+			? (window.OrbitArtworkUrl?.(token) || `orbit-art://file/${token}`)
 			: "";
 	const sources = {
 		steam: "Steam",

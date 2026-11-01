@@ -51,7 +51,7 @@ function toggleControllerMode(){
 }
 const sourceNames={steam:'Steam',epic:'Epic Games',gog:'GOG',ea:'EA app',ubisoft:'Ubisoft Connect',battlenet:'Battle.net',folder:'Local',manual:'Manual'};
 const palette=['#8b7aff','#5bafef','#fc8ca8','#53c5b3','#f3a65c','#bf87f5'];
-function artwork(token){return /^[a-f\d-]{36}\.(jpg|jpeg|png|webp)$/.test(token||'')?`orbit-art://file/${token}`:null}
+function artwork(token){return /^[a-f\d-]{36}\.(jpg|jpeg|png|webp)$/.test(token||'')?(window.OrbitArtworkUrl?.(token)||`orbit-art://file/${token}`):null}
 function coverImage(g){const fallback=artwork(g.icon)?`<span class="cover-icon-frame"><img class="cover-icon" src="${artwork(g.icon)}" loading="lazy" alt="" /></span>`:'';const title=`<span class="cover-placeholder-symbol">${ic('gamepad',29)}</span><span class="cover-placeholder-title">${esc(g.name)}</span><span class="cover-placeholder-note">${esc(sourceLabel(g))}</span>`;const poster=artwork(g.cover)?`<img class="cover-image ${g.cover_fit==='contain'?'fit-contain':''} position-${['top','bottom'].includes(g.cover_position)?g.cover_position:'center'}" src="${artwork(g.cover)}" loading="lazy" alt="" />`:'';return fallback+title+poster;}
 function timeLabel(seconds){if(!seconds)return 'Not played yet';const total=Math.max(1,Math.round(seconds/60)),hrs=Math.floor(total/60),mins=total%60;return hrs?`${hrs}h ${mins}m played`:`${total}m played`}
 function sourceLabel(game){return sourceNames[game.source]||'Game'}
@@ -520,9 +520,10 @@ document.addEventListener('error',event=>{
 window.addEventListener('resize',()=>{if(['library','recent','favorites'].includes(state.route))renderVirtual()});
 window.matchMedia?.('(prefers-color-scheme:light)')?.addEventListener('change',()=>{if(state.settings?.theme==='system')setupTheme()});
 async function boot(){try{
- if(!window.orbit)throw Error('Desktop integration is unavailable. Start Orbit using Electron.');
+ if(!window.orbit)throw Error('Desktop integration is unavailable. Start Orbit using the desktop application.');
  const buffered=[];
  window.orbit.onEvent(event=>{if(libraryUpdates)handleOrbitEvent(event);else buffered.push(event);});
+ if(window.orbit.ready)await window.orbit.ready;
  const data=await window.orbit.bootstrap();
  libraryUpdates=new window.OrbitLibraryUpdates.LibraryUpdates({
   snapshot:data,loadSnapshot:loadLibrarySnapshot,onChange:applyLibraryUpdate,
@@ -530,9 +531,16 @@ async function boot(){try{
  });
  state.games=libraryUpdates.snapshot().games;state.runningIds=data.runningIds||[];state.settings=data.settings;
  state.sort=data.settings.sort||'name';state.view=data.settings.view||'grid';state.platform=data.platform;state.version=data.version;
- if(window.orbit.getUpdateStatus)state.updateStatus=await window.orbit.getUpdateStatus();
  setupTheme();renderShell();
  for(const event of buffered)handleOrbitEvent(event);
+ // Update-service availability must not delay or prevent library startup.
+ if(window.orbit.getUpdateStatus)Promise.resolve().then(()=>window.orbit.getUpdateStatus()).then(status=>{
+  if(status){state.updateStatus=status;const statusNode=el('update-status');if(statusNode)statusNode.textContent=status.message||'';}
+ }).catch(error=>{
+  state.updateStatus={state:'error',message:'Update status is unavailable.'};
+  const statusNode=el('update-status');if(statusNode)statusNode.textContent=state.updateStatus.message;
+  console.warn('Could not load update status:',error);
+ });
  }catch(e){el('app').innerHTML=`<div class="boot"><div class="boot-logo">!</div><h2>Orbit could not start</h2><p>${esc(e.message||'Unknown error.')}</p></div>`;}}
 
 boot();

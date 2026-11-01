@@ -10,9 +10,6 @@ on:
       - 'tests/tauri-adapter.test.cjs'
       - 'package*.json'
       - '.github/workflows/tauri-windows.yml'
-  push:
-    branches:
-      - feat/tauri-rust-port
 
 permissions:
   contents: read

@@ -2,9 +2,19 @@
 
 Orbit is a local-first Electron desktop launcher. Keep installed games in one fast library, find something to play, and open it through its own launcher or a verified executable. Your library, preferences, artwork and play history stay on your computer.
 
-![Orbit library](docs/images/orbit-library.png)
+![Orbit game library showing filters and sample game covers](docs/images/orbit-library-current.png)
 
-The screenshot uses a sample library with public Steam artwork. It does not show a user's installed games or measured play history.
+Screenshots show the current development interface in a browser preview using a sample library, public Steam artwork, and simulated playtime. They do not show a user’s installed games or measured play history.
+
+## Screenshots
+
+**Overview**
+
+![Orbit overview showing a featured game and continue playing](docs/images/orbit-overview-current.png)
+
+**Settings**
+
+![Orbit settings showing appearance and performance options](docs/images/orbit-settings-current.png)
 
 ## Run from source
 
@@ -45,9 +55,9 @@ Native helper build on Windows: use an MSVC Developer PowerShell/Command Prompt 
 
 ## Controller mode
 
-![Orbit fullscreen controller mode](docs/images/orbit-controller.jpg)
+![Orbit controller mode showing a sample game library](docs/images/orbit-controller-current.png)
 
-Preview with sample games, artwork and play history; the controller status is simulated for QA.
+Browser preview with sample games and simulated playtime; no controller is connected.
 
 Choose the **controller button** beside Search or press **F11**. Orbit opens a fullscreen library, focuses your most recently played game, and shows up to eight games in **Continue playing**. All games and Favorites use bounded pages, including with a large library. Selecting a card opens large Play, Favorite and Back controls.
 

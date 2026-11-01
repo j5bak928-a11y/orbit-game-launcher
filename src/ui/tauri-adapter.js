@@ -1,4 +1,3 @@
-'use strict';
 // Keep the renderer's existing Electron preload API when running under Tauri.
 // Tauri injects __TAURI__ before deferred page scripts when withGlobalTauri=true.
 (() => {

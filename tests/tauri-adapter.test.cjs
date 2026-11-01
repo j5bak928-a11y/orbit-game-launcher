@@ -45,11 +45,11 @@ test('Tauri event registration completes before bootstrap and unsubscribing stop
   let handler;
   let listening = false;
   const orbit = load({__TAURI__: {
-    core:{invoke:async (method, args) => {
+    core:{invoke:async (_method, args) => {
       if(args.method === 'bootstrap')assert.equal(listening, true, 'subscribe before bootstrap');
       return args.method;
     }},
-    event:{listen:async (name, callback) => {
+    event:{listen:async (_name, callback) => {
       handler = callback;
       await new Promise(resolve => {confirmListener = resolve;});
       listening = true;

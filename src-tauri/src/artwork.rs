@@ -34,6 +34,10 @@ const ASSETS: [&str; 4] = [
     "library_600x900.jpg",
 ];
 
+fn field<'a>(value: &'a Value, name: &str) -> &'a str {
+    value.get(name).and_then(Value::as_str).unwrap_or("")
+}
+
 fn valid_id(id: &str) -> bool {
     (1..=15).contains(&id.len())
         && id.bytes().all(|b| b.is_ascii_digit())

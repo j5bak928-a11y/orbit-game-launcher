@@ -1191,8 +1191,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("Orbit Tauri desktop failed to build")
         .run(|handle, event| match event {
-            tauri::RunEvent::ExitRequested { api, .. } => {
-                if tray::should_keep_running(handle) {
+            tauri::RunEvent::ExitRequested { api, code, .. } => {
+                // Only suppress last-window/UI closes. Never block a
+                // deliberate programmatic exit or restart.
+                if code.is_none() && tray::should_keep_running(handle) {
                     api.prevent_exit();
                 }
             }

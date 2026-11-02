@@ -300,7 +300,15 @@ pub fn open_orbit<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
             if let Ok(placement) = handle.state::<TrayState>().placement.lock() {
                 if let Some(placement) = placement.as_ref() {
                     let _ = window.set_size(tauri::Size::Physical(placement.size));
-                    let _ = window.set_position(tauri::Position::Physical(placement.position));
+                    // A disconnected monitor may invalidate the last position.
+                    // Keep the window on a connected display when reopening.
+                    let x = f64::from(placement.position.x) + 120.0;
+                    let y = f64::from(placement.position.y) + 100.0;
+                    if window.monitor_from_point(x, y).ok().flatten().is_some() {
+                        let _ = window.set_position(tauri::Position::Physical(placement.position));
+                    } else {
+                        let _ = window.center();
+                    }
                     if placement.maximized {
                         let _ = window.maximize();
                     }

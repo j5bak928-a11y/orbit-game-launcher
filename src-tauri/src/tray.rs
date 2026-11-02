@@ -120,7 +120,6 @@ pub fn install_tray<R: Runtime>(_app: &mut App<R>) -> Result<(), String> {
     Err("Orbit system tray is currently supported on Windows only.".into())
 }
 
-
 /// The Tauri event loop normally quits when the last WebviewWindow closes.
 /// Keep Orbit's Rust session tracker alive while the tray exists, but let
 /// explicit Quit / restart requests exit and flush sessions.
@@ -143,11 +142,7 @@ pub fn keep_background_alive<R: Runtime>(app: &AppHandle<R>, code: Option<i32>) 
 /// process. Windows dispatches native teardown asynchronously, so wait until
 /// Tauri no longer owns the "main" label before permitting recreation.
 /// The delay is only used by Performance Guard to let launch IPC settle.
-fn retire_hidden_window<R: Runtime>(
-    app: &AppHandle<R>,
-    window: Window<R>,
-    delay: Duration,
-) {
+fn retire_hidden_window<R: Runtime>(app: &AppHandle<R>, window: Window<R>, delay: Duration) {
     let Some(state) = app.try_state::<TrayState>() else {
         return;
     };
@@ -238,11 +233,7 @@ pub fn hide_for_performance_guard<R: Runtime>(
     }
     window.hide().map_err(|error| error.to_string())?;
     // WebviewWindow wraps a Webview whose .window() returns the host Window.
-    retire_hidden_window(
-        app,
-        window.as_ref().window(),
-        Duration::from_millis(800),
-    );
+    retire_hidden_window(app, window.as_ref().window(), Duration::from_millis(800));
     Ok(true)
 }
 
@@ -283,9 +274,7 @@ pub fn open_orbit<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     if state.quitting.load(Ordering::SeqCst) {
         return Err("Orbit is shutting down.".into());
     }
-    if !state.retiring.load(Ordering::SeqCst)
-        && !state.reopening.load(Ordering::SeqCst)
-    {
+    if !state.retiring.load(Ordering::SeqCst) && !state.reopening.load(Ordering::SeqCst) {
         if let Some(window) = app.get_webview_window("main") {
             window.show().map_err(|error| error.to_string())?;
             window.unminimize().map_err(|error| error.to_string())?;

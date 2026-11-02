@@ -1,0 +1,130 @@
+name: Security audit (Node, Rust, secrets)
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '24 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  npm:
+    name: All npm dependencies (including build tools)
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Audit locked npm dependencies without running install scripts
+        shell: bash
+        run: |
+          mkdir -p security-reports
+          npm audit --json > security-reports/npm-audit.json || audit_exit=$?
+          node <<'NODE'
+          const fs = require('node:fs');
+          let report;
+          try { report = JSON.parse(fs.readFileSync('security-reports/npm-audit.json', 'utf8')); }
+          catch { console.error('npm audit produced no valid JSON; network or tooling failure'); process.exit(2); }
+          if (report.error || !report.metadata?.vulnerabilities) {
+            console.error('npm audit failed without a complete vulnerability report:', report.error?.summary || 'unknown error');
+            process.exit(2);
+          }
+          const counts = report.metadata.vulnerabilities;
+          const summary = ['## Full npm dependency audit', ...['critical','high','moderate','low','info'].map(level => '- ' + level + ': ' + (counts[level] || 0))].join('\n');
+          console.log(summary);
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary + '\n');
+          if ((counts.high || 0) + (counts.critical || 0) > 0) process.exit(1);
+          NODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: orbit-security-npm
+          path: security-reports/npm-audit.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  rust:
+    name: RustSec Cargo.lock audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned cargo-audit scanner
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Scan locked Rust dependencies
+        shell: bash
+        run: |
+          mkdir -p security-reports
+          cargo audit --json --file src-tauri/Cargo.lock > security-reports/cargo-audit.json || audit_exit=$?
+          python3 <<'PY'
+          import json, os, pathlib, sys
+          try:
+              data = json.loads(pathlib.Path('security-reports/cargo-audit.json').read_text())
+              issues = data['vulnerabilities']['list']
+              warnings = data.get('warnings', {})
+          except (OSError, ValueError, TypeError, KeyError) as exc:
+              print(f'cargo audit did not produce a complete JSON report: {exc}', file=sys.stderr)
+              sys.exit(2)
+          lines = ['## RustSec dependency audit', f'- Vulnerabilities: {len(issues)}']
+          for kind, notices in warnings.items():
+              lines.append(f'- {kind} warnings: {len(notices)}')
+          summary = '\n'.join(lines) + '\n'
+          print(summary)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as out:
+              out.write(summary)
+          if issues:
+              for issue in issues:
+                  advisory = issue.get('advisory', {})
+                  print(f"Vulnerability: {advisory.get('id', 'unknown')} - {advisory.get('title', '')}")
+              sys.exit(1)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: orbit-security-rustsec
+          path: security-reports/cargo-audit.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  tracked-secrets:
+    name: Check tracked files for obvious credentials
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan tracked text without printing secret values
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import pathlib, re, subprocess, sys
+          patterns = {
+              'GitHub classic token': re.compile(rb'gh[pousr]_[a-zA-Z0-9]{36,255}'),
+              'GitHub fine-grained token': re.compile(rb'github_pat_[a-zA-Z0-9_]{70,}'),
+              'AWS access key ID': re.compile(rb'AKIA[0-9A-Z]{16}'),
+              'Private key block': re.compile(rb'-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----'),
+              'Slack token': re.compile(rb'xox[baprs]-[a-zA-Z0-9-]{25,}'),
+          }
+          paths = subprocess.check_output(['git', 'ls-files', '-z']).split(b'\0')
+          matches = []
+          for raw in paths:
+              if not raw: continue
+              path = pathlib.Path(raw.decode('utf-8', errors='surrogateescape'))
+              if not path.is_file() or path.stat().st_size > 2_000_000: continue
+              data = path.read_bytes()
+              if b'\0' in data[:1024]: continue
+              for label, pattern in patterns.items():
+                  for hit in pattern.finditer(data):
+                      line = data.count(b'\n', 0, hit.start()) + 1
+                      matches.append(f'{path}:{line}: {label}')
+          if matches:
+              print('Potential committed credentials (values intentionally redacted):', *matches, sep='\n')
+              sys.exit(1)
+          print('No common credential formats found in tracked text files. This is not a full history/entropy scan.')
+          PY

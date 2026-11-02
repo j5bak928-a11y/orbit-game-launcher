@@ -75,7 +75,7 @@ function card(g){return `<article class="game-card" data-action="detail" data-id
   <button class="favorite-float ${g.favorite?'active':''}" data-action="favorite" data-id="${esc(g.id)}" aria-label="${g.favorite?'Remove favorite':'Add favorite'}">${ic('heart',16)}</button>
   <button class="cover-play" data-action="launch" data-id="${esc(g.id)}" aria-label="Launch ${esc(g.name)}">${ic('play',17)}</button></div>
   <div class="game-label"><div style="min-width:0"><span class="game-name" title="${esc(g.name)}">${esc(g.name)}</span><span class="game-meta">${state.runningIds?.includes(g.id)?'● Playing now':esc(timeLabel(g.total_play_seconds))}</span></div>
-  <button class="game-menu" data-action="detail" data-id="${esc(g.id)}" aria-label="More about ${esc(g.name)}">${ic('dots',18)}</button></div></article>`}
+  <button class="game-menu" data-action="game-actions" data-id="${esc(g.id)}" aria-label="Actions for ${esc(g.name)}" aria-haspopup="menu" aria-controls="game-actions-popup" aria-expanded="false">${ic('dots',18)}</button></div></article>`}
 function rowGame(g){return `<article class="game-row" data-action="detail" data-id="${esc(g.id)}" tabindex="0" role="button" aria-label="View ${esc(g.name)}">
   <div class="row-cover">${esc(g.name.slice(0,1))}${!artwork(g.cover)&&artwork(g.icon)?`<img src="${artwork(g.icon)}" alt="" loading="lazy" decoding="async" class="list-game-icon" />`:''}${artwork(g.cover)?`<img src="${artwork(g.cover)}" data-fallback-icon="${artwork(g.icon)||''}" alt="" loading="lazy" decoding="async" />`:''}</div>
   <div class="row-info"><h3>${esc(g.name)}</h3><p>${esc(sourceLabel(g))}${g.tags?.length?' · '+esc(g.tags.slice(0,2).join(', ')):''}</p></div>
@@ -142,6 +142,7 @@ function restoreGameFocus(host,focus){
  if(target&&document.activeElement!==target)target.focus({preventScroll:true});
 }
 function renderVirtual(){
+ if(gameActionsTrigger&&!gameActionsTrigger.isConnected)closeGameActions();
  const host=el('virtual-games');if(!host)return;
  const games=filtered();state.viewGames=games;
  const count=el('game-result-count'),label=`${games.length} ${games.length===1?'game':'games'}`;
@@ -219,7 +220,7 @@ function settingsView(){const s=state.settings,folders=s.libraryFolders||[];retu
 }
 function renderShell(){el('app').innerHTML=`<div class="app-shell"><div id="side-slot">${sidebar()}</div><div class="workspace"><div id="top-slot">${topbar()}</div><main class="content-scroll" id="main-scroll" tabindex="-1"><div id="page-slot"></div></main></div></div>`;el('main-scroll').addEventListener('scroll',()=>{if(['library','favorites','recent'].includes(state.route)&&!scrollFrame){scrollFrame=requestAnimationFrame(()=>{scrollFrame=null;renderVirtual()})}},{passive:true});renderPage()}
 let scrollFrame=null;
-function renderPage({keepScroll=false}={}){const slot=el('page-slot'),scroller=el('main-scroll');if(!slot)return;const old=keepScroll?scroller.scrollTop:0;
+function renderPage({keepScroll=false}={}){closeGameActions();const slot=el('page-slot'),scroller=el('main-scroll');if(!slot)return;const old=keepScroll?scroller.scrollTop:0;
  virtualRangeKey=null;virtualGamesRef=null;virtualRunningRef=null;virtualItems=new Map();
  slot.innerHTML=state.route==='home'?home():state.route==='settings'?settingsView():libraryView();scroller.scrollTop=old;
  if(['library','favorites','recent'].includes(state.route))renderVirtual();syncActivity();}
@@ -274,7 +275,41 @@ function handleOrbitEvent(event){
 }
 async function saveSettings(patch){state.settings=await window.orbit.saveSettings(patch);setupTheme();if(state.route==='settings')renderPage({keepScroll:true});}
 let modalReturnFocus=null;
-function openModal(type,meta={}){if(!state.modal)modalReturnFocus=document.activeElement;state.modal={type,...meta};renderModal()}
+let gameActionsTrigger=null,gameActionsAnchor=null;
+function closeGameActions(restoreFocus=false){
+ const trigger=gameActionsTrigger;
+ el('game-actions-popup')?.remove();
+ if(trigger?.isConnected)trigger.setAttribute('aria-expanded','false');
+ gameActionsTrigger=null;
+ gameActionsAnchor=null;
+ if(restoreFocus&&trigger?.isConnected)trigger.focus({preventScroll:true});
+}
+function openGameActions(trigger){
+ if(gameActionsTrigger===trigger){closeGameActions(true);return;}
+ closeGameActions();
+ const game=state.games.find(item=>item.id===trigger.dataset.id);
+ if(!game)return;
+ gameActionsTrigger=trigger;
+ trigger.setAttribute('aria-expanded','true');
+ const id=esc(game.id);
+ const item=(action,icon,label,extra='')=>`<button type="button" role="menuitem" class="game-actions-item ${extra}" data-action="${action}" data-id="${id}">${ic(icon,16)}<span>${label}</span></button>`;
+ const menu=document.createElement('div');
+ menu.id='game-actions-popup';menu.className='game-actions-popup';menu.setAttribute('role','menu');
+ menu.setAttribute('aria-label',`Actions for ${game.name}`);
+ menu.innerHTML=item('launch','play','Play game')+item('favorite','heart',game.favorite?'Remove favorite':'Add to favorites')+
+  '<div class="game-actions-divider" role="separator"></div>'+
+  item('detail','info','View details')+item('edit','edit','Edit game')+item('open-folder','folder','Open game location')+
+  '<div class="game-actions-divider" role="separator"></div>'+item('remove-confirm','trash','Remove from library','danger');
+ document.body.appendChild(menu);
+ const rect=trigger.getBoundingClientRect();
+ gameActionsAnchor={x:rect.x,y:rect.y};
+ const menuRect=menu.getBoundingClientRect();
+ const left=Math.max(8,Math.min(rect.right-menuRect.width,document.documentElement.clientWidth-menuRect.width-8));
+ const top=rect.bottom+8+menuRect.height<=window.innerHeight-8?rect.bottom+8:Math.max(8,rect.top-menuRect.height-8);
+ menu.style.left=`${left}px`;menu.style.top=`${top}px`;
+ menu.querySelector('[role=menuitem]')?.focus({preventScroll:true});
+}
+function openModal(type,meta={}){closeGameActions();if(!state.modal)modalReturnFocus=document.activeElement;state.modal={type,...meta};renderModal()}
 function closeModal(){state.modal=null;el('modal-root').innerHTML='';if(modalReturnFocus?.isConnected)modalReturnFocus.focus({preventScroll:true});modalReturnFocus=null}
 function dialogFrame(title,description,body,footer='',wide=false){return `<div class="dialog-scrim" data-action="scrim"><section class="dialog ${wide?'wide':''}" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div class="dialog-header"><div><h2 id="dialog-title">${esc(title)}</h2><p>${esc(description)}</p></div><button class="ghost-btn" data-action="close-modal" aria-label="Close dialog">${ic('close',21)}</button></div>${body}${footer}</section></div>`}
 function editor(g){const isEdit=!!g;const title=isEdit?'Edit game':'Add a game';const params=Array.isArray(g?.launch_args)?JSON.stringify(g.launch_args):'[]';
@@ -405,6 +440,7 @@ async function detectGameFile(file){
 }
 async function handleAction(button){const action=button.dataset.action,id=button.dataset.id;
  switch(action){
+  case 'game-actions':openGameActions(button);break;
   case 'controller-mode':await toggleControllerMode();break;
    case 'check-update':{const status=await window.orbit.checkForUpdates();state.updateStatus=status;const element=el('update-status');if(element)element.textContent=status.message||'';break;}
    case 'install-update':try{await window.orbit.installUpdate()}catch(error){toast(error.message||'Cannot install update.',true)}break;
@@ -462,7 +498,9 @@ async function handleAction(button){const action=button.dataset.action,id=button
   case 'restore':try{const res=await window.orbit.restoreLibrary();if(res){toast(`Restored ${res.imported} games; skipped ${res.skipped}.`);if(res.errors?.length)toast(res.errors.slice(0,2).join(' · '),true)}}catch(e){toast(e.message,true)}break;
  }
 }
-document.addEventListener('click',event=>{const button=event.target.closest('[data-action]');if(!button||button.disabled)return;
+document.addEventListener('click',event=>{const button=event.target.closest('[data-action]');
+ if(gameActionsTrigger&&button?.dataset.action!=='game-actions')closeGameActions(!!button?.closest('.game-actions-popup'));
+ if(!button||button.disabled)return;
  if(button.dataset.action==='scrim'&&event.target!==button)return;
  event.preventDefault();handleAction(button).catch(e=>toast(e.message||'Action failed.',true));});
 document.addEventListener('change',async event=>{const target=event.target;
@@ -488,6 +526,17 @@ let searchTimer;document.addEventListener('input',event=>{if(event.target.id!=='
 });
 document.addEventListener('submit',event=>{if(event.target.id==='game-form'){event.preventDefault();storeGame(event.target)}});
 document.addEventListener('keydown',event=>{
+ const menu=el('game-actions-popup');
+ if(menu){
+  if(event.key==='Escape'){event.preventDefault();closeGameActions(true);return;}
+  if(event.key==='Tab'){closeGameActions(true);event.preventDefault();return;}
+  if(['ArrowDown','ArrowUp','Home','End'].includes(event.key)&&menu.contains(document.activeElement)){
+   event.preventDefault();const items=[...menu.querySelectorAll('[role=menuitem]')];
+   const current=items.indexOf(document.activeElement);
+   const next=event.key==='Home'?0:event.key==='End'?items.length-1:(current+(event.key==='ArrowDown'?1:-1)+items.length)%items.length;
+   items[next]?.focus({preventScroll:true});return;
+  }
+ }
  if(event.key==='Enter'&&!event.isComposing&&event.target.id==='cover-search-title'){
   event.preventDefault();const search=el('modal-root')?.querySelector('[data-action="find-online-art"]');if(search&&!search.disabled)search.click();return;
  }
@@ -507,6 +556,14 @@ document.addEventListener('keydown',event=>{
   }
  }
 });
+document.addEventListener('scroll',()=>{
+ if(!gameActionsTrigger)return;
+ const rect=gameActionsTrigger.getBoundingClientRect();
+ // Browsers may deliver an already-completed scroll event after opening.
+ // Close only if the actual trigger moved, not for a stale scroll event.
+ if(!gameActionsAnchor||Math.abs(rect.x-gameActionsAnchor.x)>1||Math.abs(rect.y-gameActionsAnchor.y)>1)closeGameActions();
+},true);
+window.addEventListener('resize',()=>closeGameActions());
 // A wide header/banner is not a portrait cover. Let the icon or gradient
 // show until the user requests a proper portrait via Repair library covers.
 function ensureImageFallback(img){

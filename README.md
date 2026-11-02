@@ -19,7 +19,7 @@ Orbit runs in the background to track games, update playtime and keep the librar
 | Look up 100 games | 4.5 ms | 2.5 ms | 44.4% less time |
 | Benchmark process working set | 87.6 MiB | 30.3 MiB | 65.4% less memory |
 
-**Maintainer-tested RAM:** During hands-on testing of the Rust preview, approximately **5 MB of RAM was observed while a game was running**, and approximately **5 MB while no game was running**. These are the maintainer's reported readings, not the CI benchmark or a verified whole-application measurement. The measurement method and whether WebView2 child processes were included were not recorded, so the 5 MB readings must not be presented as Orbit's total process-tree memory usage.
+**Maintainer-observed RAM (hands-on testing):** Before the Rust port, the maintainer observed **approximately 300 MB RAM** for the Electron version. With the Rust/Tauri preview, the maintainer observed **approximately 5 MB RAM while a game was running** and **approximately 5 MB RAM when no game was running**. These are user-reported observations, not the CI database benchmark or a controlled, like-for-like whole-application comparison. The exact memory counter, the Electron workload state, and whether all WebView2 child processes were included were not recorded; therefore the readings must not be presented as a verified app-wide percentage reduction.
 
 The benchmark compares isolated database processes, **not complete Electron versus Tauri desktop RAM or startup performance**. Full process-tree measurements, including WebView2, and real-library/game parity checks remain release gates. See [Rust/Tauri migration and verification](docs/TAURI-MIGRATION.md).
 

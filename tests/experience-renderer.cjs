@@ -114,6 +114,49 @@ const settle=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
    for(const file of ['library-updates.js','app.js'])await fixture.addScriptTag({content:fs.readFileSync(path.join(root,'src/ui',file),'utf8')});
    await fixture.locator('.hero').waitFor();return fixture;
   };
+  // The three-dot control opens a lightweight actions menu, not game details.
+  {
+   const fixture=await fixturePage(12);
+   const trigger=fixture.locator('.home-games .game-menu').first();
+   await trigger.click();
+   const menu=fixture.locator('#game-actions-popup');
+   assert.equal(await fixture.locator('[role=dialog]').count(),0,'three dots must not open the full detail dialog');
+   assert.equal(await trigger.getAttribute('aria-expanded'),'true');
+   assert.equal(await menu.locator('[role=menuitem]').count(),6);
+   await fixture.keyboard.press('End');
+   assert.equal(await fixture.evaluate(()=>document.activeElement.dataset.action),'remove-confirm','keyboard navigation reaches destructive action');
+   await fixture.keyboard.press('Escape');
+   assert.equal(await menu.count(),0,'Escape closes the dropdown');
+   assert(await trigger.evaluate(node=>document.activeElement===node),'Escape returns focus to the trigger');
+   await trigger.click();
+   await fixture.locator('.home-page .page-heading').click();
+   assert.equal(await menu.count(),0,'outside click dismisses the dropdown');
+   await trigger.click();
+   await menu.locator('[data-action=favorite]').click();
+   await fixture.waitForFunction(()=>document.querySelector('.home-games .favorite-float')?.classList.contains('active'));
+   assert.equal(await menu.count(),0,'selecting a menu action dismisses it');
+   await fixture.locator('.home-games .game-menu').first().click();
+   await menu.locator('[data-action=detail]').click();
+   assert.equal(await fixture.locator('[role=dialog] .detail-playtime').count(),1,'details remain explicitly available');
+   await fixture.keyboard.press('Escape');
+   await fixture.locator('.home-games .game-menu').first().click();
+   await menu.locator('[data-action=remove-confirm]').click();
+   assert.match(await fixture.locator('[role=dialog] h2').textContent(),/Remove from library/,'remove still requires confirmation');
+   await fixture.keyboard.press('Escape');
+   await fixture.setViewportSize({width:390,height:568});
+   await fixture.locator('nav [data-route=library]').click();
+   const lastTrigger=fixture.locator('.game-card .game-menu').last();
+   await lastTrigger.click();
+   const bounds=await menu.boundingBox();
+   assert(bounds&&bounds.x>=0&&bounds.y>=0&&bounds.x+bounds.width<=390&&bounds.y+bounds.height<=568,'dropdown stays within a narrow viewport near its bottom edge');
+   await fixture.keyboard.press('ArrowDown');
+   assert.equal(await fixture.evaluate(()=>document.activeElement.dataset.action),'favorite');
+   await fixture.keyboard.press('Tab');
+   assert.equal(await menu.count(),0,'Tab dismisses the menu');
+   await fixture.locator('.game-card').first().click();
+   assert.equal(await fixture.locator('[role=dialog] .detail-playtime').count(),1,'normal card clicks retain details');
+   await fixture.close();
+  }
   // Image memory: a valid cover must not eagerly load an unused icon behind
   // it. If a cover is broken or wide, its icon must still work as fallback.
   {

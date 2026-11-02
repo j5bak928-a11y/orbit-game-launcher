@@ -57,6 +57,16 @@ These are the maintainer's reported figures, distinct from the reproducible CI b
 
 An earlier isolated empty-library Windows smoke recorded approximately 39 MB for the Tauri **parent process** after five seconds. Different memory counters, workload states and inclusion/exclusion of WebView2 processes can produce different readings; these measurements must not be substituted for a same-machine full-process-tree comparison.
 
+### Low-memory tray and Performance Guard lifecycle
+
+The native Rust preview releases its WebView2 window when the user closes Orbit to the Windows tray, instead of merely hiding the full renderer/GPU process tree. Rust **continues monitoring game processes, checkpointing playtime and maintaining the SQLite database**. "Open Orbit" or a left click on the tray icon recreates the same packaged UI and reloads the current library and settings; repeat clicks while WebView2 is closing/reopening are coalesced. An explicit "Quit Orbit" still exits Rust and settles playtime sessions.
+
+Performance Guard now applies the same low-memory path after briefly allowing the launch command to finish. A new window initializes its renderer and event subscriptions again; unsaved temporary UI state (for example, an open edit dialog or typed search) is not preserved, while saved games, settings, artwork and play history are persisted by Rust. The original logo, controller mode, import/export, game launching and UI design are unchanged.
+
+**Windows manual verification checklist:** With no game running, record the **total Orbit WebView2 process tree** in Task Manager. Close the window using X and confirm Orbit remains in the tray but its window is gone and the WebView2 renderer/GPU processes stop consuming Orbit-specific memory once the runtime releases them. Reopen from the tray five times, including rapid repeated clicks; verify there is only one main window, library/artwork/icons load, filters/controller mode/Play still work, and no crash. Launch a real game with Performance Guard enabled; confirm the UI closes and Rust continues to record playtime checkpoints. Close the game and reopen Orbit to verify its playtime. Finally choose "Quit Orbit" and confirm the Rust process exits and session data is intact. If multiple apps share WebView2 processes, use per-process ownership rather than summing unrelated WebView2 entries.
+
+WebView2 may retain shared operating-system caches or take a moment to release child processes. **The feature does not guarantee a fixed 5 MB total RAM footprint or zero WebView2 memory**; compare full process-tree memory under matching conditions.
+
 ### Remaining release verification
 
 1. On Windows with a real installed library, verify first-run migration, artwork, game discovery, manual game addition, updates, launch, playtime, controller mode, portable backup export and restore.

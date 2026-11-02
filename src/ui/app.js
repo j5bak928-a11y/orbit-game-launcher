@@ -52,7 +52,10 @@ function toggleControllerMode(){
 const sourceNames={steam:'Steam',epic:'Epic Games',gog:'GOG',ea:'EA app',ubisoft:'Ubisoft Connect',battlenet:'Battle.net',folder:'Local',manual:'Manual'};
 const palette=['#8b7aff','#5bafef','#fc8ca8','#53c5b3','#f3a65c','#bf87f5'];
 function artwork(token){return /^[a-f\d-]{36}\.(jpg|jpeg|png|webp)$/.test(token||'')?(window.OrbitArtworkUrl?.(token)||`orbit-art://file/${token}`):null}
-function coverImage(g){const fallback=artwork(g.icon)?`<span class="cover-icon-frame"><img class="cover-icon" src="${artwork(g.icon)}" loading="lazy" alt="" /></span>`:'';const title=`<span class="cover-placeholder-symbol">${ic('gamepad',29)}</span><span class="cover-placeholder-title">${esc(g.name)}</span>`;const poster=artwork(g.cover)?`<img class="cover-image ${g.cover_fit==='contain'?'fit-contain':''} position-${['top','bottom'].includes(g.cover_position)?g.cover_position:'center'}" src="${artwork(g.cover)}" loading="lazy" alt="" />`:'';return fallback+title+poster;}
+// One image per card in the common case: loading the icon behind every
+// valid cover doubles image work. An invalid/unavailable cover loads its icon
+// only after image validation (see ensureImageFallback below).
+function coverImage(g,priority=false){const cover=artwork(g.cover),icon=artwork(g.icon);const fallback=icon&&!cover?`<span class="cover-icon-frame"><img class="cover-icon" src="${icon}" loading="lazy" decoding="async" alt="" /></span>`:'';const title=`<span class="cover-placeholder-symbol">${ic('gamepad',29)}</span><span class="cover-placeholder-title">${esc(g.name)}</span>`;const poster=cover?`<img class="cover-image ${g.cover_fit==='contain'?'fit-contain':''} position-${['top','bottom'].includes(g.cover_position)?g.cover_position:'center'}" src="${cover}" data-fallback-icon="${icon||''}" loading="${priority?'eager':'lazy'}" decoding="async" ${priority?'fetchpriority="high"':''} alt="" />`:'';return fallback+title+poster;}
 function timeLabel(seconds){if(!seconds)return 'Not played yet';const total=Math.max(1,Math.round(seconds/60)),hrs=Math.floor(total/60),mins=total%60;return hrs?`${hrs}h ${mins}m played`:`${total}m played`}
 function sourceLabel(game){return sourceNames[game.source]||'Game'}
 function formatDate(date){if(!date)return 'Never';const d=new Date(date);return Number.isNaN(d.getTime())?'Unknown':new Intl.DateTimeFormat(undefined,{month:'short',day:'numeric',year:'numeric'}).format(d)}
@@ -74,7 +77,7 @@ function card(g){return `<article class="game-card" data-action="detail" data-id
   <div class="game-label"><div style="min-width:0"><span class="game-name" title="${esc(g.name)}">${esc(g.name)}</span><span class="game-meta">${state.runningIds?.includes(g.id)?'● Playing now':esc(timeLabel(g.total_play_seconds))}</span></div>
   <button class="game-menu" data-action="detail" data-id="${esc(g.id)}" aria-label="More about ${esc(g.name)}">${ic('dots',18)}</button></div></article>`}
 function rowGame(g){return `<article class="game-row" data-action="detail" data-id="${esc(g.id)}" tabindex="0" role="button" aria-label="View ${esc(g.name)}">
-  <div class="row-cover">${esc(g.name.slice(0,1))}${artwork(g.icon)?`<img src="${artwork(g.icon)}" alt="" loading="lazy" class="list-game-icon" />`:''}${artwork(g.cover)?`<img src="${artwork(g.cover)}" alt="" loading="lazy" />`:''}</div>
+  <div class="row-cover">${esc(g.name.slice(0,1))}${!artwork(g.cover)&&artwork(g.icon)?`<img src="${artwork(g.icon)}" alt="" loading="lazy" decoding="async" class="list-game-icon" />`:''}${artwork(g.cover)?`<img src="${artwork(g.cover)}" data-fallback-icon="${artwork(g.icon)||''}" alt="" loading="lazy" decoding="async" />`:''}</div>
   <div class="row-info"><h3>${esc(g.name)}</h3><p>${esc(sourceLabel(g))}${g.tags?.length?' · '+esc(g.tags.slice(0,2).join(', ')):''}</p></div>
   <div class="row-right"><span class="playtime">${esc(timeLabel(g.total_play_seconds))}</span><button class="ghost-btn" data-action="favorite" data-id="${esc(g.id)}" aria-label="Toggle favorite" style="${g.favorite?'color:#ffc171':''}">${ic('heart',17)}</button><button class="ghost-btn row-play" data-action="launch" data-id="${esc(g.id)}">${ic('play',15)} Play</button></div></article>`}
 function sidebar(){const links=[['home','home','Overview'],['library','library','All games'],['favorites','heart','Favorites'],['recent','clock','Recently played']];return `<aside class="sidebar">
@@ -101,7 +104,7 @@ function home(){
  const banner=feature&&artwork(feature.banner);
  return `<section class="page home-page">${headline('','Overview','',state.games.length?`<button class="secondary-btn shuffle-btn" data-action="shuffle">${ic('sparkles',16)} Choose for me</button>`:'')}
  <div class="hero ${banner?'has-banner':''} ${feature?'':'hero-empty'}">
- ${banner?`<img class="hero-art" src="${banner}" alt="" />`:feature?`<div class="hero-portrait"><div class="cover">${coverImage(feature)}</div></div>`:''}
+ ${banner?`<img class="hero-art" src="${banner}" alt="" loading="eager" decoding="async" fetchpriority="high" />`:feature?`<div class="hero-portrait"><div class="cover">${coverImage(feature,true)}</div></div>`:''}
  <div class="hero-shade"></div><div class="hero-content"><span class="hero-eyebrow">${feature?(played.length?'CONTINUE PLAYING':'YOUR LIBRARY'):'WELCOME TO ORBIT'}</span>
  <h2>${feature?esc(feature.name):'Add your first game'}</h2>
  ${feature?`<div class="hero-metadata"><span>${esc(sourceLabel(feature))}</span>${feature.genre?`<i></i><span>${esc(feature.genre)}</span>`:''}<i></i><span>${esc(timeLabel(feature.total_play_seconds))}</span></div><p>${played.length?`Last played ${esc(formatDate(feature.last_played_at))}.`:''}</p>`:'<p>Bring your installed games together in a library that feels like yours. Start with your launchers or a folder you choose.</p>'}
@@ -506,16 +509,31 @@ document.addEventListener('keydown',event=>{
 });
 // A wide header/banner is not a portrait cover. Let the icon or gradient
 // show until the user requests a proper portrait via Repair library covers.
+function ensureImageFallback(img){
+ const url=img.dataset.fallbackIcon;
+ if(!url)return;
+ const parent=img.parentElement;
+ if(img.classList.contains('cover-image')&&parent?.classList.contains('cover')&&!parent.querySelector('.cover-icon-frame')){
+  const frame=document.createElement('span');frame.className='cover-icon-frame';
+  const icon=document.createElement('img');icon.className='cover-icon';icon.src=url;icon.alt='';icon.loading='lazy';icon.decoding='async';
+  frame.appendChild(icon);parent.appendChild(frame);
+ }else if(parent?.classList.contains('row-cover')&&!parent.querySelector('.list-game-icon')){
+  const icon=document.createElement('img');icon.className='list-game-icon';icon.src=url;icon.alt='';icon.loading='lazy';icon.decoding='async';
+  parent.insertBefore(icon,img);
+ }
+}
 function checkCoverAspect(img){
   if(!(img instanceof HTMLImageElement))return;
   if(img.matches('.hero-art,.detail-banner')){if(img.naturalWidth/img.naturalHeight<1.5)img.classList.add('bad-aspect');return;}
   if(!img.matches('.cover-image,.row-cover img:not(.list-game-icon)'))return;
   const ratio=img.naturalHeight?img.naturalWidth/img.naturalHeight:0;
-  img.classList.toggle('bad-aspect',ratio<0.5||ratio>0.85);
+  const bad=ratio<0.5||ratio>0.85;
+  img.classList.toggle('bad-aspect',bad);
+  if(bad)ensureImageFallback(img);
 }
 document.addEventListener('load',event=>checkCoverAspect(event.target),true);
 document.addEventListener('error',event=>{
-  if(event.target instanceof HTMLImageElement)event.target.classList.add('bad-aspect');
+  if(event.target instanceof HTMLImageElement){event.target.classList.add('bad-aspect');ensureImageFallback(event.target);}
 },true);
 window.addEventListener('resize',()=>{if(['library','recent','favorites'].includes(state.route))renderVirtual()});
 window.matchMedia?.('(prefers-color-scheme:light)')?.addEventListener('change',()=>{if(state.settings?.theme==='system')setupTheme()});

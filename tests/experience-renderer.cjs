@@ -114,6 +114,51 @@ const settle=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
    for(const file of ['library-updates.js','app.js'])await fixture.addScriptTag({content:fs.readFileSync(path.join(root,'src/ui',file),'utf8')});
    await fixture.locator('.hero').waitFor();return fixture;
   };
+  // Image memory: a valid cover must not eagerly load an unused icon behind
+  // it. If a cover is broken or wide, its icon must still work as fallback.
+  {
+   const fixture=await fixturePage(2);
+   await fixture.evaluate(()=>{
+    const canvas=document.createElement('canvas');canvas.width=10;canvas.height=15;
+    const safePng=canvas.toDataURL('image/png');
+    window.OrbitArtworkUrl=()=>safePng;
+    window.fixture.patch(window.fixture.id(1),{
+     cover:'00000000-0000-4000-8000-000000000001.jpg',
+     icon:'00000000-0000-4000-8000-000000000002.png',
+    });
+   });
+   await fixture.locator('.home-games .cover-image').first().waitFor();
+   assert.equal(await fixture.locator('.home-games .game-card').first().locator('.cover-icon').count(),0,'do not load icons behind valid covers');
+   assert.equal(await fixture.locator('.home-games .game-card').first().locator('.cover-image').getAttribute('decoding'),'async');
+   assert.equal(await fixture.locator('.hero .hero-portrait .cover-image').getAttribute('fetchpriority'),'high','feature artwork is prioritized');
+   await fixture.evaluate(()=>{
+    const img=document.querySelector('.home-games .game-card .cover-image');
+    Object.defineProperty(img,'naturalWidth',{configurable:true,value:1200});
+    Object.defineProperty(img,'naturalHeight',{configurable:true,value:500});
+    img.dispatchEvent(new Event('load'));
+    img.dispatchEvent(new Event('load')); // repeated image events must not duplicate fallbacks
+   });
+   assert.equal(await fixture.locator('.home-games .game-card').first().locator('.cover-icon').count(),1,'invalid portrait loads one icon fallback');
+   await fixture.locator('nav [data-route=library]').click();
+   await fixture.locator('[data-view=list]').click();
+   const firstRow=fixture.locator('.game-row').first();
+   assert.equal(await firstRow.locator('.list-game-icon').count(),0,'list mode also avoids redundant icon loads');
+   await fixture.evaluate(()=>{
+    const img=document.querySelector('.game-row .row-cover img:not(.list-game-icon)');
+    Object.defineProperty(img,'naturalWidth',{configurable:true,value:1200});
+    Object.defineProperty(img,'naturalHeight',{configurable:true,value:500});
+    img.dispatchEvent(new Event('load'));
+   });
+   assert.equal(await firstRow.locator('.list-game-icon').count(),1,'list mode restores icon on wide cover');
+   await fixture.evaluate(()=>{
+    const img=document.querySelector('.game-row .row-cover img:not(.list-game-icon)');
+    img.dispatchEvent(new Event('error'));
+    img.dispatchEvent(new Event('error'));
+   });
+   assert.equal(await firstRow.locator('.list-game-icon').count(),1,'broken covers keep one icon fallback');
+   assert(await firstRow.locator('.row-cover img.bad-aspect').count(),'broken covers are hidden');
+   await fixture.close();
+  }
   for(const playedCount of [1,2,3]){
    const fixture=await fixturePage(3);
    await fixture.evaluate(count=>{for(let index=1;index<=count;index++)window.fixture.patch(window.fixture.id(index),{last_played_at:'2026-10-24T00:00:00.000Z'});},playedCount);

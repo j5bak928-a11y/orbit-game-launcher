@@ -1117,13 +1117,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .on_window_event(|window, event| {
-            if tray::handle_window_event(window, event) {
-                return;
-            }
-            if window.label() != "main" || !matches!(event, tauri::WindowEvent::Destroyed) {
-                return;
-            }
-            settle_sessions(window.app_handle());
+            // Destroying the UI window is not quitting Orbit. In particular,
+            // don't stop process tracking or settle playtime on Destroyed.
+            let _ = tray::handle_window_event(window, event);
         })
         .register_uri_scheme_protocol("orbit-art", move |_context, request| {
             let path = request.uri().path().trim_start_matches('/');
@@ -1194,9 +1190,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![orbit_invoke])
         .build(tauri::generate_context!())
         .expect("Orbit Tauri desktop failed to build")
-        .run(|handle, event| {
-            if matches!(event, tauri::RunEvent::Exit) {
-                settle_sessions(handle);
+        .run(|handle, event| match event {
+            tauri::RunEvent::ExitRequested { api, .. } => {
+                if tray::should_keep_running(handle) {
+                    api.prevent_exit();
+                }
             }
+            tauri::RunEvent::Exit => settle_sessions(handle),
+            _ => {}
         });
 }

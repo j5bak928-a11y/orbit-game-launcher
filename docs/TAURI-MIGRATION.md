@@ -1,6 +1,12 @@
 # Orbit Launcher native Rust / Tauri migration
 
-This branch builds a separate Tauri 2 executable backed by Rust, reusing Orbit's existing accessible JavaScript desktop interface. The Rust preview uses its own application identifier so it can be installed alongside the Electron release. The Electron release scripts and app remain available until the native version passes review. **The unsigned Rust build is experimental.**
+This repository includes a separate Tauri 2 executable backed by Rust, reusing Orbit's existing accessible JavaScript desktop interface. The Rust preview uses its own application identifier so it can be installed alongside the Electron release. The Electron release scripts and app remain available while the native version is validated. **The unsigned Rust build is experimental; merging the preview code did not publish or replace the Electron release.**
+
+## Why migrate to Rust?
+
+Orbit needs to stay useful while games are running. Rust gives the Windows process tracker, SQLite library, artwork cache, backups and game-launch paths a native backend without requiring the full Electron/Node.js runtime for those tasks. Tauri retains the existing accessible frontend, allowing a gradual migration while the Electron build stays usable.
+
+The aim is lower background overhead, faster library operations and predictable Windows process tracking — not an unsupported claim that the entire desktop application uses a particular amount of memory. The measured database speed and working-set improvements are documented below.
 
 ## Build on Windows
 
@@ -28,19 +34,25 @@ On a local Windows machine, the downloaded portable `orbit-launcher.exe` opened 
 
 ### Same-runner SQLite benchmark (5,000 games; median of three runs)
 
-| Operation | Node.js + existing SQLite implementation | Rust + rusqlite |
-| --- | ---: | ---: |
-| Insert 5,000 games | 5,169.4 ms | 3,108.0 ms |
-| List 5,000 games | 65.3 ms | 35.7 ms |
-| Look up 100 games | 4.5 ms | 2.5 ms |
-| Process working set | 87.6 MiB | 30.3 MiB |
+| Operation | Node.js + existing SQLite implementation | Rust + rusqlite | Relative improvement |
+| --- | ---: | ---: | ---: |
+| Insert 5,000 games | 5,169.4 ms | 3,108.0 ms | 39.9% less time |
+| List 5,000 games | 65.3 ms | 35.7 ms | 45.3% less time |
+| Look up 100 games | 4.5 ms | 2.5 ms | 44.4% less time |
+| Process working set | 87.6 MiB | 30.3 MiB | 65.4% less memory |
 
 The benchmark includes Node/V8 versus native-runtime overhead in memory results and intentionally excludes the UI and Electron/WebView2. The performance advantage of the **whole application** is not established by these figures.
+
+### User-tested RAM: game running versus idle
+
+The maintainer reports having tested the Rust preview and observed **approximately 5 MB RAM with a game running** and **approximately 5 MB RAM when no game was running**. This is a direct hands-on observation, distinct from the reproducible CI benchmark above. The exact memory counter, capture procedure and whether WebView2 child processes were included were not recorded. Accordingly, the observation is reported as measured by the maintainer, **not independently verified as total application memory**.
+
+An earlier isolated empty-library Windows smoke recorded approximately 39 MB for the Tauri **parent process** after five seconds. Different memory counters, workload states and inclusion/exclusion of WebView2 processes can produce different readings; these measurements must not be substituted for a same-machine full-process-tree comparison.
 
 ### Remaining release verification
 
 1. On Windows with a real installed library, verify first-run migration, artwork, game discovery, manual game addition, updates, launch, playtime, controller mode, portable backup export and restore.
 2. Measure complete process-tree RSS (including Electron/WebView2 children), CPU and cold startup for both variants on the same computer, and compare installer sizes.
-3. Review signing/distribution and test safe exit via the tray. Keep this PR in draft until manual behavior parity is established.
+3. Review signing/distribution and test safe exit via the tray. PR #19 was merged as an isolated preview, but do not promote it to a production replacement until manual behavior parity is established.
 
 Native Steam artwork search and repair are supported through the Rust backend when the user enables online artwork in Settings, subject to request limits and Performance Guard. Automatic update installation remains disabled in the unsigned Rust preview; the interface reports an unsupported status. Do not distribute the Rust preview as a production replacement until the above checks succeed.

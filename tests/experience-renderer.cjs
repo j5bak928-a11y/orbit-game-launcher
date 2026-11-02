@@ -26,6 +26,8 @@ const settle=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
   });
   for(const file of ['library-updates.js','app.js'])await page.addScriptTag({content:fs.readFileSync(path.join(root,'src/ui',file),'utf8')});
   await page.locator('.hero').waitFor();assert.match(await page.title(),/Orbit/);
+  assert.equal(await page.locator('.sidebar .orbit-brand-mark').getAttribute('src'),'../../assets/branding/orbit-generated-mark.png','the existing Orbit logo must remain unchanged');
+  assert(await page.locator('.hero [data-action=launch]').evaluate(el=>el.getBoundingClientRect().height>=44),'hero Play control must be comfortably sized');
   await page.locator('.shuffle-btn').click();await page.locator('[role=dialog]').waitFor();
   assert.equal(await page.evaluate(()=>window.experience.launches),0,'suggestions must not launch games');await page.keyboard.press('Escape');
   await page.locator('.hero [data-action=launch]').click();
@@ -44,6 +46,8 @@ const settle=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
   assert.equal(await label.evaluate(el=>getComputedStyle(el).webkitLineClamp),'2');
   assert(await label.evaluate(el=>el.getBoundingClientRect().height>16),'long names use a second line');
   assert.equal(await page.locator('.game-card .cover-placeholder-title').count(),1);
+  assert.equal(await page.locator('.game-card .cover-source,.game-card .cover-placeholder-note').count(),0,'game covers must not display platform/source labels');
+  assert.equal(await page.locator('.game-card .cover-play').evaluate(el=>Math.round(el.getBoundingClientRect().width)),38,'card Play affordance has a clear hit target');
   await page.locator('.game-card').click();
   assert.equal(await page.locator('[role=dialog] .detail-playtime').count(),1);
   assert.equal(await page.locator('[role=dialog] [data-action=edit]').count(),1);

@@ -1191,7 +1191,7 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("Orbit Tauri desktop failed to build")
         .run(|handle, event| match event {
-            tauri::RunEvent::ExitRequested { code, api }
+            tauri::RunEvent::ExitRequested { code, api, .. }
                 if tray::keep_background_alive(handle, code) =>
             {
                 // No windows remain, but Rust playtime tracking and the tray

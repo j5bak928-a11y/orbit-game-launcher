@@ -12,16 +12,17 @@
 
 ## Executed security scans
 
-[GitHub Actions run 41368690036](https://github.com/j5bak928-a11y/orbit-game-launcher/actions/runs/41368690036) on PR #23:
+[Initial scan run 41368690036](https://github.com/j5bak928-a11y/orbit-game-launcher/actions/runs/41368690036) and [four-job scan run 41369304471](https://github.com/j5bak928-a11y/orbit-game-launcher/actions/runs/41369304471) on PR #23:
 
 | Check | Result | Interpretation |
 | --- | --- | --- |
 | `npm audit --json`, entire lockfile including developer dependencies | 0 critical, 0 high, **15 moderate**, 0 low | CI gate passes at high/critical, **not** a clean advisory report |
 | `cargo audit --json --file src-tauri/Cargo.lock`, RustSec DB | 0 vulnerability entries; **1 unsound**, **1 unmaintained** warning | CI gate passes, warnings tracked below |
 | Tracked source regex scan for common GitHub/AWS/Slack credentials and private keys | 0 matches | Limited pattern-based check; not proof that no secrets exist |
+| Semgrep OSS `p/security-audit`, `src`, `src-tauri/src`, `scripts`, `.github/workflows` | **0 findings / 0 blocking** | Automated rule-based static scan, not comprehensive proof of exploit absence |
 | Existing `Verify source` JS tests on PR | passed | Functional regression check, not a dedicated SAST engine |
 
-Scan artifacts: `orbit-security-npm` and `orbit-security-rustsec` in the linked run. The new `.github/workflows/security-audit.yml` runs on pull requests, pushes to `main`, weekly schedule and manual dispatch.
+Scan artifacts: `orbit-security-npm`, `orbit-security-rustsec` and `orbit-security-semgrep` in the linked runs. The new `.github/workflows/security-audit.yml` runs on pull requests, pushes to `main`, weekly schedule and manual dispatch.
 
 ## Finding 1 — Moderate: build-time minimatch denial of service (open)
 
@@ -76,7 +77,7 @@ Scan artifacts: `orbit-security-npm` and `orbit-security-rustsec` in the linked 
 
 1. Security scanners analyzed **dependency locks** and patterns in **tracked current text files**. The pattern scan is not historical or entropy-based secret scanning. Run a full git-history scan before a public production release.
 2. This audit **did not run** interactive Windows attack tests, malware scanning of distributable EXEs, a WebView2 exploit harness, code-signing checks, or dynamic fuzzing of hostile backup/images/protocol URIs.
-3. GitHub CodeQL upload may require GitHub Code Security on this private personal repository; no CodeQL/Semgrep SAST job was executed. Manual source review is not a replacement for automated interprocedural SAST.
+3. Semgrep OSS `p/security-audit` source scanning was executed in run 41369304471 and reported **0 findings**. This rule set does not comprehensively cover every Rust unsafe block, C++ vulnerability, or business-logic flaw; no CodeQL analysis or external penetration test was performed. CodeQL upload on a private personal repository can require GitHub Code Security availability.
 4. Re-test on Windows after future security patches and confirm the full app/child-process boundary and signature state, not merely Rust-parent metrics.
 5. Re-run the weekly workflow and triage new RustSec and npm advisories, including moderate findings.
 
@@ -86,4 +87,4 @@ Scan artifacts: `orbit-security-npm` and `orbit-security-rustsec` in the linked 
 **P1 release gate:** signed Windows distributions + publisher verification before public trusted release.  
 **P2:** Tauri-level CSP and secure navigation test, SHA-pin CI actions, Dependabot for npm/Cargo; full history secret scan and dynamic malicious-content tests.
 
-**Verdict:** No confirmed critical/high dependency vulnerabilities in this scan, but **NOT a clean security bill**: the 15 moderate npm entries and two RustSec warnings remain open. Do not describe Orbit as guaranteed secure or release-ready solely because CI is green.
+**Verdict:** Semgrep found 0 issues under the selected rules and no critical/high dependency advisories were reported, but **NOT a clean security bill**: the 15 moderate npm entries and two RustSec warnings remain open. Do not describe Orbit as guaranteed secure or release-ready solely because CI is green.

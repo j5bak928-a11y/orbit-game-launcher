@@ -207,9 +207,6 @@ body[data-reduce-motion=true] .primary-btn,body[data-reduce-motion=true] .second
   transform:translateY(1px);
   box-shadow:0 2px 10px rgba(var(--accent-rgb),.18);
 }
-.hero-buttons .primary-btn[aria-busy=true],.detail-actions .primary-btn[aria-busy=true]{
-  box-shadow:none;
-}
 .continue-card{
   border-radius:11px;
   box-shadow:0 3px 12px rgba(0,0,0,.075);
@@ -250,12 +247,3 @@ body[data-theme=light] .game-card .cover{box-shadow:0 4px 14px #171a2018}
   .game-card .cover-play{width:32px;height:32px;right:6px;bottom:6px}
   .hero-buttons .primary-btn.primary-btn{padding:10px 14px}
 }
-@media(prefers-reduced-motion:reduce){
-  .hero-buttons .primary-btn,.detail-actions .primary-btn,.game-row{transition:none!important}
-  .hero-buttons .primary-btn:hover,.detail-actions .primary-btn:hover{transform:none}
-}
-body[data-reduce-motion=true] .hero-buttons .primary-btn,
-body[data-reduce-motion=true] .detail-actions .primary-btn,
-body[data-reduce-motion=true] .game-row{transition:none!important}
-body[data-reduce-motion=true] .hero-buttons .primary-btn:hover,
-body[data-reduce-motion=true] .detail-actions .primary-btn:hover{transform:none}

@@ -43,9 +43,17 @@ On a local Windows machine, the downloaded portable `orbit-launcher.exe` opened 
 
 The benchmark includes Node/V8 versus native-runtime overhead in memory results and intentionally excludes the UI and Electron/WebView2. The performance advantage of the **whole application** is not established by these figures.
 
-### User-tested RAM: game running versus idle
+### User-tested RAM: before Rust, with a game running, and idle
 
-The maintainer reports having tested the Rust preview and observed **approximately 5 MB RAM with a game running** and **approximately 5 MB RAM when no game was running**. This is a direct hands-on observation, distinct from the reproducible CI benchmark above. The exact memory counter, capture procedure and whether WebView2 child processes were included were not recorded. Accordingly, the observation is reported as measured by the maintainer, **not independently verified as total application memory**.
+The maintainer reports the following hands-on observations:
+
+| Version / state | Observed RAM |
+| --- | ---: |
+| Electron version, before switching to Rust (workload not specified) | Approximately **300 MB** |
+| Rust/Tauri preview, with a game running | Approximately **5 MB** |
+| Rust/Tauri preview, with no game running | Approximately **5 MB** |
+
+These are the maintainer's reported figures, distinct from the reproducible CI benchmark above. The exact memory counter, capture procedure, Electron workload and whether WebView2 child processes were included were not recorded. **The 300 MB versus 5 MB readings are not independently verified as like-for-like whole-application memory use**, so no app-wide percentage reduction is inferred from them.
 
 An earlier isolated empty-library Windows smoke recorded approximately 39 MB for the Tauri **parent process** after five seconds. Different memory counters, workload states and inclusion/exclusion of WebView2 processes can produce different readings; these measurements must not be substituted for a same-machine full-process-tree comparison.
 

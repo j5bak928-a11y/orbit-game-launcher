@@ -101,3 +101,27 @@ they cannot be proven by source-text assertions.
 Do not make the native close-to-tray change GO merely because a source regex,
 mock, or Node unit test passes: the opt-in HWND/PID test must pass against
 the actual newly compiled Windows Tauri binary.
+
+## Windows preview evidence (2026-11-02, PR #26)
+
+The Tauri Windows workflow run `41517083098` completed successfully at
+source head `711df878f1f3017ce1c6280d4a7a29547b462dc8`. It compiled the
+Rust backend, ran Rust tests, built the unsigned Tauri NSIS/MSI/portable
+artifacts, and uploaded the artifacts.
+
+The exact portable `orbit-launcher.exe` from that workflow was started on a
+Windows desktop as **PID 31760**. Running
+`tests/windows/tauri-tray-runtime.ps1 -ProcessId 31760 -AllowWindowClose`
+returned PASS: original HWND `9177966` was destroyed, and the same Rust
+process survived. The disposable test process was then stopped; the previously
+installed Rust preview PID 4668 was not stopped or modified.
+
+**Important limitation:** Windows/Tauri did not honor an attempted temporary
+`APPDATA`/`LOCALAPPDATA` process override as a full isolation boundary, and
+the new test process shared WebView2 resources with the already running
+installed preview. The test process's measured tree contained just one process
+both before and after close (39.26 to 39.58 MiB); these numbers **do not**
+measure the background WebView2/RAM savings in a standalone installation.
+That test also did **not** exercise actual tray Open/recreation or live
+game-session persistence. These remain real-device verification requirements
+before promoting the Rust preview as Orbit's production release.

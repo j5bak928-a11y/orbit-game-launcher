@@ -37,7 +37,19 @@ The main desktop application uses **Electron**. A separate, **experimental Rust 
 
 The editions have **different application IDs and data directories**. On first launch, the Rust preview can make a snapshot of an existing Electron library and copy compatible artwork without modifying the original database. Changes made later in one edition do not automatically sync to the other.
 
-**Performance note:** Rust backend benchmarks are not whole-app RAM comparisons. WebView2 renderer/GPU processes count toward Tauri's actual memory usage. The Windows close-to-tray test has confirmed window destruction and survival of the Rust process, but standalone WebView2 RAM savings, tray reopening, and uninterrupted real-game playtime still need full end-to-end verification. See [Rust migration](docs/TAURI-MIGRATION.md) and [tray verification](docs/VERIFICATION-TAURI-TRAY-WEBVIEW.md).
+### Memory usage (maintainer observations)
+
+| Edition / state | Reported RAM |
+| --- | ---: |
+| Earlier Electron edition, with its UI open | **~300 MB** |
+| Rust / Tauri preview, UI open | **~130–180 MB** |
+| Rust tracking playtime while gaming, UI closed to tray | **~5 MB** |
+
+Compared with the earlier ~300 MB Electron observation, **130–180 MB with the Tauri window open is approximately 40–57% lower**. This is an *informal comparison*, not a repeatable benchmark: the snapshots were not collected with a controlled workload and consistent process-memory metric. The ~5 MB figure refers to the reported lightweight Rust **tracking/background state**, and must not be confused with the open UI or assumed to include every shared WebView2 process. A visible Tauri window runs WebView2 renderer/GPU processes; looking at the Rust parent alone significantly understates the total.
+
+Closing the Rust preview to the tray now destroys its WebView2 window while native game tracking continues. The window-destruction and Rust-process-survival test passed on Windows; the **complete standalone process-tree RAM delta**, tray reopening, and uninterrupted real-game playtime still need end-to-end verification. Artwork uses lazy loading, and Orbit avoids loading a redundant icon behind a valid cover to reduce unnecessary image work. No fixed additional RAM reduction is claimed for those optimizations.
+
+See [Rust migration](docs/TAURI-MIGRATION.md) and [tray verification](docs/VERIFICATION-TAURI-TRAY-WEBVIEW.md) for methodology and remaining checks.
 
 ## Run the Electron edition
 

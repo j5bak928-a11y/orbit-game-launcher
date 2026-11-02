@@ -23,7 +23,7 @@ function reviewReport(report, review, readSource) {
   for (const warning of warnings) {
     const key = signature(warning), entry = pending.get(key);
     if (!entry?.reason?.trim()) {
-      issues.push(`Unreviewed warning: ${warning.location?.path}:${warning.location?.start?.line}:${warning.location?.start?.column} (${warning.category}).`);
+      issues.push(`Unreviewed warning: ${warning.location?.path} (${warning.category}).`);
       continue;
     }
     pending.delete(key);

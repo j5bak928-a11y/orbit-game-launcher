@@ -44,9 +44,9 @@ npm start
 
 Use `npm run dev` to enable development tools. Windows 10/11, desktop Linux and modern macOS are intended targets; actual storefront integration still needs smoke testing on the target OS. See [verification and limits](docs/VERIFICATION-v0.10.0.md).
 
-## Review branch: performance, recovery and updates (unreleased)
+## Electron edition: performance, recovery and updates
 
-This branch is under review. Do **not** treat its features as a published release or as proof of native Windows performance improvement.
+These Electron features remain in the repository while the Rust/Tauri preview is evaluated. The presence of preview code on `main` does **not** mean a production Rust release has been published or that whole-desktop performance improvements have been verified.
 
 - Windows installer builds compile a small native, read-only Win32 process inventory helper; Orbit uses it for game tracking when available, with its existing bounded PowerShell enumeration as a fallback. Polls adapt to activity (6 seconds around launches, 15 seconds for active sessions, 60 seconds while idle). External processes are still confirmed by installed path, not by filename alone.
 - Session checkpoints are batched once per minute. On startup Orbit closes orphaned sessions using the last checkpoint rather than claiming all time since a crash. Windows suspend ends detected sessions and pauses direct-session clocks; resume starts detection again. A crash can still lose up to one minute of uncheckpointed playtime.

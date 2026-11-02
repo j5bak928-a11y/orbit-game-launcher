@@ -93,6 +93,53 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+  static-analysis:
+    name: Semgrep OSS source security scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install version-pinned Semgrep scanner
+        run: python -m pip install --disable-pip-version-check 'semgrep==1.183.0'
+      - name: Scan JavaScript, Rust, C++ and workflow sources
+        shell: bash
+        env:
+          SEMGREP_SEND_METRICS: 'off'
+        run: |
+          mkdir -p security-reports
+          semgrep scan --config p/security-audit --metrics=off --json --output security-reports/semgrep.json src src-tauri/src scripts .github/workflows || scan_exit=$?
+          python3 <<'PY'
+          import json, os, pathlib, sys
+          try:
+              data = json.loads(pathlib.Path('security-reports/semgrep.json').read_text())
+          except (OSError, ValueError) as exc:
+              print(f'Semgrep did not produce valid JSON: {exc}', file=sys.stderr)
+              sys.exit(2)
+          if data.get('errors'):
+              print('Semgrep scan errors:', [item.get('message', '') for item in data['errors']])
+              sys.exit(2)
+          results = data.get('results', [])
+          serious = [r for r in results if r.get('extra', {}).get('severity') == 'ERROR']
+          summary = f'## Semgrep OSS static scan\n- Findings: {len(results)}\n- Error-severity findings: {len(serious)}\n'
+          print(summary)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as out:
+              out.write(summary)
+          for item in serious:
+              print(f"Review: {item.get('check_id')} at {item.get('path')}:{item.get('start',{}).get('line')}")
+          if serious:
+              sys.exit(1)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: orbit-security-semgrep
+          path: security-reports/semgrep.json
+          if-no-files-found: warn
+          retention-days: 30
+
   tracked-secrets:
     name: Check tracked files for obvious credentials
     runs-on: ubuntu-latest

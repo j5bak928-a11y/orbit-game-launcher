@@ -1,10 +1,27 @@
 # Orbit — Game Launcher
 
-Orbit is a local-first Electron desktop launcher. Keep installed games in one fast library, find something to play, and open it through its own launcher or a verified executable. Your library, preferences, artwork and play history stay on your computer.
+Orbit is a local-first desktop game launcher with an established Electron edition and a separately installable experimental Rust/Tauri preview. Keep installed games in one fast library, find something to play, and open it through its own launcher or a verified executable. Your library, preferences, artwork and play history stay on your computer.
 
 ![Orbit game library showing filters and sample game covers](docs/images/orbit-library-current.png)
 
 Screenshots show the current development interface in a browser preview using a sample library, public Steam artwork, and simulated playtime. They do not show a user’s installed games or measured play history.
+
+## Why we're moving Orbit to Rust
+
+Orbit runs in the background to track games, update playtime and keep the library available. The goal of the Rust/Tauri port is to make those native tasks faster and less resource-intensive without redesigning the familiar interface. Rust handles SQLite, Windows game discovery, process tracking, artwork and backups; Tauri hosts the existing HTML/CSS/JavaScript UI. The original Electron edition remains available while the native preview is tested.
+
+**Windows CI benchmark — 5,000 games, median of three runs on the same runner:**
+
+| Operation | Electron edition's Node.js/SQLite backend | Rust/rusqlite backend | Change |
+| --- | ---: | ---: | ---: |
+| Insert 5,000 games | 5,169.4 ms | 3,108.0 ms | 39.9% less time |
+| List 5,000 games | 65.3 ms | 35.7 ms | 45.3% less time |
+| Look up 100 games | 4.5 ms | 2.5 ms | 44.4% less time |
+| Benchmark process working set | 87.6 MiB | 30.3 MiB | 65.4% less memory |
+
+**Maintainer-tested RAM:** During hands-on testing of the Rust preview, approximately **5 MB of RAM was observed while a game was running**, and approximately **5 MB while no game was running**. These are the maintainer's reported readings, not the CI benchmark or a verified whole-application measurement. The measurement method and whether WebView2 child processes were included were not recorded, so the 5 MB readings must not be presented as Orbit's total process-tree memory usage.
+
+The benchmark compares isolated database processes, **not complete Electron versus Tauri desktop RAM or startup performance**. Full process-tree measurements, including WebView2, and real-library/game parity checks remain release gates. See [Rust/Tauri migration and verification](docs/TAURI-MIGRATION.md).
 
 ## Screenshots
 

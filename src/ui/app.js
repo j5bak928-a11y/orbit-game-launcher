@@ -52,7 +52,7 @@ function toggleControllerMode(){
 const sourceNames={steam:'Steam',epic:'Epic Games',gog:'GOG',ea:'EA app',ubisoft:'Ubisoft Connect',battlenet:'Battle.net',folder:'Local',manual:'Manual'};
 const palette=['#8b7aff','#5bafef','#fc8ca8','#53c5b3','#f3a65c','#bf87f5'];
 function artwork(token){return /^[a-f\d-]{36}\.(jpg|jpeg|png|webp)$/.test(token||'')?(window.OrbitArtworkUrl?.(token)||`orbit-art://file/${token}`):null}
-function coverImage(g){const fallback=artwork(g.icon)?`<span class="cover-icon-frame"><img class="cover-icon" src="${artwork(g.icon)}" loading="lazy" alt="" /></span>`:'';const title=`<span class="cover-placeholder-symbol">${ic('gamepad',29)}</span><span class="cover-placeholder-title">${esc(g.name)}</span><span class="cover-placeholder-note">${esc(sourceLabel(g))}</span>`;const poster=artwork(g.cover)?`<img class="cover-image ${g.cover_fit==='contain'?'fit-contain':''} position-${['top','bottom'].includes(g.cover_position)?g.cover_position:'center'}" src="${artwork(g.cover)}" loading="lazy" alt="" />`:'';return fallback+title+poster;}
+function coverImage(g){const fallback=artwork(g.icon)?`<span class="cover-icon-frame"><img class="cover-icon" src="${artwork(g.icon)}" loading="lazy" alt="" /></span>`:'';const title=`<span class="cover-placeholder-symbol">${ic('gamepad',29)}</span><span class="cover-placeholder-title">${esc(g.name)}</span>`;const poster=artwork(g.cover)?`<img class="cover-image ${g.cover_fit==='contain'?'fit-contain':''} position-${['top','bottom'].includes(g.cover_position)?g.cover_position:'center'}" src="${artwork(g.cover)}" loading="lazy" alt="" />`:'';return fallback+title+poster;}
 function timeLabel(seconds){if(!seconds)return 'Not played yet';const total=Math.max(1,Math.round(seconds/60)),hrs=Math.floor(total/60),mins=total%60;return hrs?`${hrs}h ${mins}m played`:`${total}m played`}
 function sourceLabel(game){return sourceNames[game.source]||'Game'}
 function formatDate(date){if(!date)return 'Never';const d=new Date(date);return Number.isNaN(d.getTime())?'Unknown':new Intl.DateTimeFormat(undefined,{month:'short',day:'numeric',year:'numeric'}).format(d)}
@@ -68,7 +68,7 @@ function filtered(){const key=[state.games,state.route,state.filter,state.tag,st
   const result=sortedGames(a);filterCache={key,value:result};return result;
 }
 function card(g){return `<article class="game-card" data-action="detail" data-id="${esc(g.id)}" role="button" tabindex="0" aria-label="View details for ${esc(g.name)}">
-  <div class="cover">${coverImage(g)}<span class="cover-letter">${esc(g.name.slice(0,2))}</span><span class="cover-source">${esc(sourceLabel(g))}</span>
+  <div class="cover">${coverImage(g)}<span class="cover-letter">${esc(g.name.slice(0,2))}</span>
   <button class="favorite-float ${g.favorite?'active':''}" data-action="favorite" data-id="${esc(g.id)}" aria-label="${g.favorite?'Remove favorite':'Add favorite'}">${ic('heart',16)}</button>
   <button class="cover-play" data-action="launch" data-id="${esc(g.id)}" aria-label="Launch ${esc(g.name)}">${ic('play',17)}</button></div>
   <div class="game-label"><div style="min-width:0"><span class="game-name" title="${esc(g.name)}">${esc(g.name)}</span><span class="game-meta">${state.runningIds?.includes(g.id)?'● Playing now':esc(timeLabel(g.total_play_seconds))}</span></div>

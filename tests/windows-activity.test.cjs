@@ -27,6 +27,25 @@ test('one installed title with a manual executable alias has one background owne
  assert.deepEqual(matchRunningGames(entries,[`${store}\\GameBootstrapHelper.exe`,alias,'D:\\SteamLibrary\\steamapps\\common\\Other Game\\OtherGame.exe']),['steam-A','separate']);
  assert.deepEqual(matchRunningGames(entries.slice(1,2),[alias]),['manual-B'],'without the storefront owner the manual game still tracks');
 });
+test('direct manual launch owns the installation instead of competing with store background detection',async()=>{
+ const folder='C:\\SteamLibrary\\steamapps\\common\\Example';
+ const games=[{id:'steam',name:'Example',source:'steam',install_path:folder},{id:'manual',name:'Example',source:'manual',executable:`${folder}\\Example.exe`}];
+ let direct=true;const started=[];
+ const t=new WindowsActivityTracker({listGames:()=>games,isDirectSession:id=>direct&&id==='manual',
+  start:id=>{started.push(id);return `session-${id}`;},finish:()=>true,
+  enumerate:async()=>[`${folder}\\GameBootstrapHelper.exe`,`${folder}\\Example.exe`]
+ });
+ await t.poll();assert.deepEqual(started,[],'active direct manual session suppresses store background owner');
+ direct=false;await t.poll();assert.deepEqual(started,['steam']);
+ assert.equal(t.isRunning('manual'),true,'manual alias launch is blocked while store session is active');
+ t.stop();
+});
+test('independent games in one installation tree retain separate playtime owners',()=>{
+ const root='D:\\SteamLibrary\\steamapps\\common\\Example';
+ const list=[{id:'main',name:'Main Game',source:'steam',install_path:root},
+  {id:'bonus',name:'Independent Bonus Game',source:'manual',executable:`${root}\\DLC\\BonusGame.exe`}];
+ assert.deepEqual(matchRunningGames(list,[`${root}\\Main.exe`,`${root}\\DLC\\BonusGame.exe`]),['main','bonus']);
+});
 test('matches a linked game launched by a wrapper using its dedicated installation folder',()=>{
  const list=[{id:'epic',source:'epic',launch_uri:'com.epicgames.launcher://apps/1',executable:'D:\\Games\\Example\\Launcher.exe',install_path:'D:\\Games\\Example'}];
  assert.deepEqual(matchRunningGames(list,['D:\\Games\\Example\\Bin\\Game.exe']),['epic']);

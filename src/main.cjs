@@ -19,6 +19,7 @@ const {findLocalPortrait,findEpicPortrait}=require('./core/nonsteam-artwork.cjs'
 const {WindowsActivityTracker}=require('./core/windows-activity.cjs');
 const {backgroundWindow}=require('./core/background-window.cjs');
 const {sessionClock}=require('./core/session-clock.cjs');
+const {pendingFinishes}=require('./core/pending-finishes.cjs');
 const {createUpdateService}=require('./core/updates.cjs');
 const {catalogMatch,identifyGame}=require('./core/game-identity.cjs');
 const {createPortableBackup,decodePortableBackup,installBackupArtwork,writeAtomic,MAX_ARCHIVE}=require('./core/backup.cjs');
@@ -29,6 +30,11 @@ let win,db,scanning=false,activityTracker=null,libraryRevision=0,tray=null,initi
 const background=backgroundWindow({close:()=>win?.destroy(),show:()=>{if(!win||win.isDestroyed())createWindow();else {if(win.isMinimized())win.restore();win.show();win.focus();}}});
 const fullscreenController=new FullscreenController(()=>win);
 const sessions=new Map(),sessionClocks=new Map();
+const directFinishes=pendingFinishes({
+ finish:(session,seconds)=>{if(!db)throw Error('Game library is unavailable.');return db.finishSession(session,seconds);},
+ onSuccess:id=>{if(db)gamesChanged({games:[db.get(id)],reason:'playtime'});},
+ onError:(_id,error)=>broadcast({type:'error',message:`Could not save play time; retrying: ${error.message}`})
+});
 let checkpointTimer=null,guardTimer=null;
 const pendingLaunches=new Set();
 const artworkWork=new ArtworkWork();
@@ -59,6 +65,7 @@ const broadcast=payload=>{if(win&&!win.isDestroyed())win.webContents.send('orbit
 const runningGameIds=()=>[...new Set([...sessions.keys(),...(activityTracker?.runningIds()||[])])];
 function checkpointPlaytime(){
  if(!db)return;
+ directFinishes.flush();
  const records=[...sessions].map(([id,sessionId])=>({id:sessionId,seconds:sessionClocks.get(id)?.seconds()||0}));
  records.push(...(activityTracker?.checkpoints()||[]));
  if(records.length)try{db.checkpointSessions(records);}catch(error){broadcast({type:'error',message:'Playtime checkpoint could not be saved: '+error.message});}
@@ -410,15 +417,15 @@ function handlers(){
     if(!okId(id))throw Error('Invalid game identifier.');const game=db.get(id);if(!game)throw Error('Game was removed.');
     // A process can take time to emit "spawn". Reserve the game ID before
     // awaiting it so double-clicks cannot launch two copies concurrently.
-    if(sessions.has(id)||pendingLaunches.has(id)||activityTracker?.isRunning(id))throw Error('This game is already launching or has a tracked session running.');
+    if(sessions.has(id)||pendingLaunches.has(id)||directFinishes.has(id)||activityTracker?.isRunning(id))throw Error('This game is already launching, running, or saving a tracked session.');
     pendingLaunches.add(id);
     try{
       let sessionId=null;
       const exit=deferredExit(()=>{
         if(!sessionId||!db)return;
-        try{db.finishSession(sessionId,sessionClocks.get(id)?.seconds()||0);}
-        catch(e){broadcast({type:'error',message:`Could not save play time: ${e.message}`})}
-        sessions.delete(id);sessionClocks.delete(id);gamesChanged({games:[db.get(id)],reason:'playtime'});
+        const seconds=sessionClocks.get(id)?.seconds()||0;
+        sessions.delete(id);sessionClocks.delete(id);
+        directFinishes.add(id,sessionId,seconds);
       });
       const result=await executeGame(game,url=>shell.openExternal(url),exit.onExit);
       if(result.tracked){
@@ -515,7 +522,7 @@ app.whenReady().then(async()=>{
   createWindow();
   if(process.platform==='win32'){
     activityTracker=new WindowsActivityTracker({
-      listGames:()=>db.listActivityGames(),isDirectSession:id=>sessions.has(id)||pendingLaunches.has(id),
+      listGames:()=>db.listActivityGames(),isDirectSession:id=>sessions.has(id)||pendingLaunches.has(id)||directFinishes.has(id),
       start:id=>db.startSession(id),finish:(sessionId,seconds)=>db.finishSession(sessionId,seconds),
       onChange:ids=>{gamesChanged({games:ids.map(id=>db.get(id)),reason:'playtime'});if(ids.some(id=>activityTracker?.isRunning(id)))performanceGuard();},
       onError:error=>broadcast({type:'error',message:'Windows playtime detection is temporarily unavailable: '+error.message})
@@ -552,6 +559,10 @@ app.on('before-quit',()=>{
   if(guardTimer)clearTimeout(guardTimer);
   checkpointPlaytime();
   activityTracker?.stop();activityTracker=null;
-  if(db){for(const session of sessions.values()){try{const started=db.db.prepare('SELECT started_at FROM sessions WHERE id=?').get(session);if(started)db.finishSession(session,sessionClocks.get([...sessions].find(([,sid])=>sid===session)?.[0])?.seconds()||0)}catch{}}db.close();db=null;}
+  if(db){
+    for(const [id,session] of sessions)directFinishes.add(id,session,sessionClocks.get(id)?.seconds()||0);
+    sessions.clear();sessionClocks.clear();directFinishes.flush();
+    db.close();db=null;
+  }
 });
 app.on('window-all-closed',()=>{if(process.platform!=='darwin'&&!tray)app.quit()});

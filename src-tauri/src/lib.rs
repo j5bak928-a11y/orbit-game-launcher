@@ -143,6 +143,29 @@ fn reserve_game_launch<'a>(
     if !launching.insert(id.to_string()) {
         return Err("This game is already launching".into());
     }
+    // Session ownership also spans confidently identical Steam/Epic and
+    // manually linked copies of one installation, not just one library ID.
+    let aliases = state
+        .db
+        .lock()
+        .map_err(|error| error.to_string())
+        .and_then(|db| db.list_activity_games())
+        .map(|games| native::installation_alias_ids(&games, id));
+    let aliases = match aliases {
+        Ok(ids) => ids,
+        Err(error) => {
+            launching.remove(id);
+            return Err(error);
+        }
+    };
+    if aliases.iter().any(|other| {
+        launching.contains(other)
+            || state.active.lock().unwrap().contains_key(other)
+            || state.pending_finishes.lock().unwrap().contains_key(other)
+    }) {
+        launching.remove(id);
+        return Err("This installation already has a tracked session running or saving.".into());
+    }
     if state.active.lock().unwrap().contains_key(id) {
         launching.remove(id);
         return Err("This game is already running".into());

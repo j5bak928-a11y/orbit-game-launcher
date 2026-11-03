@@ -2075,9 +2075,67 @@ fn normalize_windows_path(value: &str) -> String {
 fn activity_title_key(value: &str) -> String {
     value
         .chars()
-        .filter(|character| character.is_ascii_alphanumeric())
+        .filter(|c| c.is_ascii_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect()
+}
+
+fn store_and_manual_alias(store: &Value, alias: &Value) -> bool {
+    if !["steam", "epic"].contains(&field(store, "source"))
+        || !["manual", "folder"].contains(&field(alias, "source"))
+        || !Path::new(field(store, "install_path")).is_absolute()
+    {
+        return false;
+    }
+    let folder = normalize_windows_path(field(store, "install_path"));
+    let executable = normalize_windows_path(field(alias, "executable"));
+    let title = activity_title_key(field(store, "name"));
+    !folder.is_empty()
+        && !executable.is_empty()
+        && !title.is_empty()
+        && title == activity_title_key(field(alias, "name"))
+        && executable.starts_with(&format!("{folder}\\"))
+}
+
+pub fn installation_alias_ids(games: &Value, requested_id: &str) -> HashSet<String> {
+    let Some(entries) = games.as_array() else {
+        return HashSet::new();
+    };
+    let Some(requested) = entries
+        .iter()
+        .find(|game| field(game, "id") == requested_id)
+    else {
+        return HashSet::new();
+    };
+    entries
+        .iter()
+        .filter(|game| {
+            field(game, "id") != requested_id
+                && (store_and_manual_alias(game, requested)
+                    || store_and_manual_alias(requested, game))
+        })
+        .map(|game| field(game, "id").to_owned())
+        .collect()
+}
+
+fn suppress_store_for_direct_alias(
+    games: &Value,
+    found: &mut HashSet<String>,
+    direct: &HashSet<String>,
+) {
+    let Some(entries) = games.as_array() else {
+        return;
+    };
+    for store in entries {
+        let id = field(store, "id");
+        if found.contains(id)
+            && entries.iter().any(|alias| {
+                direct.contains(field(alias, "id")) && store_and_manual_alias(store, alias)
+            })
+        {
+            found.remove(id);
+        }
+    }
 }
 
 fn match_game_processes(games: &Value, inventory: &[PathBuf]) -> HashSet<String> {
@@ -2150,30 +2208,16 @@ fn match_game_processes(games: &Value, inventory: &[PathBuf]) -> HashSet<String>
             parent = dir.parent();
         }
     }
-    // A storefront game and a manually linked executable inside its install
-    // folder can be two library entries for one physical title. The SQLite
-    // guard is per game_id, so select one canonical background owner here.
+    // Only confidently identical titles coalesce. A separate game or DLC can
+    // legitimately be installed beneath the same root, and must retain time.
     for store in games {
         let store_id = field(store, "id");
         if !found.contains(store_id) || !["steam", "epic"].contains(&field(store, "source")) {
             continue;
         }
-        let folder = normalize_windows_path(field(store, "install_path"));
-        let name = activity_title_key(field(store, "name"));
-        if folder.is_empty() || name.is_empty() {
-            continue;
-        }
-        let prefix = format!("{folder}\\");
         for alias in games {
             let alias_id = field(alias, "id");
-            if !found.contains(alias_id)
-                || !["manual", "folder"].contains(&field(alias, "source"))
-                || activity_title_key(field(alias, "name")) != name
-            {
-                continue;
-            }
-            let executable = normalize_windows_path(field(alias, "executable"));
-            if !executable.is_empty() && executable.starts_with(&prefix) {
+            if found.contains(alias_id) && store_and_manual_alias(store, alias) {
                 found.remove(alias_id);
             }
         }
@@ -2247,6 +2291,8 @@ pub fn running_games(games: &Value) -> Result<Value, String> {
             running.insert(id.clone());
         }
     }
+    let direct_ids = direct.keys().cloned().collect::<HashSet<_>>();
+    suppress_store_for_direct_alias(games, &mut running, &direct_ids);
     let mut sorted = running.into_iter().collect::<Vec<_>>();
     sorted.sort();
     Ok(json!(sorted))
@@ -2257,13 +2303,14 @@ pub fn running_games(games: &Value) -> Result<Value, String> {
 /// `started` and `finished` belong to the DB integration layer.
 pub fn poll_activity(games: &Value) -> Result<Value, String> {
     let inventory = list_running_executables()?;
-    let found = match_game_processes(games, &inventory);
+    let mut found = match_game_processes(games, &inventory);
     let direct_ids = direct()
         .lock()
         .map_err(|_| "Process tracker unavailable.")?
         .keys()
         .cloned()
         .collect::<HashSet<_>>();
+    suppress_store_for_direct_alias(games, &mut found, &direct_ids);
     let eligible = games
         .as_array()
         .ok_or("Expected a game list.")?
@@ -2448,6 +2495,36 @@ mod tests {
             match_game_processes(&manual_only, &[PathBuf::from(alias)]),
             HashSet::from(["manual-B".to_string()])
         );
+        let mut automatic = HashSet::from(["steam-A".to_string()]);
+        suppress_store_for_direct_alias(
+            &games,
+            &mut automatic,
+            &HashSet::from(["manual-B".to_string()]),
+        );
+        assert!(
+            automatic.is_empty(),
+            "direct manual launch must suppress the store background record"
+        );
+        assert_eq!(
+            installation_alias_ids(&games, "manual-B"),
+            HashSet::from(["steam-A".to_string()])
+        );
+        let distinct = json!([
+            {"id":"main","name":"Main Game","source":"steam","install_path":store},
+            {"id":"bonus","name":"Independent Bonus Game","source":"manual","executable":format!(r"{store}\DLC\BonusGame.exe")}
+        ]);
+        let matches = match_game_processes(
+            &distinct,
+            &[
+                PathBuf::from(format!(r"{store}\Main.exe")),
+                PathBuf::from(format!(r"{store}\DLC\BonusGame.exe")),
+            ],
+        );
+        assert_eq!(
+            matches,
+            HashSet::from(["main".to_string(), "bonus".to_string()])
+        );
+        assert!(installation_alias_ids(&distinct, "bonus").is_empty());
     }
 
     #[test]

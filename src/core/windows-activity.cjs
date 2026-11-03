@@ -9,6 +9,13 @@ const ACTIVE_POLL_MS=15000,IDLE_POLL_MS=60000,LAUNCH_POLL_MS=6000;
 const SKIP_EXECUTABLE=/^(?:unins\w*|uninstall\w*|setup\w*|install\w*|launcher\w*|\w+launcher(?:64|32)?|launchgame|updater|update\w*|patcher\w*|bootstrap\w*|crash(?:reporter|handler)?\w*|easyanticheat\w*|eac\w*|eanticheat\w*|easteam\w*|ue4prereq\w*|vcredist\w*|dxsetup\w*|epicgameslauncher\w*)\.exe$/i;
 function normalizeWindowsPath(input){return typeof input==='string'?path.win32.normalize(input).toLowerCase().replace(/[\\/]+$/,''):'';}
 function titleKey(value){return String(value||'').toLowerCase().replace(/[^a-z0-9]/g,'');}
+function storeAndManualAlias(store,alias){
+ if(!store||!alias||!['steam','epic'].includes(store.source)||!['manual','folder'].includes(alias.source))return false;
+ const folder=normalizeWindowsPath(store.install_path),exe=normalizeWindowsPath(alias.executable);
+ const title=titleKey(store.name);
+ return !!folder&&!!exe&&!!title&&title===titleKey(alias.name)&&path.win32.isAbsolute(folder)&&exe.startsWith(`${folder}\\`);
+}
+function samePhysicalInstallation(first,second){return storeAndManualAlias(first,second)||storeAndManualAlias(second,first);}
 function matchRunningGames(games, executables) {
  const processes = new Set(executables.map(normalizeWindowsPath).filter(Boolean));
  const folders=new Map(),exact=new Map(),found=new Set();
@@ -37,17 +44,12 @@ function matchRunningGames(games, executables) {
    directory = parent;
   }
  }
- // A manually linked EXE under a Steam/Epic install is often the very same
- // game imported twice. Prefer the storefront record when the titles match.
- // Do not merge separate titles or nearby/sibling install directories.
+ // Coalesce only confidently identical titles. Containment alone is not
+ // enough: independent games/DLC can legitimately reside under one folder.
  for(const store of games){
   if(!store||!found.has(store.id)||!['steam','epic'].includes(store.source))continue;
-  const folder=normalizeWindowsPath(store.install_path),name=titleKey(store.name);
-  if(!folder||!name)continue;
   for(const alias of games){
-   if(!alias||!found.has(alias.id)||!['manual','folder'].includes(alias.source)||titleKey(alias.name)!==name)continue;
-   const executable=normalizeWindowsPath(alias.executable);
-   if(executable?.startsWith(`${folder}\\`))found.delete(alias.id);
+   if(alias&&found.has(alias.id)&&storeAndManualAlias(store,alias))found.delete(alias.id);
   }
  }
  return [...new Set(games.filter(game=>game&&found.has(game.id)).map(game=>game.id))];
@@ -79,7 +81,11 @@ class WindowsActivityTracker{
   this.active=new Map();this.pendingFinishes=new Map();this.timer=null;this.polling=false;this.stopped=false;this.suspended=false;
   this.launchUntil=0;this.consecutiveFailures=0;
  }
- isRunning(id){return this.active.has(id)||this.pendingFinishes.has(id)}
+ isRunning(id){
+  if(this.active.has(id)||this.pendingFinishes.has(id))return true;
+  const games=this.listGames(),candidate=games.find(game=>game.id===id);
+  return !!candidate&&games.some(game=>(this.active.has(game.id)||this.pendingFinishes.has(game.id))&&samePhysicalInstallation(candidate,game));
+ }
  runningIds(){return [...new Set([...this.active.keys(),...this.pendingFinishes.keys()])]}
  start(){if(this.timer||this.stopped)return;this.poll().catch(error=>this.onError?.(error));}
  schedule(){
@@ -106,6 +112,12 @@ class WindowsActivityTracker{
    if(this.stopped||this.suspended)return;
    this.consecutiveFailures=0;
    const games=this.listGames(),running=new Set(matchRunningGames(games,processes));
+   // A manually linked direct launch outranks the store's automatic fallback.
+   // Without this, one direct session plus one background session is possible.
+   for(const store of games){
+    if(!running.has(store.id)||!['steam','epic'].includes(store.source))continue;
+    if(games.some(alias=>this.isDirectSession(alias.id)&&storeAndManualAlias(store,alias)))running.delete(store.id);
+   }
    const ids=new Set(games.map(g=>g.id)),changed=new Set();
    for(const id of running){
     if(!ids.has(id)||this.isDirectSession(id)||this.pendingFinishes.has(id))continue;

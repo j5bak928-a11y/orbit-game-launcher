@@ -29,8 +29,9 @@
 			this.nextRepeat = 0;
 		}
 		disconnect(pad) {
-				if (pad && (this.owner === padKey(pad) || this.readyPads.has(padKey(pad))))
-					this.reset();
+				if (!pad) return;
+				if (this.owner === padKey(pad)) this.reset();
+				else this.readyPads.delete(padKey(pad));
 		}
 		read(pads, now) {
 			const available = [];
@@ -71,6 +72,7 @@
 				if (!chosen) return { actions: [], status: { kind: "connected" } };
 				this.owner = padKey(chosen);
 				this.armed = true;
+				this.readyPads.clear();
 				pad = chosen;
 			}
 			const buttons = new Set();

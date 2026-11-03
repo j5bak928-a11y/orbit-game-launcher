@@ -97,6 +97,17 @@ test('a held button on a second gamepad is ignored until it has returned to neut
  assert.deepEqual(input.read([first(),second()],600).actions,[]);
  assert.deepEqual(input.read([first(),second([0])],700).actions,['select']);
 });
+test('disconnecting an unused idle gamepad never releases the active controller',()=>{
+ const input=new GamepadInput();
+ const first=(buttons=[])=>pad(buttons,[0,0],{id:'Player',index:0});
+ const second=(buttons=[])=>pad(buttons,[0,0],{id:'Unused controller',index:1});
+ input.read([first(),second()],0);
+ assert.deepEqual(input.read([first([0]),second()],20).actions,['select']);
+ input.disconnect(second());
+ assert.equal(input.owner,'0:Player');
+ input.read([first()],40);
+ assert.deepEqual(input.read([first([15])],60).actions,['right']);
+});
 test('an owner disconnect followed by a same-slot reconnect cannot replay held input',()=>{
  const input=new GamepadInput(),active=pad();input.read([active],0);
  input.disconnect(active);

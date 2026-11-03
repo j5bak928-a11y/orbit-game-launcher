@@ -18,6 +18,10 @@ struct OrbitState {
     db: Mutex<LibraryDatabase>,
     revision: AtomicU64,
     active: Mutex<HashMap<String, (String, Instant)>>,
+    launching: Mutex<HashSet<String>>,
+    // A process can exit while SQLite is temporarily locked or unavailable.
+    // Keep its final duration until the database has accepted it exactly once.
+    pending_finishes: Mutex<HashMap<String, (String, i64)>>,
     artwork_pending: AtomicU64,
     artwork_busy: AtomicBool,
     data_dir: PathBuf,
@@ -114,6 +118,46 @@ fn running_ids(state: &OrbitState) -> Vec<String> {
     let mut ids: Vec<String> = state.active.lock().unwrap().keys().cloned().collect();
     ids.sort();
     ids
+}
+
+struct LaunchReservation<'a> {
+    state: &'a OrbitState,
+    id: String,
+}
+
+impl Drop for LaunchReservation<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut launching) = self.state.launching.lock() {
+            launching.remove(&self.id);
+        }
+    }
+}
+
+fn reserve_game_launch<'a>(
+    state: &'a OrbitState,
+    id: &str,
+) -> Result<LaunchReservation<'a>, String> {
+    // The reservation and checks share one mutex with native activity
+    // registration and session completion, closing the check/spawn race.
+    let mut launching = state.launching.lock().map_err(|error| error.to_string())?;
+    if !launching.insert(id.to_string()) {
+        return Err("This game is already launching".into());
+    }
+    if state.active.lock().unwrap().contains_key(id) {
+        launching.remove(id);
+        return Err("This game is already running".into());
+    }
+    // Reject before spawning the executable. Otherwise a temporary SQLite
+    // failure could leave an old finalization queued, launch a second game,
+    // and only THEN fail to create its new playtime row.
+    if state.pending_finishes.lock().unwrap().contains_key(id) {
+        launching.remove(id);
+        return Err("Orbit is still saving this game's playtime. Try again shortly.".into());
+    }
+    Ok(LaunchReservation {
+        state,
+        id: id.to_string(),
+    })
 }
 
 fn online_artwork_allowed(state: &OrbitState) -> bool {
@@ -683,9 +727,7 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
         }
         "launchGame" => {
             let id = game_id(args)?;
-            if state.active.lock().unwrap().contains_key(id) {
-                return Err("This game is already running".into());
-            }
+            let _reservation = reserve_game_launch(&state, id)?;
             let game = state.db.lock().unwrap().get(id)?;
             if game.is_null() {
                 return Err("Game not found".into());
@@ -965,7 +1007,53 @@ async fn orbit_invoke(
         .map_err(|e| e.to_string())?
 }
 
+fn queue_finished_session(state: &OrbitState, id: &str, seconds: Option<i64>) {
+    // Make the move from active to pending atomic relative to a new launch.
+    let _launching = state.launching.lock().unwrap();
+    let Some((session_id, started)) = state.active.lock().unwrap().remove(id) else {
+        return;
+    };
+    let elapsed = seconds.unwrap_or(started.elapsed().as_secs() as i64);
+    state
+        .pending_finishes
+        .lock()
+        .unwrap()
+        .insert(id.to_string(), (session_id, elapsed));
+}
+
+fn flush_finished_sessions(state: &OrbitState) -> Vec<String> {
+    let pending = state
+        .pending_finishes
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(id, (session, seconds))| (id.clone(), session.clone(), *seconds))
+        .collect::<Vec<_>>();
+    let mut completed = Vec::new();
+    for (game_id, session_id, seconds) in pending {
+        let result = state
+            .db
+            .lock()
+            .map_err(|error| error.to_string())
+            .and_then(|mut db| db.finish_session(&session_id, seconds));
+        match result {
+            Ok(_) => {
+                state.pending_finishes.lock().unwrap().remove(&game_id);
+                completed.push(game_id);
+            }
+            Err(error) => {
+                eprintln!("Orbit: retrying unfinished playtime save: {error}");
+            }
+        }
+    }
+    completed
+}
+
 fn poll_sessions(app: &tauri::AppHandle) {
+    let state = app.state::<OrbitState>();
+    for id in flush_finished_sessions(&state) {
+        notify_game(app, &state, &id, "playtime");
+    }
     let Ok(exits) = native::poll_sessions() else {
         return;
     };
@@ -983,21 +1071,14 @@ fn poll_sessions(app: &tauri::AppHandle) {
     let Some(items) = exits.get("completed").and_then(Value::as_array) else {
         return;
     };
-    let state = app.state::<OrbitState>();
     for item in items {
         let Some(id) = item["game_id"].as_str() else {
             continue;
         };
-        let Some((session_id, start)) = state.active.lock().unwrap().remove(id) else {
-            continue;
-        };
-        let seconds = item["seconds"]
-            .as_i64()
-            .unwrap_or(start.elapsed().as_secs() as i64);
-        if let Ok(mut db) = state.db.lock() {
-            let _ = db.finish_session(&session_id, seconds);
-        }
-        notify_game(app, &state, id, "playtime");
+        queue_finished_session(&state, id, item["seconds"].as_i64());
+    }
+    for id in flush_finished_sessions(&state) {
+        notify_game(app, &state, &id, "playtime");
     }
     // External launcher processes are tracked from verified install paths by
     // the Rust Windows process-inventory implementation.
@@ -1020,6 +1101,13 @@ fn poll_sessions(app: &tauri::AppHandle) {
             }
             if let Some(started) = activity.get("started").and_then(Value::as_array) {
                 for id in started.iter().filter_map(Value::as_str) {
+                    // While a direct launch is between its reservation,
+                    // native spawn, and database insertion, automatic
+                    // inventory detection must not claim the same game.
+                    let launching = state.launching.lock().unwrap();
+                    if launching.contains(id) {
+                        continue;
+                    }
                     if state.active.lock().unwrap().contains_key(id) {
                         continue;
                     }
@@ -1034,6 +1122,8 @@ fn poll_sessions(app: &tauri::AppHandle) {
                             .lock()
                             .unwrap()
                             .insert(id.into(), (session, Instant::now()));
+                        native::acknowledge_activity_session(id);
+                        drop(launching);
                         notify_game(app, &state, id, "playtime");
                         let settings = state.db.lock().ok().and_then(|db| db.get_settings().ok());
                         if let Some(settings) = settings {
@@ -1051,16 +1141,10 @@ fn poll_sessions(app: &tauri::AppHandle) {
                     let Some(id) = item["game_id"].as_str() else {
                         continue;
                     };
-                    let Some((session_id, start)) = state.active.lock().unwrap().remove(id) else {
-                        continue;
-                    };
-                    let seconds = item["seconds"]
-                        .as_i64()
-                        .unwrap_or(start.elapsed().as_secs() as i64);
-                    if let Ok(mut db) = state.db.lock() {
-                        let _ = db.finish_session(&session_id, seconds);
-                    }
-                    notify_game(app, &state, id, "playtime");
+                    queue_finished_session(&state, id, item["seconds"].as_i64());
+                }
+                for id in flush_finished_sessions(&state) {
+                    notify_game(app, &state, &id, "playtime");
                 }
             }
         }
@@ -1100,21 +1184,108 @@ fn settle_sessions(app: &tauri::AppHandle) {
         .lock()
         .map(|mut active| active.drain().collect())
         .unwrap_or_default();
-    if let Ok(mut db) = state.db.lock() {
-        for (id, (session_id, started)) in ended {
-            let seconds = elapsed
-                .get(&id)
-                .copied()
-                .unwrap_or(started.elapsed().as_secs() as i64);
-            let _ = db.finish_session(&session_id, seconds);
-        }
-    };
+    for (id, (session_id, started)) in ended {
+        let seconds = elapsed
+            .get(&id)
+            .copied()
+            .unwrap_or(started.elapsed().as_secs() as i64);
+        state
+            .pending_finishes
+            .lock()
+            .unwrap()
+            .insert(id, (session_id, seconds));
+    }
+    flush_finished_sessions(&state);
+}
+
+#[cfg(test)]
+mod playtime_persistence_tests {
+    use super::*;
+
+    #[test]
+    fn failed_finish_is_retained_and_retried_exactly_once_after_sqlite_unlocks() {
+        let folder = std::env::temp_dir().join(format!("orbit-dedup-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("library.sqlite");
+        let mut db = LibraryDatabase::open(&file).unwrap();
+        let game = db.upsert(&json!({"name":"Retryable session"})).unwrap()["game"].clone();
+        let id = game["id"].as_str().unwrap().to_string();
+        let session = db.start_session(&id).unwrap();
+        let state = OrbitState {
+            db: Mutex::new(db),
+            revision: AtomicU64::new(0),
+            active: Mutex::new(HashMap::new()),
+            launching: Mutex::new(HashSet::new()),
+            pending_finishes: Mutex::new(HashMap::new()),
+            artwork_pending: AtomicU64::new(0),
+            artwork_busy: AtomicBool::new(false),
+            data_dir: folder.clone(),
+            artwork_dir: folder.join("artwork"),
+        };
+        state
+            .active
+            .lock()
+            .unwrap()
+            .insert(id.clone(), (session, Instant::now()));
+        queue_finished_session(&state, &id, Some(120));
+        assert!(state.active.lock().unwrap().is_empty());
+        assert_eq!(state.pending_finishes.lock().unwrap().len(), 1);
+
+        let locked = rusqlite::Connection::open(&file).unwrap();
+        locked.execute_batch("BEGIN IMMEDIATE").unwrap();
+        assert!(flush_finished_sessions(&state).is_empty());
+        assert_eq!(state.pending_finishes.lock().unwrap().len(), 1);
+        assert!(
+            reserve_game_launch(&state, &id).is_err(),
+            "a queued finish must block untracked launches"
+        );
+        locked.execute_batch("ROLLBACK").unwrap();
+
+        assert_eq!(flush_finished_sessions(&state), vec![id.clone()]);
+        let launch = reserve_game_launch(&state, &id).unwrap();
+        assert!(
+            reserve_game_launch(&state, &id).is_err(),
+            "a concurrent launch must be reserved"
+        );
+        drop(launch);
+        assert!(reserve_game_launch(&state, &id).is_ok());
+        assert_eq!(
+            state.db.lock().unwrap().get(&id).unwrap()["total_play_seconds"],
+            120
+        );
+        assert!(flush_finished_sessions(&state).is_empty());
+        assert!(state.pending_finishes.lock().unwrap().is_empty());
+        assert_eq!(
+            state.db.lock().unwrap().get(&id).unwrap()["total_play_seconds"],
+            120
+        );
+
+        drop(locked);
+        drop(state);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
 }
 
 pub fn run() {
     let scheme_dir = Arc::new(Mutex::new(None::<PathBuf>));
     let scheme_handler = scheme_dir.clone();
     tauri::Builder::default()
+        // Only one Rust tracker may write playtime to this profile. Without
+        // a single-instance guard, launching Orbit again while it is in the
+        // tray creates a second poller for the same running game.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            #[cfg(target_os = "windows")]
+            if let Err(error) = tray::open_orbit(app) {
+                // During startup the first instance's tray may not exist
+                // yet; its main window will become visible on its own.
+                eprintln!("Orbit single-instance reopen: {error}");
+            }
+            #[cfg(not(target_os = "windows"))]
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .on_window_event(|window, event| {
             // Destroying the UI window is not quitting Orbit. In particular,
@@ -1189,6 +1360,8 @@ pub fn run() {
                 db: Mutex::new(db),
                 revision: AtomicU64::new(0),
                 active: Mutex::new(HashMap::new()),
+                launching: Mutex::new(HashSet::new()),
+                pending_finishes: Mutex::new(HashMap::new()),
                 artwork_pending: AtomicU64::new(0),
                 artwork_busy: AtomicBool::new(false),
                 data_dir,

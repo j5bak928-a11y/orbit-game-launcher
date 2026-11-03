@@ -168,12 +168,10 @@
 					const image = event.target;
 					if (!(image instanceof HTMLImageElement) || !image.dataset.tvArt)
 						return;
-					const ratio = image.naturalWidth / image.naturalHeight;
-					if (
-						(image.dataset.tvArt === "cover" &&
-							(ratio < 0.5 || ratio > 0.85)) ||
-						(image.dataset.tvArt === "banner" && ratio < 1.4)
-					)
+					// Do not discard a valid uploaded image because its proportions
+					// differ from a store's usual portrait/landscape convention.
+					// Both formats are fully visible using object-fit: contain.
+					if (!image.naturalWidth || !image.naturalHeight)
 						image.hidden = true;
 					else image.parentElement.classList.add("has-art");
 				},

@@ -219,10 +219,12 @@ function settingsView(){const s=state.settings,folders=s.libraryFolders||[];retu
  </div></div></section>`;
 }
 function renderShell(){el('app').innerHTML=`<div class="app-shell"><div id="side-slot">${sidebar()}</div><div class="workspace"><div id="top-slot">${topbar()}</div><main class="content-scroll" id="main-scroll" tabindex="-1"><div id="page-slot"></div></main></div></div>`;el('main-scroll').addEventListener('scroll',()=>{if(['library','favorites','recent'].includes(state.route)&&!scrollFrame){scrollFrame=requestAnimationFrame(()=>{scrollFrame=null;renderVirtual()})}},{passive:true});renderPage()}
-let scrollFrame=null;
+let scrollFrame=null,previousRenderedRoute=null;
 function renderPage({keepScroll=false}={}){closeGameActions();const slot=el('page-slot'),scroller=el('main-scroll');if(!slot)return;const old=keepScroll?scroller.scrollTop:0;
  virtualRangeKey=null;virtualGamesRef=null;virtualRunningRef=null;virtualItems=new Map();
  slot.innerHTML=state.route==='home'?home():state.route==='settings'?settingsView():libraryView();scroller.scrollTop=old;
+ if(previousRenderedRoute!==state.route)slot.firstElementChild?.classList.add('page-enter');
+ previousRenderedRoute=state.route;
  if(['library','favorites','recent'].includes(state.route))renderVirtual();syncActivity();}
 function refreshNavigation(keepScroll=false){el('side-slot').innerHTML=sidebar();el('top-slot').innerHTML=topbar();renderPage({keepScroll});}
 function navigate(route){if(!['home','library','favorites','recent','settings'].includes(route))return;state.route=route;state.query='';state.filter='all';state.tag='all';state.genre='all';refreshNavigation();}
@@ -274,7 +276,7 @@ function handleOrbitEvent(event){
  if(event.type==='error')toast(event.message,true);
 }
 async function saveSettings(patch){state.settings=await window.orbit.saveSettings(patch);setupTheme();if(state.route==='settings')renderPage({keepScroll:true});}
-let modalReturnFocus=null;
+let modalReturnFocus=null,modalReturnFocusAction=null;
 let gameActionsTrigger=null,gameActionsAnchor=null;
 function closeGameActions(restoreFocus=false){
  const trigger=gameActionsTrigger;
@@ -309,8 +311,8 @@ function openGameActions(trigger){
  menu.style.left=`${left}px`;menu.style.top=`${top}px`;
  menu.querySelector('[role=menuitem]')?.focus({preventScroll:true});
 }
-function openModal(type,meta={}){closeGameActions();if(!state.modal)modalReturnFocus=document.activeElement;state.modal={type,...meta};renderModal()}
-function closeModal(){state.modal=null;el('modal-root').innerHTML='';if(modalReturnFocus?.isConnected)modalReturnFocus.focus({preventScroll:true});modalReturnFocus=null}
+function openModal(type,meta={}){closeGameActions();if(!state.modal){modalReturnFocus=document.activeElement;modalReturnFocusAction=modalReturnFocus?.dataset.action?{action:modalReturnFocus.dataset.action,id:modalReturnFocus.dataset.id,kind:['game-card','game-row','continue-card','game-menu'].find(name=>modalReturnFocus.classList.contains(name))}:null;}state.modal={type,...meta};renderModal()}
+function closeModal(){state.modal=null;el('modal-root').innerHTML='';const candidates=modalReturnFocusAction?[...document.querySelectorAll('[data-action]')].filter(node=>node.dataset.action===modalReturnFocusAction.action&&node.dataset.id===modalReturnFocusAction.id):[];const target=modalReturnFocus?.isConnected?modalReturnFocus:candidates.find(node=>modalReturnFocusAction.kind&&node.classList.contains(modalReturnFocusAction.kind))||candidates[0];target?.focus({preventScroll:true});modalReturnFocus=null;modalReturnFocusAction=null}
 function dialogFrame(title,description,body,footer='',wide=false){return `<div class="dialog-scrim" data-action="scrim"><section class="dialog ${wide?'wide':''}" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div class="dialog-header"><div><h2 id="dialog-title">${esc(title)}</h2><p>${esc(description)}</p></div><button class="ghost-btn" data-action="close-modal" aria-label="Close dialog">${ic('close',21)}</button></div>${body}${footer}</section></div>`}
 function editor(g){const isEdit=!!g;const title=isEdit?'Edit game':'Add a game';const params=Array.isArray(g?.launch_args)?JSON.stringify(g.launch_args):'[]';
  const imgSection=(key,label)=>`<div class="image-upload"><div id="preview-${key}">${artwork(g?.[key])?`<img src="${artwork(g[key])}" alt="${label} preview" />`:key==='cover'&&artwork(g?.icon)?`<div class="auto-icon-preview"><img src="${artwork(g.icon)}" alt="Icon fallback" /></div>`:`<div class="image-placeholder">${ic('image',21)}</div>`}</div><div style="flex:1"><p>${label}</p><small>${key==='icon'?'Used when no cover exists':'PNG, JPEG or WebP'}</small></div><button type="button" class="secondary-btn" data-action="choose-art" data-key="${key}">Choose</button><button type="button" class="small-link" data-action="clear-art" data-key="${key}" aria-label="Clear ${label}">Clear</button></div>`;
@@ -329,15 +331,25 @@ function editor(g){const isEdit=!!g;const title=isEdit?'Edit game':'Add a game';
 function detail(g){if(!g)return dialogFrame('Game unavailable','This game no longer exists.','<div class="dialog-body">Please refresh the library.</div>');
  const tags=(g.tags||[]).map(t=>`<span class="detail-tag">${esc(t)}</span>`).join('');
  const playing=state.runningIds.includes(g.id);
- return dialogFrame(g.name,`${sourceLabel(g)} · Added ${formatDate(g.created_at)}`,`<div class="dialog-body"><div class="detail-cover"><div class="cover">${coverImage(g)}<span class="cover-letter">${esc(g.name.slice(0,2))}</span></div>
- <div><h2 class="detail-title">${esc(g.name)}</h2>${g.genre?`<span class="detail-tag">${esc(g.genre)}</span>`:''}${tags||'<span class="detail-tag">No tags yet</span>'}
- <div class="detail-stat">${ic('gamepad',15)} ${esc(sourceLabel(g))}${g.source_id?` · ${esc(g.source_id)}`:''}</div>
- <div class="detail-playtime"><div class="detail-playtime-label">${ic('clock',15)} <span>PLAYTIME</span>${playing?'<span class="detail-live">● Playing now</span>':''}</div><strong class="detail-playtime-value">${esc(playing&&!g.total_play_seconds?'First session in progress':timeLabel(g.total_play_seconds))}</strong><span class="detail-playtime-caption">${playing?'Time updates when the session ends':`Last played ${esc(formatDate(g.last_played_at))}`}</span></div>
- <div class="detail-actions"><button class="primary-btn" data-action="launch" data-id="${esc(g.id)}">${ic('play',16)} Play game</button><button class="secondary-btn" data-action="favorite" data-id="${esc(g.id)}">${ic('heart',16)} ${g.favorite?'Unfavorite':'Favorite'}</button></div></div></div>
- ${artwork(g.banner)?`<img class="detail-banner" src="${artwork(g.banner)}" alt="Game banner" />`:''}
- <div class="hr"></div><div class="detail-stat">${ic('folder',15)} <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(g.install_path||g.executable||'')}" >${esc(g.install_path||g.executable||'No install path saved')}</span></div>
- ${g.launch_uri?`<p class="detail-note">Starts through ${esc(sourceLabel(g))}. Orbit confirms playtime once the game process is detected. Add the actual executable if detection fails; keep Orbit running in the tray.</p>`:g.executable?'<p class="detail-note">Direct executable launches count play time while Orbit is running and the launched process remains open.</p>':'<p class="detail-note">A valid executable or game launcher URI is required to launch this title.</p>'}
- </div>`,`<div class="dialog-footer"><button class="danger-btn" data-action="remove-confirm" data-id="${esc(g.id)}">${ic('trash',15)} Remove</button><button class="secondary-btn" data-action="open-folder" data-id="${esc(g.id)}">${ic('folder',15)} Location</button><button class="secondary-btn" data-action="edit" data-id="${esc(g.id)}">${ic('edit',15)} Edit</button><button class="secondary-btn" data-action="close-modal">Done</button></div>`,true);
+ const banner=artwork(g.banner),cover=artwork(g.cover);
+ const backdrop=banner||cover;
+ const launchNote=g.launch_uri?'Launched through '+sourceLabel(g)+'. Playtime is confirmed after Orbit detects the game process.':g.executable?'Playtime updates after your session ends while Orbit is running.':'Choose an executable or launcher URI in Edit details to play.';
+ return `<div class="dialog-scrim showcase-scrim" data-action="scrim"><section class="dialog detail-showcase" role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="showcase-summary">
+  <div class="showcase-hero ${banner?'has-banner':cover?'has-cover-backdrop':'no-artwork'}">
+   ${backdrop?`<img class="showcase-hero-art ${banner?'showcase-hero-banner':'showcase-hero-cover'}" src="${backdrop}" alt="" decoding="async" />`:''}
+   <div class="showcase-hero-shade" aria-hidden="true"></div>
+   <div class="showcase-topline"><span class="showcase-eyebrow">${ic('sparkles',13)} ORBIT SHOWCASE</span><button class="showcase-close" data-action="close-modal" aria-label="Close game details">${ic('close',20)}</button></div>
+   <div class="showcase-hero-copy"><span class="showcase-source">${esc(sourceLabel(g))}${playing?' · Playing now':''}</span><h2 id="dialog-title">${esc(g.name)}</h2><p id="showcase-summary">In your library since ${esc(formatDate(g.created_at))}</p></div>
+  </div>
+  <div class="showcase-content"><div class="showcase-poster"><div class="cover">${coverImage(g,true)}<span class="cover-letter">${esc(g.name.slice(0,2))}</span></div></div>
+   <div class="showcase-information"><div class="showcase-tags">${g.genre?`<span class="detail-tag">${esc(g.genre)}</span>`:''}${tags||'<span class="detail-tag">In your collection</span>'}</div>
+    <div class="showcase-stats"><div class="detail-playtime"><div class="detail-playtime-label">${ic('clock',15)} PLAYTIME${playing?'<span class="detail-live">● Playing now</span>':''}</div><strong class="detail-playtime-value">${esc(playing&&!g.total_play_seconds?'First session in progress':timeLabel(g.total_play_seconds))}</strong><span class="detail-playtime-caption">${playing?'Session time will be added when the game closes':'Recorded game time'}</span></div>
+     <div class="showcase-last-played"><span class="showcase-stat-label">${ic('clock',15)} LAST PLAYED</span><strong>${esc(formatDate(g.last_played_at))}</strong><span>${g.last_played_at?'Last recorded session':'Ready for your first session'}</span></div></div>
+    <div class="showcase-actions"><button class="primary-btn showcase-play" data-action="launch" data-id="${esc(g.id)}">${ic('play',20)} <span>Play game</span>${ic('arrow',19)}</button><button class="secondary-btn showcase-favorite ${g.favorite?'is-favorite':''}" data-action="favorite" data-id="${esc(g.id)}" aria-pressed="${!!g.favorite}">${ic('heart',18)} ${g.favorite?'Favorited':'Add to favorites'}</button></div>
+    <p class="showcase-note">${esc(launchNote)}</p>
+    <div class="showcase-foot"><span title="${esc(g.install_path||g.executable||'')}">${ic('folder',14)} ${esc(g.install_path||g.executable||'Location unavailable')}</span></div>
+   </div></div>
+ </section></div>`;
 }
 const IMPORT_PAGE_SIZE=100;
 const MAX_IMPORT_SELECTION=10000;
@@ -360,9 +372,11 @@ function renderModal(){const modal=state.modal;if(!modal){el('modal-root').inner
  else if(modal.type==='scan')html=dialogFrame('Scanning your games','Looking through installed launchers and selected library folders.',`<div class="dialog-body" style="display:grid;place-items:center;min-height:200px;text-align:center;color:var(--muted)"><div>${ic('refresh',42)}<p>Scanning local manifests and folders…</p></div></div>`);
  else if(modal.type==='import')html=importDialog();
  else if(modal.type==='remove'){const g=state.games.find(x=>x.id===modal.id);html=dialogFrame('Remove from library?',`Remove ${g?.name||'this game'} from Orbit. Installed files will remain untouched.`,`<div class="dialog-body"><p style="color:var(--muted)">This removes the library entry, custom metadata and tracked play time. It does not uninstall the game.</p></div>`,`<div class="dialog-footer"><button class="secondary-btn" data-action="close-modal">Keep game</button><button class="danger-btn" data-action="remove" data-id="${esc(modal.id)}">${ic('trash',15)} Remove game</button></div>`)}
- el('modal-root').innerHTML=html;
+ const root=el('modal-root'),active=document.activeElement;
+ const previousFocus=root.contains(active)?{action:active.dataset.action,id:active.dataset.id}:null;
+ root.innerHTML=html;
  syncActivity();
- const dialog=el('modal-root').querySelector('.dialog');if(dialog){dialog.setAttribute('tabindex','-1');dialog.focus({preventScroll:true});}
+ const dialog=root.querySelector('.dialog');if(dialog){dialog.setAttribute('tabindex','-1');const keepFocus=previousFocus?.action?[...dialog.querySelectorAll('[data-action]')].find(node=>node.dataset.action===previousFocus.action&&node.dataset.id===previousFocus.id):null;(keepFocus||dialog).focus({preventScroll:true});}
 }
 async function performScan(){if(state.scanning){openModal('scan');return;}state.scanning=true;syncActivity();openModal('scan');
  try{const results=await window.orbit.discoverGames();if(state.modal?.type!=='scan')return;state.imports=results.games;state.importPage=0;state.scanWarnings=results.warnings||[];state.scanDiagnostics=results.diagnostics||[];state.selectedImports=new Set(results.games.flatMap((g,i)=>g.alreadyAdded?[]:[i]).slice(0,MAX_IMPORT_SELECTION));openModal('import')}
@@ -381,6 +395,8 @@ function scanDiagnostics(){
 function syncActivity(){
  for(const button of document.querySelectorAll('[data-action="launch"]')){
   const pending=state.pendingLaunches.has(button.dataset.id),running=state.runningIds.includes(button.dataset.id);
+  button.classList.toggle('launch-pending',pending);
+  button.classList.toggle('launch-running',running);
   if(pending||running){if(!button.dataset.restHtml)button.dataset.restHtml=button.innerHTML;button.innerHTML=ic(pending?'refresh':'check',16)+(button.matches('.cover-play,.continue-play')?'':pending?' Starting…':' Playing');button.disabled=true;button.setAttribute('aria-busy',String(pending));button.setAttribute('title',pending?'Starting game…':'Game is running');}
   else if(button.dataset.restHtml){button.innerHTML=button.dataset.restHtml;delete button.dataset.restHtml;button.disabled=false;button.removeAttribute('aria-busy');button.removeAttribute('title');}
  }
@@ -581,7 +597,7 @@ function ensureImageFallback(img){
 }
 function checkCoverAspect(img){
   if(!(img instanceof HTMLImageElement))return;
-  if(img.matches('.hero-art,.detail-banner')){if(img.naturalWidth/img.naturalHeight<1.5)img.classList.add('bad-aspect');return;}
+  if(img.matches('.hero-art,.detail-banner,.showcase-hero-banner')){if(img.naturalWidth/img.naturalHeight<1.5)img.classList.add('bad-aspect');return;}
   if(!img.matches('.cover-image,.row-cover img:not(.list-game-icon)'))return;
   const ratio=img.naturalHeight?img.naturalWidth/img.naturalHeight:0;
   const bad=ratio<0.5||ratio>0.85;

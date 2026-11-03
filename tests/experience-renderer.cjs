@@ -50,7 +50,9 @@ const settle=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
   assert.equal(await page.locator('.game-card .cover-play').evaluate(el=>Math.round(el.getBoundingClientRect().width)),38,'card Play affordance has a clear hit target');
   await page.locator('.game-card').click();
   assert.equal(await page.locator('[role=dialog] .detail-playtime').count(),1);
-  assert.equal(await page.locator('[role=dialog] [data-action=edit]').count(),1);
+  assert.equal(await page.locator('[role=dialog].detail-showcase').count(),1,'game details use the cinematic showcase');
+  assert.equal(await page.locator('[role=dialog] .showcase-play').count(),1,'showcase has a dedicated Play action');
+  assert.equal(await page.locator('[role=dialog] [data-action=edit]').count(),0,'editing stays in the compact game-card dropdown');
   await page.keyboard.press('Escape');
   await page.evaluate(()=>window.fixture.patch(window.fixture.id(1),{name:'Game 00000'}));
   await page.locator('#global-search').fill('');
@@ -123,6 +125,8 @@ const settle=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
    assert.equal(await fixture.locator('[role=dialog]').count(),0,'three dots must not open the full detail dialog');
    assert.equal(await trigger.getAttribute('aria-expanded'),'true');
    assert.equal(await menu.locator('[role=menuitem]').count(),6);
+   assert.equal(await menu.locator('[data-action=edit]').count(),1,'edit remains available in the compact menu');
+   assert.equal(await menu.locator('[data-action=remove-confirm]').count(),1,'remove confirmation remains in the compact menu');
    await fixture.keyboard.press('End');
    assert.equal(await fixture.evaluate(()=>document.activeElement.dataset.action),'remove-confirm','keyboard navigation reaches destructive action');
    await fixture.keyboard.press('Escape');

@@ -3,7 +3,7 @@
 //! Opening this database migrates existing files in place; it never replaces them.
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, SecondsFormat, Utc};
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 use std::path::Path;
@@ -1049,7 +1049,23 @@ impl LibraryDatabase {
         }
         let id = Uuid::new_v4().to_string();
         let date = stamp();
-        let tx = self.conn.transaction().map_err(error)?;
+        // Serialize the check and insertion across SQLite connections, not
+        // only this process's in-memory active map. A second Orbit instance
+        // must never credit a parallel interval for the same game.
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(error)?;
+        let active: i64 = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sessions WHERE game_id=?1 AND finished_at IS NULL)",
+                [game_id],
+                |row| row.get(0),
+            )
+            .map_err(error)?;
+        if active != 0 {
+            return Err("This game already has an unfinished playtime session.".into());
+        }
         tx.execute(
             "INSERT INTO sessions(id,game_id,started_at) VALUES (?1,?2,?3)",
             params![id, game_id, date],
@@ -1404,6 +1420,29 @@ mod tests {
             assert!(reopened.finish_session(&second, 97).unwrap());
             assert!(!reopened.finish_session(&second, 97).unwrap());
             assert_eq!(reopened.get(&id).unwrap()["total_play_seconds"], 218);
+        });
+    }
+
+    #[test]
+    fn two_database_connections_cannot_double_count_one_running_game() {
+        with_database(|first, file| {
+            let game = first.upsert(&json!({"name":"One running game"})).unwrap()["game"].clone();
+            let game_id = field(&game, "id").to_string();
+            let first_session = first.start_session(&game_id).unwrap();
+            // A second launcher instance holds a distinct SQLite connection.
+            // Opening the DB without invoking startup recovery models the
+            // point after both processes had already started.
+            let mut second = LibraryDatabase::open(file).unwrap();
+            assert!(second
+                .start_session(&game_id)
+                .unwrap_err()
+                .contains("unfinished playtime session"));
+            assert_eq!(first.get(&game_id).unwrap()["total_play_seconds"], 0);
+            assert!(first.finish_session(&first_session, 120).unwrap());
+            let next = second.start_session(&game_id).unwrap();
+            assert!(second.finish_session(&next, 60).unwrap());
+            assert!(!first.finish_session(&first_session, 900).unwrap());
+            assert_eq!(first.get(&game_id).unwrap()["total_play_seconds"], 180);
         });
     }
 

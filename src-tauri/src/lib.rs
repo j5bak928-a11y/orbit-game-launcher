@@ -1115,6 +1115,22 @@ pub fn run() {
     let scheme_dir = Arc::new(Mutex::new(None::<PathBuf>));
     let scheme_handler = scheme_dir.clone();
     tauri::Builder::default()
+        // Only one Rust tracker may write playtime to this profile. Without
+        // a single-instance guard, launching Orbit again while it is in the
+        // tray creates a second poller for the same running game.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            #[cfg(target_os = "windows")]
+            if let Err(error) = tray::open_orbit(app) {
+                // During startup the first instance's tray may not exist
+                // yet; its main window will become visible on its own.
+                eprintln!("Orbit single-instance reopen: {error}");
+            }
+            #[cfg(not(target_os = "windows"))]
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .on_window_event(|window, event| {
             // Destroying the UI window is not quitting Orbit. In particular,

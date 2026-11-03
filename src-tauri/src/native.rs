@@ -2485,7 +2485,7 @@ mod tests {
             {"id":"other","name":"Other Game","source":"steam","install_path":r"D:\SteamLibrary\steamapps\common\Other Game"}
         ]);
         let inventory = vec![
-            PathBuf::from(format!(r"{store}\GameBootstrapHelper.exe")),
+            PathBuf::from(format!(r"{store}\ExampleClient.exe")),
             PathBuf::from(&alias),
             PathBuf::from(r"D:\SteamLibrary\steamapps\common\Other Game\OtherGame.exe"),
         ];
@@ -2493,6 +2493,17 @@ mod tests {
         assert_eq!(
             owners,
             HashSet::from(["steam-A".to_string(), "other".to_string()])
+        );
+        // A helper is not a real game process: when only the helper and
+        // explicitly linked shipping executable run, the manual record owns
+        // the session instead of inventing a store-folder session.
+        let helper_only = vec![
+            PathBuf::from(format!(r"{store}\GameBootstrapHelper.exe")),
+            PathBuf::from(&alias),
+        ];
+        assert_eq!(
+            match_game_processes(&games, &helper_only),
+            HashSet::from(["manual-B".to_string()])
         );
         let manual_only = json!([games[1].clone()]);
         assert_eq!(

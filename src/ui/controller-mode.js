@@ -306,11 +306,19 @@
 			if (!this.active || this.renderFrame !== null) return;
 			this.renderFrame = requestAnimationFrame(() => {
 				this.renderFrame = null;
-				if (this.active) this.render();
+					if (this.active) this.render({ passive: true });
 			});
 		}
-		render({ initial = false, focusLibrary = false, focusKey = "" } = {}) {
+			render({ initial = false, focusLibrary = false, focusKey = "", passive = false } = {}) {
 			if (!this.root) return;
+				const main = this.root.querySelector(".tv-main");
+				const scrollTop = passive ? main.scrollTop : 0;
+				const recentScrollLeft = passive
+					? this.root.querySelector(".tv-recent")?.scrollLeft || 0
+					: 0;
+				const detailScrollTop = passive
+					? this.root.querySelector(".tv-sheet")?.scrollTop || 0
+					: 0;
 			const previous =
 				focusKey || document.activeElement?.dataset.tvKey || this.lastKey;
 			this.snapshot = this.options.snapshot();
@@ -396,7 +404,16 @@
 					this.root.querySelector(".tv-empty .tv-focus") ||
 					firstRecent ||
 					this.controls()[0];
-			this.focus(target || fallback);
+				if (passive) {
+					main.scrollTop = scrollTop;
+					const recent = this.root.querySelector(".tv-recent");
+					if (recent) recent.scrollLeft = recentScrollLeft;
+					const sheet = this.root.querySelector(".tv-sheet");
+					if (sheet) sheet.scrollTop = detailScrollTop;
+				}
+				// Data updates must not pull the user's wheel/touch scroll position
+				// back to whichever card happens to have keyboard focus.
+				this.focus(target || fallback, { scroll: !passive || !target });
 		}
 		renderDetail() {
 			const slot = this.root.querySelector(".tv-detail-slot"),
@@ -421,9 +438,10 @@
 					button.getClientRects().length && !button.closest("[inert]"),
 			);
 		}
-		focus(button) {
+			focus(button, { scroll = true } = {}) {
 			if (!button) return;
 			button.focus({ preventScroll: true });
+				if (!scroll) return;
 			const reduced =
 				document.body.dataset.reduceMotion === "true" ||
 				window.matchMedia?.("(prefers-reduced-motion:reduce)").matches;

@@ -44,6 +44,10 @@ jobs:
         run: npm run test:experience
         env:
           ORBIT_QA_OUTPUT: ${{ runner.temp }}/orbit-browser
+      - name: Check cinematic game showcases and narrow layouts
+        run: node tests/visual-showcase.cjs
+        env:
+          ORBIT_SHOWCASE_SCREENSHOT_DIR: ${{ runner.temp }}/orbit-browser
       - name: Check fullscreen controller navigation
         run: npm run test:controller
         env:

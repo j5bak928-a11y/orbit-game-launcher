@@ -296,6 +296,22 @@
 				: '<img class="tv-fallback-dark" src="../../assets/branding/orbit-mark-dark.png" alt="" loading="lazy"/><img class="tv-fallback-light" src="../../assets/branding/orbit-mark-light.png" alt="" loading="lazy"/>';
 			return `<div class="tv-card-art"><div class="tv-card-fallback">${fallback}</div>${image ? `<img class="tv-game-art ${kind === "banner" ? "is-banner" : "is-cover"}" src="${image}" data-tv-art="${kind}" alt="" loading="lazy"/>` : ""}</div>`;
 		}
+		spotlight(game) {
+			if (!game)
+				return `<section class="tv-spotlight tv-spotlight-empty" aria-label="Featured game"><div class="tv-spotlight-copy"><p class="tv-spotlight-kicker"><span class="tv-signal"></span> YOUR COLLECTION STARTS HERE</p><h2>Every game.<br/>One place.</h2><p class="tv-spotlight-description">Bring your games together on the desktop, then take the library to your controller.</p><div class="tv-spotlight-foot"><span class="tv-spotlight-label">READY WHEN YOU ARE</span></div></div><div class="tv-spotlight-visual" aria-hidden="true"><span class="tv-orbit-ring tv-orbit-ring-one"></span><span class="tv-orbit-ring tv-orbit-ring-two"></span><img class="tv-spotlight-mark tv-logo-dark" src="../../assets/branding/orbit-mark-dark.png" alt=""/><img class="tv-spotlight-mark tv-logo-light" src="../../assets/branding/orbit-mark-light.png" alt=""/></div></section>`;
+			const banner = art(game.banner) || art(game.cover);
+			const running = this.snapshot.runningIds?.includes(game.id);
+			const lastPlayed = Number.isFinite(Date.parse(game.last_played_at)) && Date.parse(game.last_played_at) > 0;
+			const tag = this.recent[0]?.id === game.id ? "PICK UP WHERE YOU LEFT OFF" : "IN THE SPOTLIGHT";
+			return `<section class="tv-spotlight" aria-label="Featured game"><div class="tv-spotlight-ambient" aria-hidden="true">${banner ? `<img src="${banner}" alt="" loading="lazy"/>` : ""}</div><div class="tv-spotlight-copy"><p class="tv-spotlight-kicker"><span class="tv-signal"></span> ${tag}</p><h2>${escapeHtml(game.name)}</h2><p class="tv-spotlight-description">${escapeHtml(sources[game.source] || "Your library")} <span aria-hidden="true">·</span> ${escapeHtml(running ? "Playing now" : played(game.total_play_seconds || 0))}</p><div class="tv-spotlight-foot"><span class="tv-spotlight-label">${running ? "SESSION ACTIVE" : lastPlayed ? "CONTINUE YOUR JOURNEY" : "DISCOVER SOMETHING NEW"}</span><span class="tv-spotlight-prompt"><b>A</b><b>↵</b> Open selected game</span></div></div><div class="tv-spotlight-visual" aria-hidden="true"><div class="tv-spotlight-image">${this.artwork(game)}</div></div></section>`;
+		}
+		refreshSpotlight(game) {
+			if (!game || this.spotlightGameId === game.id) return;
+			const hero = this.root?.querySelector(".tv-spotlight");
+			if (!hero) return;
+			this.spotlightGameId = game.id;
+			hero.outerHTML = this.spotlight(game);
+		}
 		card(game, zone) {
 			const running = this.snapshot.runningIds?.includes(game.id);
 			return `<button class="tv-card tv-focus" data-tv-action="open" data-tv-game="${escapeHtml(game.id)}" data-tv-key="${zone}:${escapeHtml(game.id)}" aria-label="Open ${escapeHtml(game.name)}" tabindex="-1">${this.artwork(game)}<span class="tv-card-copy"><strong>${escapeHtml(game.name)}</strong><span>${running ? "● Playing now" : escapeHtml(sources[game.source] || "Game")}<i>${game.favorite ? "♥" : running ? "In session" : played(game.total_play_seconds || 0)}</i></span></span></button>`;
@@ -304,19 +320,19 @@
 			if (!this.active || this.renderFrame !== null) return;
 			this.renderFrame = requestAnimationFrame(() => {
 				this.renderFrame = null;
-					if (this.active) this.render({ passive: true });
+				if (this.active) this.render({ passive: true });
 			});
 		}
-			render({ initial = false, focusLibrary = false, focusKey = "", passive = false } = {}) {
+		render({ initial = false, focusLibrary = false, focusKey = "", passive = false } = {}) {
 			if (!this.root) return;
-				const main = this.root.querySelector(".tv-main");
-				const scrollTop = passive ? main.scrollTop : 0;
-				const recentScrollLeft = passive
-					? this.root.querySelector(".tv-recent")?.scrollLeft || 0
-					: 0;
-				const detailScrollTop = passive
-					? this.root.querySelector(".tv-sheet")?.scrollTop || 0
-					: 0;
+			const main = this.root.querySelector(".tv-main");
+			const scrollTop = passive ? main.scrollTop : 0;
+			const recentScrollLeft = passive
+				? this.root.querySelector(".tv-recent")?.scrollLeft || 0
+				: 0;
+			const detailScrollTop = passive
+				? this.root.querySelector(".tv-sheet")?.scrollTop || 0
+				: 0;
 			const previous =
 				focusKey || document.activeElement?.dataset.tvKey || this.lastKey;
 			this.snapshot = this.options.snapshot();
@@ -343,9 +359,14 @@
 					.slice(0, 8);
 			}
 			const recent = this.root.querySelector(".tv-recent-slot");
-			recent.innerHTML = this.recent.length
-				? `<section aria-label="Continue playing"><div class="tv-section-heading"><h2>Continue playing</h2><span>Pick up where you left off</span></div><div class="tv-recent">${this.recent.map((game) => this.card(game, "recent")).join("")}</div></section>`
+			const selectedId = previous.startsWith("recent:") || previous.startsWith("library:")
+				? previous.slice(previous.indexOf(":") + 1)
 				: "";
+			const spotlightGame = this.byId.get(selectedId) || this.recent[0] || this.all[0];
+			this.spotlightGameId = spotlightGame?.id || "";
+			recent.innerHTML = this.spotlight(spotlightGame) + (this.recent.length
+				? `<section class="tv-continue" aria-label="Continue playing"><div class="tv-section-heading"><h2>Continue playing</h2><span>${this.recent.length} recently played ${this.recent.length === 1 ? "game" : "games"}</span></div><div class="tv-recent">${this.recent.map((game) => this.card(game, "recent")).join("")}</div></section>`
+				: "");
 			const list = this.filter === "favorites" ? this.favorites : this.all,
 				columns = this.columns(),
 				size = columns * 2;
@@ -439,7 +460,7 @@
 			focus(button, { scroll = true } = {}) {
 			if (!button) return;
 			button.focus({ preventScroll: true });
-				if (!scroll) return;
+			if (!scroll) return;
 			const reduced =
 				document.body.dataset.reduceMotion === "true" ||
 				window.matchMedia?.("(prefers-reduced-motion:reduce)").matches;
@@ -455,9 +476,11 @@
 			for (const item of this.root.querySelectorAll(".tv-focus"))
 				item.tabIndex = item === button ? 0 : -1;
 			const game = this.byId.get(button.dataset.tvGame);
-			if (game)
+			if (game) {
+				this.refreshSpotlight(game);
 				this.root.querySelector(".tv-selected").textContent =
 					`${game.name} · ${sources[game.source] || "Game"}`;
+			}
 		}
 		move(direction) {
 			const current = document.activeElement,

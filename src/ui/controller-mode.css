@@ -253,7 +253,10 @@ body[data-theme=light] .tv-fallback-light{display:block;mix-blend-mode:darken;fi
 	inset: 0;
 }
 .tv-game-art.is-banner {
-	object-fit: cover;
+	/* A wide banner is often wider than the 2:1 card frame. Never cut off
+	   artwork or logos just to fill the available rectangle. */
+	object-fit: contain;
+	background: var(--tv-panel);
 }
 .tv-game-art.is-cover {
 	object-fit: contain;

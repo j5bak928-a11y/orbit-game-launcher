@@ -28,6 +28,18 @@ const padButton=async(page,button,held=90,slot=0)=>{
    window.fixture.patch(window.fixture.id(3),{last_played_at:'2026-10-20T12:00:00Z'});
    window.fixture.patch(window.fixture.id(9),{last_played_at:'2026-10-24T12:00:00Z'});
    window.fixture.patch(window.fixture.id(1),{favorite:true});
+   // Real image loads with strongly different aspect ratios. These are
+   // intentionally NOT ordinary storefront dimensions: custom artwork
+   // must remain visible without either cropping or being discarded.
+   const token=index=>`00000000-0000-4000-8000-${String(index).padStart(12,'0')}.png`;
+   const svg=(width,height,color)=>'data:image/svg+xml;charset=utf-8,'+encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="${width}" height="${height}" fill="${color}"/><rect width="12" height="${height}" fill="white"/><rect x="${width-12}" width="12" height="${height}" fill="white"/></svg>`
+   );
+   const images=new Map([[token(991),svg(1200,240,'#215b99')],[token(992),svg(280,280,'#9b4278')],[token(993),svg(700,250,'#529a4f')],[token(994),'data:image/png;base64,not-a-valid-image']]);
+   window.OrbitArtworkUrl=key=>images.get(key)||'';
+   window.fixture.patch(window.fixture.id(9),{banner:token(991)});
+   window.fixture.patch(window.fixture.id(3),{banner:token(992),cover:token(993)});
+   window.fixture.patch(window.fixture.id(1),{banner:token(994)});
    window.controllerTest={launches:0,requests:[],failFullscreen:false,padReads:0,deferEntry:false};
    const set=window.orbit.setFullscreen,launch=window.orbit.launchGame;
    window.orbit.setFullscreen=async enabled=>{window.controllerTest.requests.push(enabled);if(window.controllerTest.failFullscreen)throw Error('Fullscreen fixture failure');if(window.controllerTest.deferEntry&&enabled){window.controllerTest.deferEntry=false;await new Promise(resolve=>window.controllerTest.releaseEntry=resolve);}return set(enabled);};
@@ -43,6 +55,24 @@ const padButton=async(page,button,held=90,slot=0)=>{
   assert(await page.locator('#app').evaluate(node=>node.inert));
   assert.equal(await mode.locator('.tv-recent [data-tv-game]').first().getAttribute('data-tv-game'),'00000000-0000-4000-8000-000000000009');
   assert(await mode.locator('[data-tv-game]').count()<40,'large libraries must keep rendered cards bounded');
+  const fullBanner=mode.locator('.tv-recent [data-tv-game="00000000-0000-4000-8000-000000000009"] .tv-game-art');
+  await fullBanner.evaluate(img=>img.decode());
+  assert.equal(await fullBanner.evaluate(img=>img.naturalWidth/img.naturalHeight),5,'fixture exercises an ultra-wide banner');
+  assert.equal(await fullBanner.evaluate(img=>getComputedStyle(img).objectFit),'contain','wide artwork must fit completely without trimming either side');
+  assert.equal(await fullBanner.evaluate(img=>img.hidden),false);
+  const squareBanner=mode.locator('.tv-recent [data-tv-game="00000000-0000-4000-8000-000000000003"] .tv-game-art');
+  await squareBanner.evaluate(img=>img.decode());
+  assert.equal(await squareBanner.evaluate(img=>img.hidden),false,'square custom banner must not be rejected as wrong aspect');
+  await mode.locator('.tv-recent [data-tv-game="00000000-0000-4000-8000-000000000003"]').click();
+  const wideCover=mode.locator('.tv-sheet .tv-game-art');
+  await wideCover.evaluate(img=>img.decode());
+  assert.equal(await wideCover.evaluate(img=>getComputedStyle(img).objectFit),'contain','detail sheets fit the entire custom cover');
+  assert.equal(await wideCover.evaluate(img=>img.hidden),false,'nonstandard wide custom cover remains usable');
+  await page.keyboard.press('Escape');
+  const brokenBanner=mode.locator('.tv-library [data-tv-game="00000000-0000-4000-8000-000000000001"] .tv-game-art');
+  await brokenBanner.waitFor();
+  await page.waitForFunction(()=>document.querySelector('.tv-library [data-tv-game="00000000-0000-4000-8000-000000000001"] .tv-game-art')?.hidden);
+  assert.equal(await brokenBanner.evaluate(img=>getComputedStyle(img.parentElement.querySelector('.tv-card-fallback')).display),'grid','broken art still uses icon fallback');
   await page.evaluate(()=>window.orbit.saveSettings({theme:'light'}));
   assert(await mode.locator('.tv-fallback-light:visible').count()>0,'light mode needs a visible light-surface fallback mark');
   assert.equal(await mode.locator('.tv-fallback-dark:visible').count(),0);

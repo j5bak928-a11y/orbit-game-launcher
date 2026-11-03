@@ -2152,6 +2152,44 @@ fn activity() -> &'static Mutex<HashMap<String, ActivitySession>> {
     ACTIVITY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn discard_activity_for_direct(
+    sessions: &mut HashMap<String, ActivitySession>,
+    direct_ids: &HashSet<String>,
+) {
+    // A direct child is authoritative over provisional detection. Never
+    // discard an already-registered activity session; its SQLite record
+    // still needs its own completion. The launch reservation prevents
+    // registered activity and direct launch from overlapping.
+    for id in direct_ids {
+        if sessions.get(id).is_some_and(|session| !session.registered) {
+            sessions.remove(id);
+        }
+    }
+}
+
+fn observe_activity_session(sessions: &mut HashMap<String, ActivitySession>, id: &str) -> bool {
+    if let Some(active) = sessions.get_mut(id) {
+        active.misses = 0;
+        active.first_miss = None;
+        // An unsuccessful DB start must be attempted again on the next
+        // observation, not quietly marked tracked only in native memory.
+        return !active.registered;
+    }
+    if sessions.len() >= MAX_SESSIONS {
+        return false;
+    }
+    sessions.insert(
+        id.to_string(),
+        ActivitySession {
+            clock: SessionClock::new(),
+            misses: 0,
+            first_miss: None,
+            registered: false,
+        },
+    );
+    true
+}
+
 pub fn running_games(games: &Value) -> Result<Value, String> {
     let inventory = list_running_executables()?;
     let mut running = match_game_processes(games, &inventory);
@@ -2195,31 +2233,14 @@ pub fn poll_activity(games: &Value) -> Result<Value, String> {
     let mut state = activity()
         .lock()
         .map_err(|_| "Activity tracker unavailable.")?;
+    discard_activity_for_direct(&mut state, &direct_ids);
     let mut started = Vec::new();
     let mut finished = Vec::new();
     for id in found
         .iter()
         .filter(|id| !direct_ids.contains(*id) && eligible.contains(*id))
     {
-        if let Some(active) = state.get_mut(id) {
-            active.misses = 0;
-            active.first_miss = None;
-            // Registration can fail while SQLite is locked. Keep requesting
-            // it until the database actually accepts the session, rather
-            // than silently tracking the whole game without ever saving it.
-            if !active.registered {
-                started.push(id.clone());
-            }
-        } else if state.len() < MAX_SESSIONS {
-            state.insert(
-                id.clone(),
-                ActivitySession {
-                    clock: SessionClock::new(),
-                    misses: 0,
-                    first_miss: None,
-                    registered: false,
-                },
-            );
+        if observe_activity_session(&mut state, id) {
             started.push(id.clone());
         }
     }
@@ -2264,6 +2285,63 @@ pub fn acknowledge_activity_session(id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_launch_cancels_stale_activity_without_emitting_a_finish() {
+        let id = "direct-overrides-activity".to_string();
+        let mut state = HashMap::new();
+        state.insert(
+            id.clone(),
+            ActivitySession {
+                clock: SessionClock::new(),
+                misses: 1,
+                first_miss: Some(10),
+                registered: false,
+            },
+        );
+        discard_activity_for_direct(&mut state, &HashSet::from([id]));
+        assert!(
+            state.is_empty(),
+            "a provisional activity tracker must never outlive a direct launch"
+        );
+    }
+
+    #[test]
+    fn direct_handoff_preserves_registered_activity_records() {
+        let id = "already-registered".to_string();
+        let mut state = HashMap::new();
+        state.insert(
+            id.clone(),
+            ActivitySession {
+                clock: SessionClock::new(),
+                misses: 0,
+                first_miss: None,
+                registered: true,
+            },
+        );
+        discard_activity_for_direct(&mut state, &HashSet::from([id]));
+        assert_eq!(
+            state.len(),
+            1,
+            "persisted activity still needs its own completion"
+        );
+    }
+
+    #[test]
+    fn activity_retries_registration_until_database_acknowledges() {
+        let mut sessions = HashMap::new();
+        assert!(observe_activity_session(&mut sessions, "game"));
+        assert!(
+            observe_activity_session(&mut sessions, "game"),
+            "failed database start needs another attempt"
+        );
+        sessions.get_mut("game").unwrap().registered = true;
+        assert!(
+            !observe_activity_session(&mut sessions, "game"),
+            "registered games do not create duplicate sessions"
+        );
+        assert_eq!(sessions.len(), 1);
+    }
 
     #[test]
     fn vdf_parses_nested_steam_metadata_and_escapes() {

@@ -2152,7 +2152,8 @@ fn match_game_processes(games: &Value, inventory: &[PathBuf]) -> HashSet<String>
         let executable = field(game, "executable");
         if !executable.is_empty()
             && Path::new(executable).is_absolute()
-            && !ignored_executable(Path::new(executable))
+            && (!ignored_executable(Path::new(executable))
+                || ["manual", "folder"].contains(&field(game, "source")))
         {
             exact
                 .entry(normalize_windows_path(executable))
@@ -2187,7 +2188,7 @@ fn match_game_processes(games: &Value, inventory: &[PathBuf]) -> HashSet<String>
     }
     let mut found = HashSet::new();
     for file in inventory {
-        if extension(file) != "exe" || ignored_executable(file) || !file.is_absolute() {
+        if extension(file) != "exe" || !file.is_absolute() {
             continue;
         }
         let key = normalize_windows_path(&file.to_string_lossy());
@@ -2195,6 +2196,9 @@ fn match_game_processes(games: &Value, inventory: &[PathBuf]) -> HashSet<String>
             if ids.len() == 1 {
                 found.extend(ids.iter().cloned());
             }
+            continue;
+        }
+        if ignored_executable(file) {
             continue;
         }
         let mut parent = file.parent();
@@ -2525,6 +2529,18 @@ mod tests {
             HashSet::from(["main".to_string(), "bonus".to_string()])
         );
         assert!(installation_alias_ids(&distinct, "bonus").is_empty());
+        let launcher = PathBuf::from(format!(r"{store}\GameLauncher.exe"));
+        let linked_only = json!([{"id":"linked","name":"Example","source":"manual","executable":launcher.to_string_lossy()}]);
+        assert_eq!(
+            match_game_processes(&linked_only, &[launcher.clone()]),
+            HashSet::from(["linked".to_string()]),
+            "explicitly linked local launchers must remain trackable"
+        );
+        let store_only = json!([games[0].clone()]);
+        assert!(
+            match_game_processes(&store_only, &[launcher]).is_empty(),
+            "persistent helper cannot keep a store folder session running"
+        );
     }
 
     #[test]

@@ -23,17 +23,19 @@ function matchRunningGames(games, executables) {
  for(const game of games){
   if(!game)continue;
   const executable=normalizeWindowsPath(game.executable);
-  if(executable&&path.win32.isAbsolute(executable)&&!SKIP_EXECUTABLE.test(path.win32.basename(executable)))add(exact,executable,game.id);
+  // An explicitly linked local executable is authoritative even if its file
+  // name contains 'Launcher'. Generic folder detection must ignore helpers.
+  if(executable&&path.win32.isAbsolute(executable)&&(!SKIP_EXECUTABLE.test(path.win32.basename(executable))||['manual','folder'].includes(game.source)))add(exact,executable,game.id);
   const folder=normalizeWindowsPath(game.install_path);
   if(!folder||!path.win32.isAbsolute(folder)||!['steam','epic'].includes(game.source))continue;
   if(path.win32.dirname(folder)===folder||/^(?:games|program files(?: \(x86\))?|users|downloads|steamapps|common|epic games)$/i.test(path.win32.basename(folder)))continue;
   add(folders,folder,game.id);
  }
  for (const exe of processes) {
-  if (!path.win32.isAbsolute(exe) || !exe.endsWith('.exe') ||
-      SKIP_EXECUTABLE.test(path.win32.basename(exe))) continue;
+  if (!path.win32.isAbsolute(exe) || !exe.endsWith('.exe')) continue;
   const direct=exact.get(exe);
   if(direct){if(direct.size===1)found.add([...direct][0]);continue;}
+  if(SKIP_EXECUTABLE.test(path.win32.basename(exe)))continue;
   let directory = path.win32.dirname(exe);
   while (true) {
    const folder = directory.replace(/[\\/]+$/, '');

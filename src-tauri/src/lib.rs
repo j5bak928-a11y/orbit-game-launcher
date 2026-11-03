@@ -183,6 +183,26 @@ fn reserve_game_launch<'a>(
     })
 }
 
+// Called while holding the launching reservation mutex. A process snapshot
+// can become stale between Windows enumeration and SQLite registration, so
+// activity must recheck other aliases just before opening its session.
+fn activity_registration_conflicts(
+    state: &OrbitState,
+    watchlist: &Value,
+    id: &str,
+    launching: &HashSet<String>,
+) -> bool {
+    let aliases = native::installation_alias_ids(watchlist, id);
+    let active = state.active.lock().unwrap();
+    let pending = state.pending_finishes.lock().unwrap();
+    launching.contains(id)
+        || active.contains_key(id)
+        || pending.contains_key(id)
+        || aliases.iter().any(|other| {
+            launching.contains(other) || active.contains_key(other) || pending.contains_key(other)
+        })
+}
+
 fn online_artwork_allowed(state: &OrbitState) -> bool {
     // Release SQLite before inspecting running games to avoid lock inversion
     // with the session poller. This check is repeated for every Steam request.
@@ -1126,12 +1146,10 @@ fn poll_sessions(app: &tauri::AppHandle) {
                 for id in started.iter().filter_map(Value::as_str) {
                     // While a direct launch is between its reservation,
                     // native spawn, and database insertion, automatic
-                    // inventory detection must not claim the same game.
+                    // inventory detection must not claim the same game or
+                    // its manually linked/storefront alias.
                     let launching = state.launching.lock().unwrap();
-                    if launching.contains(id) {
-                        continue;
-                    }
-                    if state.active.lock().unwrap().contains_key(id) {
+                    if activity_registration_conflicts(&state, &watchlist, id, &launching) {
                         continue;
                     }
                     let session = state
@@ -1224,6 +1242,62 @@ fn settle_sessions(app: &tauri::AppHandle) {
 #[cfg(test)]
 mod playtime_persistence_tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn stale_activity_snapshot_cannot_register_while_direct_alias_launches() {
+        let folder =
+            std::env::temp_dir().join(format!("orbit-alias-race-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let db = LibraryDatabase::open(&folder.join("library.sqlite")).unwrap();
+        let state = OrbitState {
+            db: Mutex::new(db),
+            revision: AtomicU64::new(0),
+            active: Mutex::new(HashMap::new()),
+            launching: Mutex::new(HashSet::new()),
+            pending_finishes: Mutex::new(HashMap::new()),
+            artwork_pending: AtomicU64::new(0),
+            artwork_busy: AtomicBool::new(false),
+            data_dir: folder.clone(),
+            artwork_dir: folder.join("artwork"),
+        };
+        let watchlist = json!([
+            {"id":"store","name":"Example","source":"steam","install_path":r"D:\SteamLibrary\steamapps\common\Example"},
+            {"id":"direct","name":"Example","source":"manual","executable":r"D:\SteamLibrary\steamapps\common\Example\Bin\Example.exe"},
+            {"id":"bonus","name":"Independent Bonus","source":"manual","executable":r"D:\SteamLibrary\steamapps\common\Example\DLC\Bonus.exe"}
+        ]);
+        let mut launching = HashSet::from(["direct".to_string()]);
+        assert!(activity_registration_conflicts(
+            &state, &watchlist, "store", &launching
+        ));
+        assert!(!activity_registration_conflicts(
+            &state, &watchlist, "bonus", &launching
+        ));
+        launching.clear();
+        state
+            .active
+            .lock()
+            .unwrap()
+            .insert("direct".into(), ("direct-session".into(), Instant::now()));
+        assert!(activity_registration_conflicts(
+            &state, &watchlist, "store", &launching
+        ));
+        state.active.lock().unwrap().clear();
+        state
+            .pending_finishes
+            .lock()
+            .unwrap()
+            .insert("direct".into(), ("direct-session".into(), 20));
+        assert!(activity_registration_conflicts(
+            &state, &watchlist, "store", &launching
+        ));
+        state.pending_finishes.lock().unwrap().clear();
+        assert!(!activity_registration_conflicts(
+            &state, &watchlist, "store", &launching
+        ));
+        drop(state);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
 
     #[test]
     fn failed_finish_is_retained_and_retried_exactly_once_after_sqlite_unlocks() {

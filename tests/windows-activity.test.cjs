@@ -149,6 +149,13 @@ test('a leftover game launcher does not keep recording after the real game exits
  assert.deepEqual(finishes,[60],'helper alone cannot start a fresh background session');
  t.stop();
 });
+test('an explicitly linked local launcher executable remains trackable without using folder fallback',()=>{
+ const executable='C:\\Games\\Example\\GameLauncher.exe';
+ const manual={id:'linked',name:'Example',source:'manual',executable};
+ const storefront={id:'store',name:'Example',source:'steam',install_path:'C:\\Games\\Example'};
+ assert.deepEqual(matchRunningGames([manual],[executable]),['linked']);
+ assert.deepEqual(matchRunningGames([storefront],[executable]),[],'launcher names cannot keep a storefront folder session alive');
+});
 
 test('an executable does not count as a child of its own path', () => {
  const library = [{id:'game',source:'steam',install_path:'C:\\Games\\Test.exe'}];

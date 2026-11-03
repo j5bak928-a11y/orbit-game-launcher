@@ -574,6 +574,11 @@ fn ignored_executable(file: &Path) -> bool {
     if stem.is_empty() {
         return true;
     }
+    // Installer/launcher helpers can remain alive after the real game exits.
+    // Never treat their presence alone as proof of an active game session.
+    if stem == "launchgame" || stem.ends_with("launcher") || stem.ends_with("launcher64") {
+        return true;
+    }
     [
         "unins",
         "uninstall",
@@ -2067,6 +2072,14 @@ fn normalize_windows_path(value: &str) -> String {
         .to_string()
 }
 
+fn activity_title_key(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 fn match_game_processes(games: &Value, inventory: &[PathBuf]) -> HashSet<String> {
     let mut exact: HashMap<String, HashSet<String>> = HashMap::new();
     let mut folders: HashMap<String, HashSet<String>> = HashMap::new();
@@ -2135,6 +2148,34 @@ fn match_game_processes(games: &Value, inventory: &[PathBuf]) -> HashSet<String>
                 break;
             }
             parent = dir.parent();
+        }
+    }
+    // A storefront game and a manually linked executable inside its install
+    // folder can be two library entries for one physical title. The SQLite
+    // guard is per game_id, so select one canonical background owner here.
+    for store in games {
+        let store_id = field(store, "id");
+        if !found.contains(store_id) || !["steam", "epic"].contains(&field(store, "source")) {
+            continue;
+        }
+        let folder = normalize_windows_path(field(store, "install_path"));
+        let name = activity_title_key(field(store, "name"));
+        if folder.is_empty() || name.is_empty() {
+            continue;
+        }
+        let prefix = format!("{folder}\\");
+        for alias in games {
+            let alias_id = field(alias, "id");
+            if !found.contains(alias_id)
+                || !["manual", "folder"].contains(&field(alias, "source"))
+                || activity_title_key(field(alias, "name")) != name
+            {
+                continue;
+            }
+            let executable = normalize_windows_path(field(alias, "executable"));
+            if !executable.is_empty() && executable.starts_with(&prefix) {
+                found.remove(alias_id);
+            }
         }
     }
     found
@@ -2374,10 +2415,39 @@ mod tests {
     fn rejects_installers_and_untrusted_relative_files() {
         assert!(ignored_executable(Path::new("C:/Games/setup.exe")));
         assert!(ignored_executable(Path::new("C:/Games/CrashReporter.exe")));
+        assert!(ignored_executable(Path::new("C:/Games/GameLauncher.exe")));
+        assert!(ignored_executable(Path::new("C:/Games/Launcher64.exe")));
         assert!(!ignored_executable(Path::new("C:/Games/HollowKnight.exe")));
         let root = std::env::temp_dir();
         assert!(contained_file(&root, "../outside.exe").is_none());
         assert!(contained_file(&root, "C:/Windows/System32/cmd.exe").is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn duplicate_storefront_and_manual_alias_have_one_background_owner() {
+        let store = r"D:\SteamLibrary\steamapps\common\Example";
+        let alias = format!(r"{store}\Binaries\Win64\Example-Win64-Shipping.exe");
+        let games = json!([
+            {"id":"steam-A","name":"Example","source":"steam","install_path":store},
+            {"id":"manual-B","name":"Example","source":"manual","executable":alias},
+            {"id":"other","name":"Other Game","source":"steam","install_path":r"D:\SteamLibrary\steamapps\common\Other Game"}
+        ]);
+        let inventory = vec![
+            PathBuf::from(format!(r"{store}\GameBootstrapHelper.exe")),
+            PathBuf::from(&alias),
+            PathBuf::from(r"D:\SteamLibrary\steamapps\common\Other Game\OtherGame.exe"),
+        ];
+        let owners = match_game_processes(&games, &inventory);
+        assert_eq!(
+            owners,
+            HashSet::from(["steam-A".to_string(), "other".to_string()])
+        );
+        let manual_only = json!([games[1].clone()]);
+        assert_eq!(
+            match_game_processes(&manual_only, &[PathBuf::from(alias)]),
+            HashSet::from(["manual-B".to_string()])
+        );
     }
 
     #[test]

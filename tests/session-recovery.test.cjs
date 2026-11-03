@@ -28,3 +28,22 @@ test('uncheckpointed session is not inflated after crash',()=>{
   reopened.close();
  }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
+test('two SQLite clients cannot register overlapping game sessions or credit a finish twice',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'orbit-session-'));
+ try{
+  const file=path.join(dir,'library.sqlite');
+  const first=new LibraryDatabase(file),second=new LibraryDatabase(file);
+  try{
+   const game=first.upsert({name:'Shared background monitor',source:'steam',executable:'C:\\Games\\Shared\\Game.exe'}).game;
+   const session=first.startSession(game.id);
+   assert.throws(()=>second.startSession(game.id),/unfinished playtime session/);
+   first.checkpointSessions([{id:session,seconds:61}]);
+   assert.equal(second.finishSession(session,62),true);
+   assert.equal(first.finishSession(session,999),false);
+   const next=second.startSession(game.id);
+   assert.equal(first.finishSession(next,38),true);
+   assert.equal(second.get(game.id).total_play_seconds,100);
+   assert.equal(second.recoverInterruptedSessions(),0);
+  }finally{second.close();first.close();}
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});

@@ -1,6 +1,7 @@
 'use strict';
+const {performance}=require('node:perf_hooks');
 // Count awake, running time only; wall-clock sleep is not play time.
-function sessionClock(now=Date.now){
+function sessionClock(now=()=>performance.now()){
  const started=now();let pausedAt=null,pausedTotal=0;
  return {
   pause(){if(pausedAt===null)pausedAt=now();},

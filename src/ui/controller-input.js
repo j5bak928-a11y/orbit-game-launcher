@@ -23,12 +23,15 @@
 		reset({ preserveOwner = false } = {}) {
 			this.owner = preserveOwner ? (this.owner ?? null) : null;
 			this.armed = false;
+				this.readyPads = new Set();
 			this.buttons = new Set();
 			this.direction = null;
 			this.nextRepeat = 0;
 		}
 		disconnect(pad) {
-			if (pad && this.owner === padKey(pad)) this.reset();
+				if (!pad) return;
+				if (this.owner === padKey(pad)) this.reset();
+				else this.readyPads.delete(padKey(pad));
 		}
 		read(pads, now) {
 			const available = [];
@@ -39,18 +42,38 @@
 			)
 				if (pads[index]?.connected) available.push(pads[index]);
 			const standard = available.filter((pad) => pad.mapping === "standard");
-			const pad =
-				standard.find((item) => padKey(item) === this.owner) || standard[0];
-			if (!pad) {
+			if (!standard.length) {
 				this.reset();
 				return {
 					actions: [],
 					status: { kind: available.length ? "unsupported" : "none" },
 				};
 			}
-			if (this.owner !== padKey(pad)) {
+			let pad = standard.find((item) => padKey(item) === this.owner);
+			if (this.owner && !pad) {
 				this.reset();
-				this.owner = padKey(pad);
+			}
+			if (!pad) {
+				// A gamepad's index is not its user's preferred controller. Don't
+				// reserve an idle pad on entry: the first controller to make a fresh
+				// input after being observed neutral becomes the owner. Requiring a
+				// neutral frame also prevents held A/B during entry from activating.
+				let chosen = null;
+				const connected = new Set(standard.map(padKey));
+				for (const candidate of standard) {
+					const key = padKey(candidate);
+					const active = Array.from(candidate.buttons || []).some(pressed) ||
+						Math.abs(axis(candidate.axes?.[0])) > 0.35 ||
+						Math.abs(axis(candidate.axes?.[1])) > 0.35;
+					if (!active) this.readyPads.add(key);
+					else if (this.readyPads.has(key) && !chosen) chosen = candidate;
+				}
+				for (const key of this.readyPads) if (!connected.has(key)) this.readyPads.delete(key);
+				if (!chosen) return { actions: [], status: { kind: "connected" } };
+				this.owner = padKey(chosen);
+				this.armed = true;
+				this.readyPads.clear();
+				pad = chosen;
 			}
 			const buttons = new Set();
 			for (

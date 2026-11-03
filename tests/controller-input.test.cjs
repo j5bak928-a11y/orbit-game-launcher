@@ -72,10 +72,41 @@ test('reset after blur cannot replay held select when focus returns',()=>{
 test('suspending input preserves the active controller while requiring its buttons to return to neutral',()=>{
  const input=new GamepadInput(),other=pad(),active=extra=>pad([],[0,0],{id:'Active controller',index:1,...extra});
  input.read([null,active()],0);
+ input.read([null,active({buttons:pad([15]).buttons})],5);
  input.reset({preserveOwner:true});
  assert.deepEqual(input.read([other,active({buttons:pad([0]).buttons})],10).actions,[]);
  input.read([other,active()],20);
  assert.deepEqual(input.read([other,active({buttons:pad([0]).buttons})],30).actions,['select']);
+});
+test('the first controller actually used owns input, not the first idle gamepad',()=>{
+ const input=new GamepadInput();
+ const first=(buttons=[])=>pad(buttons,[0,0],{id:'Idle controller',index:0});
+ const second=(buttons=[])=>pad(buttons,[0,0],{id:'Player controller',index:1});
+ assert.deepEqual(input.read([first(),second()],0).actions,[]);
+ assert.deepEqual(input.read([first(),second([0])],50).actions,['select']);
+ assert.equal(input.owner,'1:Player controller');
+ assert.deepEqual(input.read([first([15]),second()],100).actions,[],'idle controller cannot steal control');
+ assert.deepEqual(input.read([first(),second([15])],150).actions,['right']);
+});
+test('a held button on a second gamepad is ignored until it has returned to neutral',()=>{
+ const input=new GamepadInput();
+ const first=(buttons=[])=>pad(buttons,[0,0],{id:'Idle controller',index:0});
+ const second=(buttons=[])=>pad(buttons,[0,0],{id:'Held controller',index:1});
+ assert.deepEqual(input.read([first(),second([0])],0).actions,[]);
+ assert.deepEqual(input.read([first(),second([0])],500).actions,[]);
+ assert.deepEqual(input.read([first(),second()],600).actions,[]);
+ assert.deepEqual(input.read([first(),second([0])],700).actions,['select']);
+});
+test('disconnecting an unused idle gamepad never releases the active controller',()=>{
+ const input=new GamepadInput();
+ const first=(buttons=[])=>pad(buttons,[0,0],{id:'Player',index:0});
+ const second=(buttons=[])=>pad(buttons,[0,0],{id:'Unused controller',index:1});
+ input.read([first(),second()],0);
+ assert.deepEqual(input.read([first([0]),second()],20).actions,['select']);
+ input.disconnect(second());
+ assert.equal(input.owner,'0:Player');
+ input.read([first()],40);
+ assert.deepEqual(input.read([first([15])],60).actions,['right']);
 });
 test('an owner disconnect followed by a same-slot reconnect cannot replay held input',()=>{
  const input=new GamepadInput(),active=pad();input.read([active],0);

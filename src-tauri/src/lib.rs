@@ -1120,6 +1120,23 @@ pub fn run() {
             // Destroying the UI window is not quitting Orbit. In particular,
             // don't stop process tracking or settle playtime on Destroyed.
             let _ = tray::handle_window_event(window, event);
+            // OS fullscreen exits (for example via a window shortcut) must
+            // close the controller overlay too. Unlike Electron's native
+            // enter/leave-full-screen events, the IPC path alone cannot
+            // observe changes initiated outside setFullscreen.
+            if window.label() == "main"
+                && matches!(
+                    event,
+                    tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Focused(true)
+                )
+            {
+                if let Ok(fullscreen) = window.is_fullscreen() {
+                    emit(
+                        window.app_handle(),
+                        json!({"type":"windowState","fullscreen":fullscreen}),
+                    );
+                }
+            }
         })
         .register_uri_scheme_protocol("orbit-art", move |_context, request| {
             let path = request.uri().path().trim_start_matches('/');

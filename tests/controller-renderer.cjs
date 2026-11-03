@@ -82,6 +82,21 @@ const padButton=async(page,button,held=90,slot=0)=>{
   await page.getByRole('button',{name:'All games',exact:true}).click();
   await page.getByRole('button',{name:'Next page',exact:true}).click();
   await mode.locator('[data-tv-key="library:00000000-0000-4000-8000-000000000012"]').focus();
+  // Passive library updates must not snap the scroll position back to a
+  // focused card when the user is browsing elsewhere using a wheel/touch.
+  await page.setViewportSize({width:910,height:610});
+  await page.waitForFunction(()=>document.querySelector('.controller-shell')?.style.getPropertyValue('--tv-columns')==='2');
+  const passivePosition=await page.evaluate(()=>{
+   const main=document.querySelector('.tv-main');
+   main.scrollTop=main.scrollHeight;
+   return main.scrollTop;
+  });
+  assert(passivePosition>80,'fixture must permit real scrolling');
+  await page.evaluate(()=>window.fixture.patch(window.fixture.id(90),{genre:'Updated in background'}));
+  await page.waitForTimeout(200);
+  const restoredPosition=await page.evaluate(()=>document.querySelector('.tv-main').scrollTop);
+  assert(Math.abs(restoredPosition-passivePosition)<3,'unrelated background updates must not reset controller scroll position');
+  assert.equal(await focused(),'library:00000000-0000-4000-8000-000000000012','data updates preserve the selected controller game');
   await page.setViewportSize({width:910,height:900});
   await page.waitForFunction(()=>document.querySelector('.controller-shell')?.style.getPropertyValue('--tv-columns')==='2');
   assert.equal(await focused(),'library:00000000-0000-4000-8000-000000000012','resize must retain the selected game even when its page changes');
@@ -129,13 +144,14 @@ const padButton=async(page,button,held=90,slot=0)=>{
   await ownerPage.addInitScript(installFixture,{count:6});
   await ownerPage.addInitScript(()=>{
    const controller=index=>({id:'Controller '+index,index,connected:true,mapping:'standard',axes:[0,0],buttons:Array.from({length:17},()=>({pressed:false,value:0,touched:false}))});
-   window.makeController=controller;window.mockPads=[null,controller(1)];Object.defineProperty(navigator,'getGamepads',{value:()=>window.mockPads});
+   window.makeController=controller;window.mockPads=[controller(0),controller(1)];Object.defineProperty(navigator,'getGamepads',{value:()=>window.mockPads});
   });
   await ownerPage.goto(page.url());await ownerPage.bringToFront();await ownerPage.getByRole('button',{name:'Enter controller mode',exact:true}).click();
   await ownerPage.getByText('Controller connected',{exact:true}).waitFor();
-  await ownerPage.evaluate(()=>{window.mockPads[0]=window.makeController(0);window.dispatchEvent(new Event('gamepadconnected'));});
   await padButton(ownerPage,15,120,1);
-  assert.equal(await ownerPage.evaluate(()=>document.activeElement.dataset.tvKey),'library:00000000-0000-4000-8000-000000000002','connecting another controller must not steal ownership');
+  assert.equal(await ownerPage.evaluate(()=>document.activeElement.dataset.tvKey),'library:00000000-0000-4000-8000-000000000002','the first active controller must work even when another idle pad has a lower index');
+  await padButton(ownerPage,15,120,0);
+  assert.equal(await ownerPage.evaluate(()=>document.activeElement.dataset.tvKey),'library:00000000-0000-4000-8000-000000000002','idle controllers cannot steal ownership after selection');
   await ownerPage.evaluate(()=>{window.dispatchEvent(new Event('blur'));window.dispatchEvent(new Event('focus'));});await pause(ownerPage);
   await padButton(ownerPage,15,120,1);
   assert.equal(await ownerPage.evaluate(()=>document.activeElement.dataset.tvKey),'library:00000000-0000-4000-8000-000000000003','returning from a game must preserve the active controller');

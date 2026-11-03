@@ -18,6 +18,9 @@ struct OrbitState {
     db: Mutex<LibraryDatabase>,
     revision: AtomicU64,
     active: Mutex<HashMap<String, (String, Instant)>>,
+    // A process can exit while SQLite is temporarily locked or unavailable.
+    // Keep its final duration until the database has accepted it exactly once.
+    pending_finishes: Mutex<HashMap<String, (String, i64)>>,
     artwork_pending: AtomicU64,
     artwork_busy: AtomicBool,
     data_dir: PathBuf,
@@ -965,7 +968,51 @@ async fn orbit_invoke(
         .map_err(|e| e.to_string())?
 }
 
+fn queue_finished_session(state: &OrbitState, id: &str, seconds: Option<i64>) {
+    let Some((session_id, started)) = state.active.lock().unwrap().remove(id) else {
+        return;
+    };
+    let elapsed = seconds.unwrap_or(started.elapsed().as_secs() as i64);
+    state
+        .pending_finishes
+        .lock()
+        .unwrap()
+        .insert(id.to_string(), (session_id, elapsed));
+}
+
+fn flush_finished_sessions(state: &OrbitState) -> Vec<String> {
+    let pending = state
+        .pending_finishes
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(id, (session, seconds))| (id.clone(), session.clone(), *seconds))
+        .collect::<Vec<_>>();
+    let mut completed = Vec::new();
+    for (game_id, session_id, seconds) in pending {
+        let result = state
+            .db
+            .lock()
+            .map_err(|error| error.to_string())
+            .and_then(|mut db| db.finish_session(&session_id, seconds));
+        match result {
+            Ok(_) => {
+                state.pending_finishes.lock().unwrap().remove(&game_id);
+                completed.push(game_id);
+            }
+            Err(error) => {
+                eprintln!("Orbit: retrying unfinished playtime save: {error}");
+            }
+        }
+    }
+    completed
+}
+
 fn poll_sessions(app: &tauri::AppHandle) {
+    let state = app.state::<OrbitState>();
+    for id in flush_finished_sessions(&state) {
+        notify_game(app, &state, &id, "playtime");
+    }
     let Ok(exits) = native::poll_sessions() else {
         return;
     };
@@ -983,21 +1030,14 @@ fn poll_sessions(app: &tauri::AppHandle) {
     let Some(items) = exits.get("completed").and_then(Value::as_array) else {
         return;
     };
-    let state = app.state::<OrbitState>();
     for item in items {
         let Some(id) = item["game_id"].as_str() else {
             continue;
         };
-        let Some((session_id, start)) = state.active.lock().unwrap().remove(id) else {
-            continue;
-        };
-        let seconds = item["seconds"]
-            .as_i64()
-            .unwrap_or(start.elapsed().as_secs() as i64);
-        if let Ok(mut db) = state.db.lock() {
-            let _ = db.finish_session(&session_id, seconds);
-        }
-        notify_game(app, &state, id, "playtime");
+        queue_finished_session(&state, id, item["seconds"].as_i64());
+    }
+    for id in flush_finished_sessions(&state) {
+        notify_game(app, &state, &id, "playtime");
     }
     // External launcher processes are tracked from verified install paths by
     // the Rust Windows process-inventory implementation.
@@ -1034,6 +1074,7 @@ fn poll_sessions(app: &tauri::AppHandle) {
                             .lock()
                             .unwrap()
                             .insert(id.into(), (session, Instant::now()));
+                        native::acknowledge_activity_session(id);
                         notify_game(app, &state, id, "playtime");
                         let settings = state.db.lock().ok().and_then(|db| db.get_settings().ok());
                         if let Some(settings) = settings {
@@ -1051,16 +1092,10 @@ fn poll_sessions(app: &tauri::AppHandle) {
                     let Some(id) = item["game_id"].as_str() else {
                         continue;
                     };
-                    let Some((session_id, start)) = state.active.lock().unwrap().remove(id) else {
-                        continue;
-                    };
-                    let seconds = item["seconds"]
-                        .as_i64()
-                        .unwrap_or(start.elapsed().as_secs() as i64);
-                    if let Ok(mut db) = state.db.lock() {
-                        let _ = db.finish_session(&session_id, seconds);
-                    }
-                    notify_game(app, &state, id, "playtime");
+                    queue_finished_session(&state, id, item["seconds"].as_i64());
+                }
+                for id in flush_finished_sessions(&state) {
+                    notify_game(app, &state, &id, "playtime");
                 }
             }
         }
@@ -1100,15 +1135,74 @@ fn settle_sessions(app: &tauri::AppHandle) {
         .lock()
         .map(|mut active| active.drain().collect())
         .unwrap_or_default();
-    if let Ok(mut db) = state.db.lock() {
-        for (id, (session_id, started)) in ended {
-            let seconds = elapsed
-                .get(&id)
-                .copied()
-                .unwrap_or(started.elapsed().as_secs() as i64);
-            let _ = db.finish_session(&session_id, seconds);
-        }
-    };
+    for (id, (session_id, started)) in ended {
+        let seconds = elapsed
+            .get(&id)
+            .copied()
+            .unwrap_or(started.elapsed().as_secs() as i64);
+        state
+            .pending_finishes
+            .lock()
+            .unwrap()
+            .insert(id, (session_id, seconds));
+    }
+    flush_finished_sessions(&state);
+}
+
+#[cfg(test)]
+mod playtime_persistence_tests {
+    use super::*;
+
+    #[test]
+    fn failed_finish_is_retained_and_retried_exactly_once_after_sqlite_unlocks() {
+        let folder = std::env::temp_dir().join(format!("orbit-dedup-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("library.sqlite");
+        let mut db = LibraryDatabase::open(&file).unwrap();
+        let game = db.upsert(&json!({"name":"Retryable session"})).unwrap()["game"].clone();
+        let id = game["id"].as_str().unwrap().to_string();
+        let session = db.start_session(&id).unwrap();
+        let state = OrbitState {
+            db: Mutex::new(db),
+            revision: AtomicU64::new(0),
+            active: Mutex::new(HashMap::new()),
+            pending_finishes: Mutex::new(HashMap::new()),
+            artwork_pending: AtomicU64::new(0),
+            artwork_busy: AtomicBool::new(false),
+            data_dir: folder.clone(),
+            artwork_dir: folder.join("artwork"),
+        };
+        state
+            .active
+            .lock()
+            .unwrap()
+            .insert(id.clone(), (session, Instant::now()));
+        queue_finished_session(&state, &id, Some(120));
+        assert!(state.active.lock().unwrap().is_empty());
+        assert_eq!(state.pending_finishes.lock().unwrap().len(), 1);
+
+        let locked = rusqlite::Connection::open(&file).unwrap();
+        locked.execute_batch("BEGIN IMMEDIATE").unwrap();
+        assert!(flush_finished_sessions(&state).is_empty());
+        assert_eq!(state.pending_finishes.lock().unwrap().len(), 1);
+        locked.execute_batch("ROLLBACK").unwrap();
+
+        assert_eq!(flush_finished_sessions(&state), vec![id.clone()]);
+        assert_eq!(
+            state.db.lock().unwrap().get(&id).unwrap()["total_play_seconds"],
+            120
+        );
+        assert!(flush_finished_sessions(&state).is_empty());
+        assert!(state.pending_finishes.lock().unwrap().is_empty());
+        assert_eq!(
+            state.db.lock().unwrap().get(&id).unwrap()["total_play_seconds"],
+            120
+        );
+
+        drop(locked);
+        drop(state);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
 }
 
 pub fn run() {
@@ -1205,6 +1299,7 @@ pub fn run() {
                 db: Mutex::new(db),
                 revision: AtomicU64::new(0),
                 active: Mutex::new(HashMap::new()),
+                pending_finishes: Mutex::new(HashMap::new()),
                 artwork_pending: AtomicU64::new(0),
                 artwork_busy: AtomicBool::new(false),
                 data_dir,

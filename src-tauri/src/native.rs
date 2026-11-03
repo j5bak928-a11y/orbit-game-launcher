@@ -2144,6 +2144,7 @@ struct ActivitySession {
     clock: SessionClock,
     misses: u8,
     first_miss: Option<u64>,
+    registered: bool,
 }
 
 static ACTIVITY: OnceLock<Mutex<HashMap<String, ActivitySession>>> = OnceLock::new();
@@ -2203,6 +2204,12 @@ pub fn poll_activity(games: &Value) -> Result<Value, String> {
         if let Some(active) = state.get_mut(id) {
             active.misses = 0;
             active.first_miss = None;
+            // Registration can fail while SQLite is locked. Keep requesting
+            // it until the database actually accepts the session, rather
+            // than silently tracking the whole game without ever saving it.
+            if !active.registered {
+                started.push(id.clone());
+            }
         } else if state.len() < MAX_SESSIONS {
             state.insert(
                 id.clone(),
@@ -2210,6 +2217,7 @@ pub fn poll_activity(games: &Value) -> Result<Value, String> {
                     clock: SessionClock::new(),
                     misses: 0,
                     first_miss: None,
+                    registered: false,
                 },
             );
             started.push(id.clone());
@@ -2241,6 +2249,16 @@ pub fn poll_activity(games: &Value) -> Result<Value, String> {
     Ok(
         json!({"started":started,"finished":finished,"runningIds":running,"checkpoints":checkpoints}),
     )
+}
+
+/// The native tracker must only consider a session registered after its
+/// corresponding SQLite row has been durably created.
+pub fn acknowledge_activity_session(id: &str) {
+    if let Ok(mut sessions) = activity().lock() {
+        if let Some(session) = sessions.get_mut(id) {
+            session.registered = true;
+        }
+    }
 }
 
 #[cfg(test)]

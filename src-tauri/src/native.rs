@@ -574,6 +574,11 @@ fn ignored_executable(file: &Path) -> bool {
     if stem.is_empty() {
         return true;
     }
+    // Installer/launcher helpers can remain alive after the real game exits.
+    // Never treat their presence alone as proof of an active game session.
+    if stem == "launchgame" || stem.ends_with("launcher") || stem.ends_with("launcher64") {
+        return true;
+    }
     [
         "unins",
         "uninstall",
@@ -2067,6 +2072,72 @@ fn normalize_windows_path(value: &str) -> String {
         .to_string()
 }
 
+fn activity_title_key(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn store_and_manual_alias(store: &Value, alias: &Value) -> bool {
+    if !["steam", "epic"].contains(&field(store, "source"))
+        || !["manual", "folder"].contains(&field(alias, "source"))
+        || !Path::new(field(store, "install_path")).is_absolute()
+    {
+        return false;
+    }
+    let folder = normalize_windows_path(field(store, "install_path"));
+    let executable = normalize_windows_path(field(alias, "executable"));
+    let title = activity_title_key(field(store, "name"));
+    !folder.is_empty()
+        && !executable.is_empty()
+        && !title.is_empty()
+        && title == activity_title_key(field(alias, "name"))
+        && executable.starts_with(&format!("{folder}\\"))
+}
+
+pub fn installation_alias_ids(games: &Value, requested_id: &str) -> HashSet<String> {
+    let Some(entries) = games.as_array() else {
+        return HashSet::new();
+    };
+    let Some(requested) = entries
+        .iter()
+        .find(|game| field(game, "id") == requested_id)
+    else {
+        return HashSet::new();
+    };
+    entries
+        .iter()
+        .filter(|game| {
+            field(game, "id") != requested_id
+                && (store_and_manual_alias(game, requested)
+                    || store_and_manual_alias(requested, game))
+        })
+        .map(|game| field(game, "id").to_owned())
+        .collect()
+}
+
+fn suppress_store_for_direct_alias(
+    games: &Value,
+    found: &mut HashSet<String>,
+    direct: &HashSet<String>,
+) {
+    let Some(entries) = games.as_array() else {
+        return;
+    };
+    for store in entries {
+        let id = field(store, "id");
+        if found.contains(id)
+            && entries.iter().any(|alias| {
+                direct.contains(field(alias, "id")) && store_and_manual_alias(store, alias)
+            })
+        {
+            found.remove(id);
+        }
+    }
+}
+
 fn match_game_processes(games: &Value, inventory: &[PathBuf]) -> HashSet<String> {
     let mut exact: HashMap<String, HashSet<String>> = HashMap::new();
     let mut folders: HashMap<String, HashSet<String>> = HashMap::new();
@@ -2081,7 +2152,8 @@ fn match_game_processes(games: &Value, inventory: &[PathBuf]) -> HashSet<String>
         let executable = field(game, "executable");
         if !executable.is_empty()
             && Path::new(executable).is_absolute()
-            && !ignored_executable(Path::new(executable))
+            && (!ignored_executable(Path::new(executable))
+                || ["manual", "folder"].contains(&field(game, "source")))
         {
             exact
                 .entry(normalize_windows_path(executable))
@@ -2116,7 +2188,7 @@ fn match_game_processes(games: &Value, inventory: &[PathBuf]) -> HashSet<String>
     }
     let mut found = HashSet::new();
     for file in inventory {
-        if extension(file) != "exe" || ignored_executable(file) || !file.is_absolute() {
+        if extension(file) != "exe" || !file.is_absolute() {
             continue;
         }
         let key = normalize_windows_path(&file.to_string_lossy());
@@ -2124,6 +2196,9 @@ fn match_game_processes(games: &Value, inventory: &[PathBuf]) -> HashSet<String>
             if ids.len() == 1 {
                 found.extend(ids.iter().cloned());
             }
+            continue;
+        }
+        if ignored_executable(file) {
             continue;
         }
         let mut parent = file.parent();
@@ -2135,6 +2210,20 @@ fn match_game_processes(games: &Value, inventory: &[PathBuf]) -> HashSet<String>
                 break;
             }
             parent = dir.parent();
+        }
+    }
+    // Only confidently identical titles coalesce. A separate game or DLC can
+    // legitimately be installed beneath the same root, and must retain time.
+    for store in games {
+        let store_id = field(store, "id");
+        if !found.contains(store_id) || !["steam", "epic"].contains(&field(store, "source")) {
+            continue;
+        }
+        for alias in games {
+            let alias_id = field(alias, "id");
+            if found.contains(alias_id) && store_and_manual_alias(store, alias) {
+                found.remove(alias_id);
+            }
         }
     }
     found
@@ -2206,6 +2295,8 @@ pub fn running_games(games: &Value) -> Result<Value, String> {
             running.insert(id.clone());
         }
     }
+    let direct_ids = direct.keys().cloned().collect::<HashSet<_>>();
+    suppress_store_for_direct_alias(games, &mut running, &direct_ids);
     let mut sorted = running.into_iter().collect::<Vec<_>>();
     sorted.sort();
     Ok(json!(sorted))
@@ -2216,13 +2307,14 @@ pub fn running_games(games: &Value) -> Result<Value, String> {
 /// `started` and `finished` belong to the DB integration layer.
 pub fn poll_activity(games: &Value) -> Result<Value, String> {
     let inventory = list_running_executables()?;
-    let found = match_game_processes(games, &inventory);
+    let mut found = match_game_processes(games, &inventory);
     let direct_ids = direct()
         .lock()
         .map_err(|_| "Process tracker unavailable.")?
         .keys()
         .cloned()
         .collect::<HashSet<_>>();
+    suppress_store_for_direct_alias(games, &mut found, &direct_ids);
     let eligible = games
         .as_array()
         .ok_or("Expected a game list.")?
@@ -2374,10 +2466,92 @@ mod tests {
     fn rejects_installers_and_untrusted_relative_files() {
         assert!(ignored_executable(Path::new("C:/Games/setup.exe")));
         assert!(ignored_executable(Path::new("C:/Games/CrashReporter.exe")));
+        assert!(ignored_executable(Path::new("C:/Games/GameLauncher.exe")));
+        assert!(ignored_executable(Path::new("C:/Games/Launcher64.exe")));
         assert!(!ignored_executable(Path::new("C:/Games/HollowKnight.exe")));
         let root = std::env::temp_dir();
         assert!(contained_file(&root, "../outside.exe").is_none());
         assert!(contained_file(&root, "C:/Windows/System32/cmd.exe").is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn duplicate_storefront_and_manual_alias_have_one_background_owner() {
+        let store = r"D:\SteamLibrary\steamapps\common\Example";
+        let alias = format!(r"{store}\Binaries\Win64\Example-Win64-Shipping.exe");
+        let games = json!([
+            {"id":"steam-A","name":"Example","source":"steam","install_path":store},
+            {"id":"manual-B","name":"Example","source":"manual","executable":alias},
+            {"id":"other","name":"Other Game","source":"steam","install_path":r"D:\SteamLibrary\steamapps\common\Other Game"}
+        ]);
+        let inventory = vec![
+            PathBuf::from(format!(r"{store}\ExampleClient.exe")),
+            PathBuf::from(&alias),
+            PathBuf::from(r"D:\SteamLibrary\steamapps\common\Other Game\OtherGame.exe"),
+        ];
+        let owners = match_game_processes(&games, &inventory);
+        assert_eq!(
+            owners,
+            HashSet::from(["steam-A".to_string(), "other".to_string()])
+        );
+        // A helper is not a real game process: when only the helper and
+        // explicitly linked shipping executable run, the manual record owns
+        // the session instead of inventing a store-folder session.
+        let helper_only = vec![
+            PathBuf::from(format!(r"{store}\GameBootstrapHelper.exe")),
+            PathBuf::from(&alias),
+        ];
+        assert_eq!(
+            match_game_processes(&games, &helper_only),
+            HashSet::from(["manual-B".to_string()])
+        );
+        let manual_only = json!([games[1].clone()]);
+        assert_eq!(
+            match_game_processes(&manual_only, &[PathBuf::from(alias)]),
+            HashSet::from(["manual-B".to_string()])
+        );
+        let mut automatic = HashSet::from(["steam-A".to_string()]);
+        suppress_store_for_direct_alias(
+            &games,
+            &mut automatic,
+            &HashSet::from(["manual-B".to_string()]),
+        );
+        assert!(
+            automatic.is_empty(),
+            "direct manual launch must suppress the store background record"
+        );
+        assert_eq!(
+            installation_alias_ids(&games, "manual-B"),
+            HashSet::from(["steam-A".to_string()])
+        );
+        let distinct = json!([
+            {"id":"main","name":"Main Game","source":"steam","install_path":store},
+            {"id":"bonus","name":"Independent Bonus Game","source":"manual","executable":format!(r"{store}\DLC\BonusGame.exe")}
+        ]);
+        let matches = match_game_processes(
+            &distinct,
+            &[
+                PathBuf::from(format!(r"{store}\Main.exe")),
+                PathBuf::from(format!(r"{store}\DLC\BonusGame.exe")),
+            ],
+        );
+        assert_eq!(
+            matches,
+            HashSet::from(["main".to_string(), "bonus".to_string()])
+        );
+        assert!(installation_alias_ids(&distinct, "bonus").is_empty());
+        let launcher = PathBuf::from(format!(r"{store}\GameLauncher.exe"));
+        let linked_only = json!([{"id":"linked","name":"Example","source":"manual","executable":launcher.to_string_lossy()}]);
+        assert_eq!(
+            match_game_processes(&linked_only, &[launcher.clone()]),
+            HashSet::from(["linked".to_string()]),
+            "explicitly linked local launchers must remain trackable"
+        );
+        let store_only = json!([games[0].clone()]);
+        assert!(
+            match_game_processes(&store_only, &[launcher]).is_empty(),
+            "persistent helper cannot keep a store folder session running"
+        );
     }
 
     #[test]

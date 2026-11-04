@@ -110,7 +110,7 @@ test('tracking projection includes identifiable games and omits unrelated metada
  const linked=db.upsert({name:'Linked',source:'manual',executable:'D:\\Games\\Linked\\game.exe',launch_uri:'steam://rungameid/4'}).game;
  const rows=db.listActivityGames();
  assert.deepEqual(rows.map(g=>g.id).sort(),[steam.id,epic.id,linked.id].sort());
- for(const row of rows)assert.deepEqual(Object.keys(row).sort(),['executable','id','install_path','launch_uri','source']);
+ for(const row of rows)assert.deepEqual(Object.keys(row).sort(),['executable','id','install_path','launch_uri','name','source']);
  db.remove(linked.id);
  db.update(epic.id,{install_path:''});
  assert.deepEqual(db.listActivityGames().map(g=>g.id),[steam.id]);

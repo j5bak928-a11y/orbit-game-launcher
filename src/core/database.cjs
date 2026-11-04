@@ -118,7 +118,7 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
   }
   list(sort='name'){const order=Object.hasOwn(SORTS,sort)?SORTS[sort]:SORTS.name;return this.db.prepare(`SELECT ${COLUMNS.join(',')} FROM games ORDER BY ${order}`).all().map(deserialize);}
   listActivityGames(){
-    this.activityList ??= this.db.prepare("SELECT id,source,install_path,executable,launch_uri FROM games WHERE executable != '' OR (install_path != '' AND (source IN ('steam','epic') OR launch_uri != ''))");
+    this.activityList ??= this.db.prepare("SELECT id,name,source,install_path,executable,launch_uri FROM games WHERE executable != '' OR (install_path != '' AND (source IN ('steam','epic') OR launch_uri != ''))");
     return this.activityList.all();
   }
   get(id){return deserialize(this.db.prepare(`SELECT ${COLUMNS.join(',')} FROM games WHERE id=?`).get(id));}
@@ -185,7 +185,22 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
   }
   toggleFavorite(id){const old=this.get(id);if(!old)throw Error('Game not found.');return this.update(id,{favorite:!old.favorite});}
   remove(id){const result=this.db.prepare('DELETE FROM games WHERE id=?').run(id);return result.changes>0;}
-  startSession(gameId){if(!this.get(gameId))throw Error('Game not found.');const id=crypto.randomUUID();this.db.prepare('INSERT INTO sessions(id,game_id,started_at) VALUES (?,?,?)').run(id,gameId,now());this.db.prepare('UPDATE games SET last_played_at=?, updated_at=? WHERE id=?').run(now(),now(),gameId);return id;}
+  startSession(gameId){
+    // The guard must be checked under SQLite's writer lock. Two Orbit processes
+    // (or a tracker restarting after a failed finish) must never create two
+    // unfinished sessions for the same game.
+    this.db.exec('BEGIN IMMEDIATE');
+    try{
+      if(!this.db.prepare('SELECT 1 FROM games WHERE id=?').get(gameId))throw Error('Game not found.');
+      if(this.db.prepare('SELECT 1 FROM sessions WHERE game_id=? AND finished_at IS NULL LIMIT 1').get(gameId))
+        throw Error('This game already has an unfinished playtime session.');
+      const id=crypto.randomUUID(),date=now();
+      this.db.prepare('INSERT INTO sessions(id,game_id,started_at) VALUES (?,?,?)').run(id,gameId,date);
+      this.db.prepare('UPDATE games SET last_played_at=?,updated_at=? WHERE id=?').run(date,date,gameId);
+      this.db.exec('COMMIT');
+      return id;
+    }catch(error){this.db.exec('ROLLBACK');throw error;}
+  }
   checkpointSessions(entries){
     if(!Array.isArray(entries)||!entries.length)return 0;
     const update=this.db.prepare('UPDATE sessions SET heartbeat_seconds=?,last_seen_at=? WHERE id=? AND finished_at IS NULL AND heartbeat_seconds<=?');
@@ -214,8 +229,17 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
       this.db.exec('COMMIT');return recovered;
     }catch(e){this.db.exec('ROLLBACK');throw e}
   }
-  finishSession(id,seconds){const session=this.db.prepare('SELECT * FROM sessions WHERE id=?').get(id);if(!session||session.finished_at)return false;seconds=Math.max(0,Math.min(7*24*3600,Math.floor(Number(seconds)||0)));
-    this.db.exec('BEGIN');try{this.db.prepare('UPDATE sessions SET finished_at=?, seconds=? WHERE id=?').run(now(),seconds,id);this.db.prepare('UPDATE games SET total_play_seconds=total_play_seconds+?,updated_at=? WHERE id=?').run(seconds,now(),session.game_id);this.db.exec('COMMIT');return true}catch(e){this.db.exec('ROLLBACK');throw e}
+  finishSession(id,seconds){
+    seconds=Math.max(0,Math.min(7*24*3600,Math.floor(Number(seconds)||0)));
+    this.db.exec('BEGIN IMMEDIATE');
+    try{
+      const session=this.db.prepare('SELECT game_id FROM sessions WHERE id=? AND finished_at IS NULL').get(id);
+      if(!session){this.db.exec('COMMIT');return false;}
+      const date=now();
+      const done=this.db.prepare('UPDATE sessions SET finished_at=?,seconds=? WHERE id=? AND finished_at IS NULL').run(date,seconds,id);
+      if(done.changes===1)this.db.prepare('UPDATE games SET total_play_seconds=total_play_seconds+?,updated_at=? WHERE id=?').run(seconds,date,session.game_id);
+      this.db.exec('COMMIT');return done.changes===1;
+    }catch(error){this.db.exec('ROLLBACK');throw error;}
   }
 }
 module.exports={LibraryDatabase,cleanGame,duplicateKey,normalizedPath,DEFAULT_SETTINGS};

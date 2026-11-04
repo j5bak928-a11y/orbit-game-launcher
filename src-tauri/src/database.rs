@@ -632,17 +632,18 @@ impl LibraryDatabase {
 
     pub fn list_activity_games(&self) -> DbResult<Value> {
         let mut stmt = self.conn.prepare(
-            "SELECT id,source,install_path,executable,launch_uri FROM games
+            "SELECT id,name,source,install_path,executable,launch_uri FROM games
              WHERE executable != '' OR (install_path != '' AND (source IN ('steam','epic') OR launch_uri != ''))"
         ).map_err(error)?;
         let entries = stmt
             .query_map([], |row| {
                 Ok(json!({
                     "id": row.get::<_, String>(0)?,
-                    "source": row.get::<_, String>(1)?,
-                    "install_path": row.get::<_, String>(2)?,
-                    "executable": row.get::<_, String>(3)?,
-                    "launch_uri": row.get::<_, String>(4)?
+                    "name": row.get::<_, String>(1)?,
+                    "source": row.get::<_, String>(2)?,
+                    "install_path": row.get::<_, String>(3)?,
+                    "executable": row.get::<_, String>(4)?,
+                    "launch_uri": row.get::<_, String>(5)?
                 }))
             })
             .map_err(error)?

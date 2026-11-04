@@ -28,7 +28,7 @@ The main desktop application uses **Electron**. A separate, **experimental Rust 
 
 | | Electron desktop | Rust / Tauri preview |
 | --- | --- | --- |
-| Version in this repository | **0.2.6** | **0.2.4** |
+| Version in this repository | **0.2.6** | **0.2.5** |
 | Status | Main desktop implementation | Experimental Windows preview |
 | UI | Orbit HTML/CSS/JavaScript | The same interface, hosted in WebView2 |
 | Backend | Node.js/Electron, with a native Windows process helper | Rust for library, discovery, tracking, artwork, and backups |

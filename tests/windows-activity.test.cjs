@@ -15,6 +15,37 @@ test('matches exact executables for linked games without treating shared folders
  const list=[{id:'manual',source:'manual',executable:'C:\\Games\\My Game.exe',install_path:''},{id:'other',source:'gog',executable:'C:\\Games\\Other.exe',install_path:'C:\\Games'}];
  assert.deepEqual(matchRunningGames(list,['c:\\games\\my game.exe']),['manual']);
 });
+test('one installed title with a manual executable alias has one background owner',()=>{
+ const store='D:\\SteamLibrary\\steamapps\\common\\Example';
+ const alias=`${store}\\Binaries\\Win64\\Example-Win64-Shipping.exe`;
+ const entries=[
+  {id:'steam-A',name:'Example',source:'steam',install_path:store},
+  {id:'manual-B',name:'Example',source:'manual',executable:alias},
+  {id:'separate',name:'Other Game',source:'steam',install_path:'D:\\SteamLibrary\\steamapps\\common\\Other Game'}
+ ];
+ assert.deepEqual(matchRunningGames(entries,[`${store}\\GameBootstrapHelper.exe`,alias]),['steam-A']);
+ assert.deepEqual(matchRunningGames(entries,[`${store}\\GameBootstrapHelper.exe`,alias,'D:\\SteamLibrary\\steamapps\\common\\Other Game\\OtherGame.exe']),['steam-A','separate']);
+ assert.deepEqual(matchRunningGames(entries.slice(1,2),[alias]),['manual-B'],'without the storefront owner the manual game still tracks');
+});
+test('direct manual launch owns the installation instead of competing with store background detection',async()=>{
+ const folder='C:\\SteamLibrary\\steamapps\\common\\Example';
+ const games=[{id:'steam',name:'Example',source:'steam',install_path:folder},{id:'manual',name:'Example',source:'manual',executable:`${folder}\\Example.exe`}];
+ let direct=true;const started=[];
+ const t=new WindowsActivityTracker({listGames:()=>games,isDirectSession:id=>direct&&id==='manual',
+  start:id=>{started.push(id);return `session-${id}`;},finish:()=>true,
+  enumerate:async()=>[`${folder}\\GameBootstrapHelper.exe`,`${folder}\\Example.exe`]
+ });
+ await t.poll();assert.deepEqual(started,[],'active direct manual session suppresses store background owner');
+ direct=false;await t.poll();assert.deepEqual(started,['steam']);
+ assert.equal(t.isRunning('manual'),true,'manual alias launch is blocked while store session is active');
+ t.stop();
+});
+test('independent games in one installation tree retain separate playtime owners',()=>{
+ const root='D:\\SteamLibrary\\steamapps\\common\\Example';
+ const list=[{id:'main',name:'Main Game',source:'steam',install_path:root},
+  {id:'bonus',name:'Independent Bonus Game',source:'manual',executable:`${root}\\DLC\\BonusGame.exe`}];
+ assert.deepEqual(matchRunningGames(list,[`${root}\\Main.exe`,`${root}\\DLC\\BonusGame.exe`]),['main','bonus']);
+});
 test('matches a linked game launched by a wrapper using its dedicated installation folder',()=>{
  const list=[{id:'epic',source:'epic',launch_uri:'com.epicgames.launcher://apps/1',executable:'D:\\Games\\Example\\Launcher.exe',install_path:'D:\\Games\\Example'}];
  assert.deepEqual(matchRunningGames(list,['D:\\Games\\Example\\Bin\\Game.exe']),['epic']);
@@ -43,6 +74,28 @@ test('a monitored session starts once and finishes after two misses',async()=>{
  await tracker.poll();await tracker.poll();assert.deepEqual(starts,['fc27']);
  clock+=3600000;running=false;await tracker.poll();assert.deepEqual(ends,[]);
  await tracker.poll();assert.deepEqual(ends,[['fc27',3600]]);tracker.stop();
+});
+test('failed background finish is retried before a new session may be started',async()=>{
+ let clock=1000,running=true,failed=true;
+ const starts=[],finishes=[],errors=[];
+ const tracker=new WindowsActivityTracker({
+  listGames:()=>games,isDirectSession:()=>false,now:()=>clock,
+  start:id=>{starts.push(id);return `session-${starts.length}`;},
+  finish:(id,seconds)=>{if(failed)throw Error('database busy');finishes.push([id,seconds]);return true;},
+  enumerate:async()=>running?['D:\\SteamLibrary\\steamapps\\common\\EA SPORTS FC 27\\FC27.exe']:[],
+  onError:error=>errors.push(error.message)
+ });
+ await tracker.poll();clock=61000;running=false;
+ await tracker.poll();await tracker.poll();
+ assert.equal(starts.length,1);
+ assert.equal(tracker.isRunning('fc27'),true,'unsaved finish blocks new session ownership');
+ running=true;clock=76000;await tracker.poll();
+ assert.equal(starts.length,1,'a busy database must not create an overlapping session');
+ assert.deepEqual(finishes,[]);assert(errors.some(message=>message.includes('retrying')));
+ failed=false;await tracker.poll();
+ assert.deepEqual(finishes,[['session-1',60]]);
+ assert.deepEqual(starts,['fc27','fc27']);
+ tracker.stop();
 });
 
 
@@ -77,6 +130,31 @@ test('only actual game executables mark containing folders as running', () => {
  assert.deepEqual(matchRunningGames(library, [...ignored, 'C:\\Games\\Test2\\Game.exe']), []);
  assert.deepEqual(matchRunningGames(library, [...ignored, 'C:\\Games\\Test\\Bin\\Game.exe']), ['game']);
  assert.deepEqual(matchRunningGames(library, []), []);
+});
+test('a leftover game launcher does not keep recording after the real game exits',async()=>{
+ const game={id:'game',source:'steam',install_path:'C:\\Games\\OrbitExample'};
+ const helper='C:\\Games\\OrbitExample\\GameLauncher.exe';
+ const actual='C:\\Games\\OrbitExample\\Game.exe';
+ assert.deepEqual(matchRunningGames([game],[helper]),[]);
+ let clock=1000,files=[helper,actual];const finishes=[];
+ const t=new WindowsActivityTracker({
+  listGames:()=>[game],isDirectSession:()=>false,
+  start:()=> 'session-1',finish:(_id,seconds)=>finishes.push(seconds),
+  enumerate:async()=>files,now:()=>clock
+ });
+ await t.poll();files=[helper];clock=61000;
+ await t.poll();clock=76000;await t.poll();
+ assert.deepEqual(finishes,[60],'stale launcher must not extend playtime');
+ for(let i=0;i<3;i++)await t.poll();
+ assert.deepEqual(finishes,[60],'helper alone cannot start a fresh background session');
+ t.stop();
+});
+test('an explicitly linked local launcher executable remains trackable without using folder fallback',()=>{
+ const executable='C:\\Games\\Example\\GameLauncher.exe';
+ const manual={id:'linked',name:'Example',source:'manual',executable};
+ const storefront={id:'store',name:'Example',source:'steam',install_path:'C:\\Games\\Example'};
+ assert.deepEqual(matchRunningGames([manual],[executable]),['linked']);
+ assert.deepEqual(matchRunningGames([storefront],[executable]),[],'launcher names cannot keep a storefront folder session alive');
 });
 
 test('an executable does not count as a child of its own path', () => {

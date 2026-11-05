@@ -143,6 +143,7 @@ npm run lint
 npm run test:controller
 npm run test:renderer
 npm run test:experience
+npm run test:cinematic
 npm run bench
 ```
 

@@ -61,6 +61,8 @@ jobs:
       - name: Upload benchmark evidence
         if: always()
         uses: actions/upload-artifact@v4
+        id: benchmark_artifact
+        continue-on-error: true
         with:
           name: Orbit-Benchmarks-${{ github.sha }}
           path: reports/native-benchmarks/
@@ -68,6 +70,8 @@ jobs:
           retention-days: 14
       - name: Upload review builds
         uses: actions/upload-artifact@v4
+        id: tauri_build_artifact
+        continue-on-error: true
         with:
           name: Orbit-Tauri-Windows-${{ github.sha }}
           path: |
@@ -76,3 +80,8 @@ jobs:
             src-tauri/target/release/bundle/msi/*.msi
           if-no-files-found: error
           retention-days: 14
+      - name: Report unavailable native build downloads
+        if: steps.tauri_build_artifact.outcome == 'failure' || steps.benchmark_artifact.outcome == 'failure'
+        shell: pwsh
+        run: |
+          'Native compilation/tests/build result is in preceding steps, but GitHub Actions artifact upload failed. Review installer hashes and retrieve binaries only after storage quota is available; no successful download is claimed.' >> $env:GITHUB_STEP_SUMMARY

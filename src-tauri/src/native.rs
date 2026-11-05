@@ -1312,6 +1312,18 @@ fn gog_from_dir(dir: &Path, items: &[DirEntry], warnings: &mut Vec<String>) -> V
 }
 
 fn gog_from_manifest(dir: &Path, manifest: &DirEntry, warnings: &mut Vec<String>) -> Option<Value> {
+    // The filename is the product identity. Never let stale or forged
+    // metadata reassign goggame-900.info to a distinct product ID 901.
+    // The prefix/extension are case-insensitive; the digit sequence is exact,
+    // including any leading zeroes.
+    let file_name = filename(&manifest.path()).to_ascii_lowercase();
+    let filename_id = file_name.strip_prefix("goggame-")?.strip_suffix(".info")?;
+    if filename_id.is_empty()
+        || filename_id.len() > 20
+        || !filename_id.bytes().all(|c| c.is_ascii_digit())
+    {
+        return None;
+    }
     let doc: Value = match small_text(&manifest.path())
         .and_then(|s| serde_json::from_str(&s).map_err(|e| e.to_string()))
     {
@@ -1321,10 +1333,6 @@ fn gog_from_manifest(dir: &Path, manifest: &DirEntry, warnings: &mut Vec<String>
             return None;
         }
     };
-    let fallback_id = filename(&manifest.path())
-        .trim_start_matches("goggame-")
-        .trim_end_matches(".info")
-        .to_string();
     let id = doc
         .get("gameId")
         .map(|id| {
@@ -1332,8 +1340,8 @@ fn gog_from_manifest(dir: &Path, manifest: &DirEntry, warnings: &mut Vec<String>
                 .map(str::to_owned)
                 .unwrap_or_else(|| id.to_string())
         })
-        .unwrap_or(fallback_id);
-    if id.is_empty() || id.len() > 20 || !id.bytes().all(|c| c.is_ascii_digit()) {
+        .unwrap_or_else(|| filename_id.to_string());
+    if id != filename_id {
         return None;
     }
     let name = field(&doc, "name");
@@ -1812,6 +1820,18 @@ fn xbox_xml_tags(source: &str, wanted: &str) -> Option<Vec<HashMap<String, Strin
                 return None;
             }
         }
+        // Well-formed XML alone does not establish trusted GDK semantics:
+        // metadata elements must occupy their documented structural parent.
+        // A nested/relocated Identity, ShellVisuals or Executable cannot
+        // authorize a different product's executable.
+        let valid_parent = match name {
+            "Identity" | "ShellVisuals" | "ExecutableList" => stack.as_slice() == ["Game"],
+            "Executable" => stack.as_slice() == ["Game", "ExecutableList"],
+            _ => true,
+        };
+        if !valid_parent {
+            return None;
+        }
         if name == wanted {
             tags.push(attrs);
         }
@@ -1896,13 +1916,15 @@ fn xbox_from_manifest(root: &Path, file: &Path) -> Option<Value> {
         return None;
     }
     let doc = small_text(file).ok()?;
-    if xbox_xml_tags(&doc, "Game")?.len() != 1
-        || !doc.contains("</Game>")
-        || xbox_xml_tags(&doc, "ExecutableList")?.is_empty()
+    if xbox_xml_tags(&doc, "Game")?.len() != 1 || xbox_xml_tags(&doc, "ExecutableList")?.len() != 1
     {
         return None;
     }
-    let identity = xbox_xml_tags(&doc, "Identity")?.into_iter().next()?;
+    let identities = xbox_xml_tags(&doc, "Identity")?;
+    if identities.len() != 1 {
+        return None;
+    }
+    let identity = identities.into_iter().next()?;
     let id = identity.get("Name")?;
     let publisher = identity.get("Publisher")?;
     if !valid_app_id(id) || !safe_text(publisher, 256) {
@@ -1915,7 +1937,11 @@ fn xbox_from_manifest(root: &Path, file: &Path) -> Option<Value> {
     } else {
         root
     };
-    let title = xbox_xml_tags(&doc, "ShellVisuals")?
+    let visuals = xbox_xml_tags(&doc, "ShellVisuals")?;
+    if visuals.len() != 1 {
+        return None;
+    }
+    let title = visuals
         .into_iter()
         .next()
         .and_then(|shell| shell.get("DefaultDisplayName").cloned())
@@ -1924,28 +1950,24 @@ fn xbox_from_manifest(root: &Path, file: &Path) -> Option<Value> {
     if !valid_title(&title) {
         return None;
     }
-    let mut executable = None;
-    for entry in xbox_xml_tags(&doc, "Executable")?.into_iter().take(32) {
-        if entry
-            .get("IsDevOnly")
-            .is_some_and(|v| v.eq_ignore_ascii_case("true"))
-        {
-            continue;
-        }
-        if entry.get("TargetDeviceFamily").is_some_and(|v| v != "PC") {
-            continue;
-        }
-        if let Some(file) = entry
-            .get("Name")
-            .and_then(|name| contained_file(root, name))
-        {
-            if extension(&file) == "exe" && !ignored_executable(&file) {
-                executable = Some(file);
-                break;
-            }
-        }
+    let entries = xbox_xml_tags(&doc, "Executable")?;
+    if entries.len() != 1 {
+        return None;
     }
-    let executable = executable?;
+    let entry = entries.first()?;
+    if entry
+        .get("IsDevOnly")
+        .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+        || entry
+            .get("TargetDeviceFamily")
+            .is_some_and(|v| !v.eq_ignore_ascii_case("PC"))
+    {
+        return None;
+    }
+    let executable = entry
+        .get("Name")
+        .and_then(|name| contained_file(root, name))
+        .filter(|file| extension(file) == "exe" && !ignored_executable(file))?;
     Some(json!({"name":title,"source":"xbox","source_id":id,
         "install_path":owner,"executable":executable,"tags":[]}))
 }
@@ -3142,6 +3164,39 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn gog_filename_and_embedded_product_identity_must_match_exactly() {
+        let root = std::env::temp_dir().join(format!("orbit-gog-id-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("GameMain.exe"), b"fixture; never executed").unwrap();
+        for (file, embedded) in [
+            ("goggame-900.info", "901"),
+            ("goggame-0901.info", "901"),
+            ("GOGGAME-0900.INFO", "0900"),
+        ] {
+            fs::write(
+                root.join(file),
+                json!({
+                    "gameId":embedded,
+                    "name":"Sample Expansion",
+                    "playTasks":[{"type":"FileTask","path":"GameMain.exe","isPrimary":true}]
+                })
+                .to_string(),
+            )
+            .unwrap();
+        }
+        let entries = entries_at(&root, 32).unwrap().0;
+        let mut warnings = Vec::new();
+        let games = gog_from_dir(&root, &entries, &mut warnings);
+        assert_eq!(
+            games.len(),
+            1,
+            "mismatched GOG product IDs must fail closed"
+        );
+        assert_eq!(games[0]["source_id"], "0900");
+        fs::remove_dir_all(root).unwrap();
+    }
+
     fn pb_chunk(field: u64, payload: &[u8]) -> Vec<u8> {
         fn put_varint(out: &mut Vec<u8>, mut value: u64) {
             while value >= 0x80 {
@@ -3222,9 +3277,7 @@ mod tests {
         let sample = r#"<?xml version="1.0" encoding="utf-8"?>
 <Game configVersion="1">
  <Identity Name="ExamplePublisher.SampleGame" Publisher="CN=Valid"/>
- <ExecutableList><Executable Name="../Outside.exe" Id="Outside"/>
-   <Executable Name="Dev.exe" IsDevOnly="true"/>
-   <Executable Name="Sample.exe" Id="Game" TargetDeviceFamily="PC"/></ExecutableList>
+ <ExecutableList><Executable Name="Sample.exe" Id="Game" TargetDeviceFamily="PC"/></ExecutableList>
  <ShellVisuals DefaultDisplayName="Sample Game"/>
 </Game>"#;
         fs::write(&manifest, sample).unwrap();
@@ -3251,6 +3304,34 @@ mod tests {
             sample.replace("</Game>", "</NotGame>"),
             sample.replace("</Game>", "</Game><Game></Game>"),
             sample.replace("<ExecutableList>", "<ExecutableList><Executable>"),
+            sample.replace(
+                "<Identity Name=\"ExamplePublisher.SampleGame\" Publisher=\"CN=Valid\"/>",
+                "<Metadata><Identity Name=\"ExamplePublisher.SampleGame\" Publisher=\"CN=Valid\"/></Metadata>",
+            ),
+            sample.replace(
+                "<ShellVisuals DefaultDisplayName=\"Sample Game\"/>",
+                "<Nested><ShellVisuals DefaultDisplayName=\"Sample Game\"/></Nested>",
+            ),
+            sample.replace(
+                "<ExecutableList>",
+                "<Extra><ExecutableList>",
+            ).replace("</ExecutableList>", "</ExecutableList></Extra>"),
+            sample.replace(
+                "<ExecutableList><Executable",
+                "<ExecutableList><Group><Executable",
+            ).replace("/></ExecutableList>", "/></Group></ExecutableList>"),
+            sample.replace(
+                "<Identity Name=\"ExamplePublisher.SampleGame\" Publisher=\"CN=Valid\"/>",
+                "<Identity Name=\"ExamplePublisher.SampleGame\" Publisher=\"CN=Valid\"/><Identity Name=\"Other.Game\" Publisher=\"CN=Other\"/>",
+            ),
+            sample.replace(
+                "<ShellVisuals DefaultDisplayName=\"Sample Game\"/>",
+                "<ShellVisuals DefaultDisplayName=\"Sample Game\"/><ShellVisuals DefaultDisplayName=\"Other Game\"/>",
+            ),
+            sample.replace(
+                "<ExecutableList><Executable",
+                "<ExecutableList><Executable Name=\"Sample.exe\"/><Executable",
+            ),
             sample.replace(
                 "Name=\"Sample.exe\"",
                 "Name=\"Sample.exe\" Name=\"Sample.exe\"",

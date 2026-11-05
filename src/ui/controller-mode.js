@@ -48,6 +48,11 @@
 			this.byId = new Map();
 			this.detailId = null;
 			this.lastKey = "";
+			this.lastPadAction = 0;
+			this.detailSignature = "";
+			this.launchInFlight = false;
+			this.recentMarkup = "";
+			this.libraryMarkup = "";
 		}
 		enter() {
 			if (this.session) return this.session.promise;
@@ -119,6 +124,11 @@
 			this.page = 0;
 			this.detailId = null;
 			this.lastKey = "";
+			this.lastPadAction = 0;
+			this.detailSignature = "";
+			this.launchInFlight = false;
+			this.recentMarkup = "";
+			this.libraryMarkup = "";
 			this.abort = new AbortController();
 			const signal = this.abort.signal;
 			this.inertRecords = ["app", "modal-root"]
@@ -211,6 +221,9 @@
 			this.abort?.abort();
 			if (this.renderFrame !== null) cancelAnimationFrame(this.renderFrame);
 			this.renderFrame = null;
+			this.detailSignature = "";
+			this.recentMarkup = "";
+			this.libraryMarkup = "";
 			this.root?.remove();
 			this.root = null;
 			this.notice = null;
@@ -270,16 +283,26 @@
 			const status = this.root.querySelector(".tv-controller-status");
 			if (status.textContent !== messages[result.status.kind])
 				status.textContent = messages[result.status.kind];
+			if (result.actions.length) this.lastPadAction = time;
 			for (const action of result.actions) this.command(action);
 			if (!this.active) return;
-			if (result.status.kind === "connected")
+			// Use animation frames only while a person actively navigates. The
+			// controller remains sampled at low frequency when idle, and the
+			// launcher never runs a continuous RAF loop while a game is active.
+			const playing = !!(this.launchInFlight || this.snapshot?.runningIds?.length ||
+				this.snapshot?.pendingLaunches?.size);
+			const navigating = result.status.kind === "connected" && !playing &&
+				this.lastPadAction > 0 && time - this.lastPadAction < 950;
+			if (navigating) {
 				this.frame = requestAnimationFrame((next) => this.poll(next));
-			else
-				this.timer = setTimeout(() => {
-					this.timer = null;
-					if (this.active)
-						this.frame = requestAnimationFrame((next) => this.poll(next));
-				}, 250);
+				return;
+			}
+			const interval = result.status.kind === "connected" ? 48 : 250;
+			this.timer = setTimeout(() => {
+				this.timer = null;
+				if (this.active && !document.hidden && document.hasFocus())
+					this.poll(performance.now());
+			}, interval);
 		}
 		columns() {
 			const width = this.root.clientWidth;
@@ -311,6 +334,10 @@
 			if (!hero) return;
 			this.spotlightGameId = game.id;
 			hero.outerHTML = this.spotlight(game);
+			// The focus-driven spotlight differs from the last full render.
+			// Keep the next background update from mistaking stale markup for
+			// the actual featured game.
+			this.recentMarkup = "";
 		}
 		card(game, zone) {
 			const running = this.snapshot.runningIds?.includes(game.id);
@@ -363,10 +390,14 @@
 				? previous.slice(previous.indexOf(":") + 1)
 				: "";
 			const spotlightGame = this.byId.get(selectedId) || this.recent[0] || this.all[0];
-			this.spotlightGameId = spotlightGame?.id || "";
-			recent.innerHTML = this.spotlight(spotlightGame) + (this.recent.length
+			const recentMarkup = this.spotlight(spotlightGame) + (this.recent.length
 				? `<section class="tv-continue" aria-label="Continue playing"><div class="tv-section-heading"><h2>Continue playing</h2><span>${this.recent.length} recently played ${this.recent.length === 1 ? "game" : "games"}</span></div><div class="tv-recent">${this.recent.map((game) => this.card(game, "recent")).join("")}</div></section>`
 				: "");
+			if (recentMarkup !== this.recentMarkup) {
+				recent.innerHTML = recentMarkup;
+				this.recentMarkup = recentMarkup;
+				this.spotlightGameId = spotlightGame?.id || "";
+			}
 			const list = this.filter === "favorites" ? this.favorites : this.all,
 				columns = this.columns(),
 				size = columns * 2;
@@ -398,9 +429,13 @@
 					"aria-pressed",
 					String(button.dataset.tvFilter === this.filter),
 				);
-			this.root.querySelector(".tv-library-slot").innerHTML = records.length
+			const libraryMarkup = records.length
 				? `<div class="tv-library">${records.map((game) => this.card(game, "library")).join("")}</div>`
 				: `<div class="tv-empty"><h2>${this.filter === "favorites" ? "No favorites yet" : "Your next game starts here."}</h2><p>${this.filter === "favorites" ? "Favorite a game with X / Square to keep it here." : "Add games from the desktop library, then return to controller mode."}</p>${this.filter === "favorites" ? '<button class="tv-focus" data-tv-action="filter" data-tv-filter="all" data-tv-key="empty:all">Browse all games</button>' : '<button class="tv-focus" data-tv-action="exit" data-tv-key="empty:exit">Back to desktop library</button>'}</div>`;
+			if (libraryMarkup !== this.libraryMarkup) {
+				this.root.querySelector(".tv-library-slot").innerHTML = libraryMarkup;
+				this.libraryMarkup = libraryMarkup;
+			}
 			this.root.querySelector(".tv-page-label").textContent = list.length
 				? `${start + 1}–${start + records.length} of ${list.length} · Page ${this.page + 1} of ${this.pageCount}`
 				: "No games in this collection";
@@ -439,12 +474,21 @@
 				game = this.byId.get(this.detailId);
 			this.stage.inert = !!game;
 			if (!game) {
-				slot.innerHTML = "";
+				if (this.detailSignature) slot.innerHTML = "";
+				this.detailSignature = "";
 				return;
 			}
 			const pending = this.snapshot.pendingLaunches?.has(game.id),
 				running = this.snapshot.runningIds?.includes(game.id);
-			slot.innerHTML = `<div class="tv-sheet-scrim"><section class="tv-sheet" role="dialog" aria-modal="true" aria-labelledby="tv-game-title"><div class="tv-sheet-art">${this.artwork(game, true)}</div><div class="tv-sheet-copy"><p class="tv-eyebrow">${escapeHtml(sources[game.source] || "Your library")}</p><h2 id="tv-game-title">${escapeHtml(game.name)}</h2><p>${escapeHtml(running ? "Session in progress" : played(game.total_play_seconds || 0))}${game.last_played_at ? ` · Last played ${escapeHtml(new Date(game.last_played_at).toLocaleDateString())}` : ""}</p><div class="tv-sheet-actions"><button class="tv-focus tv-play" data-tv-action="launch" data-tv-key="detail:play" data-tv-game="${escapeHtml(game.id)}" aria-busy="${!!pending}" ${pending || running ? "disabled" : ""}>${pending ? "Starting…" : running ? "Playing now" : "▶ Play game"}</button><button class="tv-focus" data-tv-action="favorite" data-tv-key="detail:favorite" data-tv-game="${escapeHtml(game.id)}">${game.favorite ? "♥ Remove favorite" : "♡ Add favorite"}</button><button class="tv-focus" data-tv-action="back" data-tv-key="detail:back">Back to library</button></div></div></section></div>`;
+			const signature = JSON.stringify([game.id, game.name, game.source, game.banner,
+				game.cover, game.icon, game.favorite, running ? null : game.total_play_seconds, game.last_played_at,
+				!!pending, !!running]);
+			// Prevent an unrelated library refresh from replacing the focused
+			// controls, reloading artwork, or resetting detail scroll.
+			if (this.detailSignature === signature && slot.firstElementChild) return;
+			this.detailSignature = signature;
+			const background = art(game.banner) || art(game.cover);
+			slot.innerHTML = `<div class="tv-sheet-scrim"><section class="tv-sheet" role="dialog" aria-modal="true" aria-labelledby="tv-game-title"><div class="tv-sheet-backdrop" aria-hidden="true">${background ? `<img src="${background}" alt="" loading="lazy"/>` : ""}</div><div class="tv-sheet-layout"><div class="tv-sheet-art">${this.artwork(game, true)}</div><div class="tv-sheet-copy"><p class="tv-eyebrow">GAME PROFILE <span aria-hidden="true">/</span> ${escapeHtml(sources[game.source] || "Your library")}</p><h2 id="tv-game-title">${escapeHtml(game.name)}</h2><p class="tv-sheet-meta">${escapeHtml(running ? "Session in progress" : played(game.total_play_seconds || 0))}${game.last_played_at ? ` · Last played ${escapeHtml(new Date(game.last_played_at).toLocaleDateString())}` : ""}</p><div class="tv-sheet-actions"><button class="tv-focus tv-play" data-tv-action="launch" data-tv-key="detail:play" data-tv-game="${escapeHtml(game.id)}" aria-busy="${!!pending}" ${pending || running ? "disabled" : ""}>${pending ? "Starting…" : running ? "Playing now" : "▶ Play game"}</button><button class="tv-focus" data-tv-action="favorite" data-tv-key="detail:favorite" data-tv-game="${escapeHtml(game.id)}">${game.favorite ? "♥ Remove favorite" : "♡ Add favorite"}</button><button class="tv-focus" data-tv-action="back" data-tv-key="detail:back">Back to library</button></div><p class="tv-sheet-hint"><span>B / ○</span> Return to the collection</p></div></div></section></div>`;
 		}
 		controls() {
 			const scope = this.detailId
@@ -543,7 +587,12 @@
 				return;
 			}
 			if (action === "launch") {
-				await this.options.launch(button.dataset.tvGame);
+				this.launchInFlight = true;
+				try {
+					await this.options.launch(button.dataset.tvGame);
+				} finally {
+					this.launchInFlight = false;
+				}
 				return;
 			}
 			if (action === "favorite") {

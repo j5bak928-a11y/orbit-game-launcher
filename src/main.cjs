@@ -5,7 +5,7 @@ const fs=require('node:fs');
 const fsp=fs.promises;
 const crypto=require('node:crypto');
 const {pathToFileURL}=require('node:url');
-const {LibraryDatabase,duplicateKey,normalizedPath}=require('./core/database.cjs');
+const {LibraryDatabase,reconcileDiscoveredGames}=require('./core/database.cjs');
 const {discoverAll,steamRoots}=require('./core/discovery.cjs');
 const {launchGame:executeGame,deferredExit}=require('./core/launch.cjs');
 const {findSteamCover,findSteamBanner,localSteamIcon}=require('./core/steam-cover.cjs');
@@ -346,14 +346,7 @@ async function discover(){
   try{
     const result=await discoverAll(db.getSettings(),{downloadsPath:app.getPath('downloads')});
     const library=db.list();
-    const hasStoreIdentity=g=>g.source_id&&g.source&&g.source!=='manual'&&g.source!=='folder';
-    const knownSources=new Set(library.filter(hasStoreIdentity).map(duplicateKey));
-    const knownFiles=new Set(library.filter(g=>g.executable).map(g=>normalizedPath(g.executable,process.platform)));
-    const knownUris=new Set(library.filter(g=>g.launch_uri).map(g=>g.launch_uri.toLowerCase()));
-    const games=result.games.map(g=>({...g,alreadyAdded:!!(
-      (hasStoreIdentity(g)&&knownSources.has(duplicateKey(g))) ||
-      (g.executable&&knownFiles.has(normalizedPath(g.executable,process.platform))) ||
-      (g.launch_uri&&knownUris.has(g.launch_uri.toLowerCase())))}));
+    const games=reconcileDiscoveredGames(library,result.games,process.platform);
     broadcast({type:'scanFinished',count:games.length});return {games,warnings:result.warnings,diagnostics:result.diagnostics||[]};
   }finally{scanning=false;}
 }
@@ -367,6 +360,7 @@ function handlers(){
   bind('bootstrap',()=>({...librarySnapshot(),settings:db.getSettings(),platform:process.platform,version:displayVersion()}));
   bind('librarySnapshot',librarySnapshot);
   bind('listGames',()=>db.list());
+  bind('getStatistics',options=>db.getStatistics(options));
   bind('runningGames',runningGameIds);
   bind('getGame',id=>{if(!okId(id))throw Error('Invalid game identifier.');return db.get(id)});
   bind('addGame',data=>{const result=db.upsert(data);gamesChanged({games:[result.game],reason:'add'});if(result.added)enrichGameArtwork(result.game).catch(()=>{});return result});

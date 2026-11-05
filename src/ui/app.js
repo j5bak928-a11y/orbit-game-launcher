@@ -32,10 +32,11 @@ const iconPaths={
  external:'<path d="M13 4h7v7M20 4l-9 9M20 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h5"/>',
  image:'<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="2"/><path d="m3 17 6-6 4 4 2-2 6 6"/>',
  sort:'<path d="M5 3v18m-3-3 3 3 3-3M12 7h9M12 12h7M12 17h4"/>',
+ chart:'<path d="M3 3v18h18M7 16v-4m5 4V7m5 9v-7"/><path d="m5 10 5-4 4 2 5-5"/>',
  dots:'<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>'
 };
 const ic=(name,size=18)=>`<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">${iconPaths[name]||iconPaths.gamepad}</svg>`;
-const state={games:[],runningIds:[],settings:null,route:'home',query:'',filter:'all',tag:'all',genre:'all',view:'grid',sort:'name',modal:null,imports:[],importPage:0,selectedImports:new Set(),scanWarnings:[],scanDiagnostics:[],pendingLaunches:new Set(),scanning:false,busy:false,platform:'',version:'',viewGames:[],updateStatus:{state:'idle',message:'Update check not started.'}};
+const state={games:[],runningIds:[],settings:null,route:'home',query:'',filter:'all',tag:'all',genre:'all',view:'grid',sort:'name',modal:null,imports:[],importPage:0,selectedImports:new Set(),scanWarnings:[],scanDiagnostics:[],pendingLaunches:new Set(),scanning:false,busy:false,platform:'',version:'',viewGames:[],statistics:{status:'idle',data:null,error:''},updateStatus:{state:'idle',message:'Update check not started.'}};
 let controllerMode=null;
 function toggleControllerMode(){
  if(state.modal)closeModal();
@@ -49,7 +50,7 @@ function toggleControllerMode(){
  }
  return controllerMode.toggle();
 }
-const sourceNames={steam:'Steam',epic:'Epic Games',gog:'GOG',ea:'EA app',ubisoft:'Ubisoft Connect',battlenet:'Battle.net',folder:'Local',manual:'Manual'};
+const sourceNames={steam:'Steam',epic:'Epic Games',gog:'GOG',ea:'EA app',ubisoft:'Ubisoft Connect',battlenet:'Battle.net',xbox:'Xbox / PC Game Pass',folder:'Local',manual:'Manual'};
 const palette=['#8b7aff','#5bafef','#fc8ca8','#53c5b3','#f3a65c','#bf87f5'];
 function artwork(token){return /^[a-f\d-]{36}\.(jpg|jpeg|png|webp)$/.test(token||'')?(window.OrbitArtworkUrl?.(token)||`orbit-art://file/${token}`):null}
 // One image per card in the common case: loading the icon behind every
@@ -71,7 +72,7 @@ function filtered(){const key=[state.games,state.route,state.filter,state.tag,st
   const result=sortedGames(a);filterCache={key,value:result};return result;
 }
 function card(g){return `<article class="game-card" data-action="detail" data-id="${esc(g.id)}" role="button" tabindex="0" aria-label="View details for ${esc(g.name)}">
-  <div class="cover">${coverImage(g)}<span class="cover-letter">${esc(g.name.slice(0,2))}</span>
+  <div class="cover cinematic-card-cover">${coverImage(g)}<span class="cover-letter">${esc(g.name.slice(0,2))}</span>
   <button class="favorite-float ${g.favorite?'active':''}" data-action="favorite" data-id="${esc(g.id)}" aria-label="${g.favorite?'Remove favorite':'Add favorite'}">${ic('heart',16)}</button>
   <button class="cover-play" data-action="launch" data-id="${esc(g.id)}" aria-label="Launch ${esc(g.name)}">${ic('play',17)}</button></div>
   <div class="game-label"><div style="min-width:0"><span class="game-name" title="${esc(g.name)}">${esc(g.name)}</span><span class="game-meta">${state.runningIds?.includes(g.id)?'● Playing now':esc(timeLabel(g.total_play_seconds))}</span></div>
@@ -80,12 +81,12 @@ function rowGame(g){return `<article class="game-row" data-action="detail" data-
   <div class="row-cover">${esc(g.name.slice(0,1))}${!artwork(g.cover)&&artwork(g.icon)?`<img src="${artwork(g.icon)}" alt="" loading="lazy" decoding="async" class="list-game-icon" />`:''}${artwork(g.cover)?`<img src="${artwork(g.cover)}" data-fallback-icon="${artwork(g.icon)||''}" alt="" loading="lazy" decoding="async" />`:''}</div>
   <div class="row-info"><h3>${esc(g.name)}</h3><p>${esc(sourceLabel(g))}${g.tags?.length?' · '+esc(g.tags.slice(0,2).join(', ')):''}</p></div>
   <div class="row-right"><span class="playtime">${esc(timeLabel(g.total_play_seconds))}</span><button class="ghost-btn" data-action="favorite" data-id="${esc(g.id)}" aria-label="Toggle favorite" style="${g.favorite?'color:#ffc171':''}">${ic('heart',17)}</button><button class="ghost-btn row-play" data-action="launch" data-id="${esc(g.id)}">${ic('play',15)} Play</button></div></article>`}
-function sidebar(){const links=[['home','home','Overview'],['library','library','All games'],['favorites','heart','Favorites'],['recent','clock','Recently played']];return `<aside class="sidebar">
+function sidebar(){const links=[['home','home','Overview'],['library','library','All games'],['favorites','heart','Favorites'],['recent','clock','Recently played'],['statistics','chart','Statistics']];return `<aside class="sidebar">
  <div class="brand" role="img" aria-label="Orbit Launcher"><img class="orbit-brand-mark" src="../../assets/branding/orbit-generated-mark.png" alt="" /><span class="orbit-brand-word" aria-hidden="true">orbit</span></div>
  <div class="side-label">LIBRARY</div><nav class="nav" aria-label="Main navigation">${links.map(([id,icon,name])=>`<button class="nav-item ${state.route===id?'active':''}" data-action="navigate" data-route="${id}" title="${name}" ${state.route===id?'aria-current="page"':''}>${ic(icon,18)}<span>${name}</span>${id==='library'?`<span class="count">${state.games.length}</span>`:''}</button>`).join('')}</nav>
  <div class="side-divider"></div><nav class="nav"><button class="nav-item" data-action="shuffle" title="Choose a game" ${state.games.length?'':'disabled'}>${ic('sparkles',18)}<span>Choose a game</span></button><button class="nav-item ${state.route==='settings'?'active':''}" data-action="navigate" data-route="settings" title="Settings">${ic('settings',18)}<span>Settings</span></button></nav>
  <div class="side-bottom"><div class="side-version"><span class="status-dot"></span><span>${state.scanning?'Scanning your games…':'Local library'} <span class="version-number">v${esc(state.version)}</span></span></div></div></aside>`}
-function topbar(){const name={home:'Overview',library:'My library',favorites:'Favorites',recent:'Recently played',settings:'Settings'}[state.route]||'Overview';return `<header class="topbar"><div class="breadcrumb">${name}</div>
+function topbar(){const name={home:'Overview',library:'My library',favorites:'Favorites',recent:'Recently played',statistics:'Gaming statistics',settings:'Settings'}[state.route]||'Overview';return `<header class="topbar"><div class="breadcrumb">${name}</div>
  <div class="topbar-right"><label class="searchbox">${ic('search',18)}<input id="global-search" type="search" placeholder="Search your library" value="${esc(state.query)}" autocomplete="off" aria-label="Search games"/><kbd>Ctrl K</kbd></label>
  <button class="top-icon" data-action="controller-mode" title="Controller mode (F11)" aria-label="Enter controller mode">${ic('gamepad',18)}</button>${['library','favorites','recent'].includes(state.route)?'':`<button class="top-icon" data-action="scan" title="Discover installed games" aria-label="Discover installed games">${ic('refresh',18)}</button>`}
  <button class="primary-btn" data-action="add">${ic('plus',18)}<span>Add game</span></button></div></header>`}
@@ -96,25 +97,94 @@ function platformFilters(){
  return `<div class="platform-filters" role="group" aria-label="Filter by platform"><button class="platform-chip ${state.filter==='all'?'active':''}" data-action="platform" data-source="all" aria-pressed="${state.filter==='all'}">All games <span>${scope.length}</span></button>${Object.entries(sourceNames).filter(([key])=>counts.has(key)).map(([key,label])=>`<button class="platform-chip ${state.filter===key?'active':''}" data-action="platform" data-source="${key}" aria-pressed="${state.filter===key}"><i class="source-dot source-${key}"></i>${esc(label)}<span>${counts.get(key)}</span></button>`).join('')}</div>`;
 }
 function activeFilterSummary(){const active=[state.query.trim()&&`“${state.query.trim()}”`,state.filter!=='all'&&(sourceNames[state.filter]||state.filter),state.genre!=='all'&&state.genre,state.tag!=='all'&&state.tag].filter(Boolean);return active.length?`<span>Showing ${active.map(esc).join(' · ')}</span><button class="small-link" data-action="clear-filters">Clear filters ${ic('close',13)}</button>`:''}
-function continueCard(g){return `<article class="continue-card" data-action="detail" data-id="${esc(g.id)}" role="button" tabindex="0" aria-label="View details for ${esc(g.name)}"><div class="continue-art">${coverImage(g)}</div><div class="continue-copy"><strong>${esc(g.name)}</strong><span>${esc(timeLabel(g.total_play_seconds))}</span></div><button class="continue-play" data-action="launch" data-id="${esc(g.id)}" aria-label="Launch ${esc(g.name)}">${ic('play',16)}</button></article>`}
+function continueCard(g){return `<article class="continue-card cinematic-continue-card" data-action="detail" data-id="${esc(g.id)}" role="button" tabindex="0" aria-label="View details for ${esc(g.name)}"><div class="continue-art">${coverImage(g)}</div><div class="continue-copy"><strong>${esc(g.name)}</strong><span>${esc(timeLabel(g.total_play_seconds))}</span></div><button class="continue-play" data-action="launch" data-id="${esc(g.id)}" aria-label="Launch ${esc(g.name)}">${ic('play',16)}</button></article>`}
 function home(){
  const played=state.games.filter(g=>g.last_played_at).sort((a,b)=>(Date.parse(b.last_played_at)||0)-(Date.parse(a.last_played_at)||0));
  const feature=played[0]||state.games.find(g=>artwork(g.banner))||state.games[0];
  const recent=played.slice(0,3),collection=sortedGames(state.games).slice(0,6);
  const banner=feature&&artwork(feature.banner);
+ const featureCover=feature&&artwork(feature.cover);
  return `<section class="page home-page">${headline('','Overview','',state.games.length?`<button class="secondary-btn shuffle-btn" data-action="shuffle">${ic('sparkles',16)} Choose for me</button>`:'')}
- <div class="hero ${banner?'has-banner':''} ${feature?'':'hero-empty'}">
- ${banner?`<img class="hero-art" src="${banner}" alt="" loading="eager" decoding="async" fetchpriority="high" />`:feature?`<div class="hero-portrait"><div class="cover">${coverImage(feature,true)}</div></div>`:''}
+ <div class="hero cinematic-hero ${banner?'has-banner':''} ${feature?'':'hero-empty'} ${featureCover?'has-feature-cover':''}">
+ <div class="hero-ambient" aria-hidden="true"><span></span><span></span></div>
+ ${banner?`<img class="hero-art" src="${banner}" alt="" loading="eager" decoding="async" fetchpriority="high" />`:''}
+ ${feature?`<div class="hero-portrait" aria-hidden="true"><div class="cover cinematic-hero-poster">${coverImage(feature,!banner)}</div></div>`:''}
  <div class="hero-shade"></div><div class="hero-content"><span class="hero-eyebrow">${feature?(played.length?'CONTINUE PLAYING':'YOUR LIBRARY'):'WELCOME TO ORBIT'}</span>
  <h2>${feature?esc(feature.name):'Add your first game'}</h2>
  ${feature?`<div class="hero-metadata"><span>${esc(sourceLabel(feature))}</span>${feature.genre?`<i></i><span>${esc(feature.genre)}</span>`:''}<i></i><span>${esc(timeLabel(feature.total_play_seconds))}</span></div><p>${played.length?`Last played ${esc(formatDate(feature.last_played_at))}.`:''}</p>`:'<p>Bring your installed games together in a library that feels like yours. Start with your launchers or a folder you choose.</p>'}
- <div class="hero-buttons">${feature?`<button class="primary-btn" data-action="launch" data-id="${esc(feature.id)}">${ic('play',16)} Play now</button><button class="secondary-btn hero-detail" data-action="detail" data-id="${esc(feature.id)}">Game details ${ic('arrow',16)}</button>`:`<button class="primary-btn" data-action="scan">${ic('refresh',16)} Find my games</button><button class="secondary-btn" data-action="add">${ic('plus',16)} Add a game</button>`}</div></div>
- ${feature?`<div class="hero-caption">${ic('gamepad',14)} IN YOUR COLLECTION</div>`:''}</div>
+ <div class="hero-buttons cinematic-hero-actions">${feature?`<button class="primary-btn" data-action="launch" data-id="${esc(feature.id)}">${ic('play',16)} Play now</button><button class="secondary-btn hero-detail" data-action="detail" data-id="${esc(feature.id)}">Game details ${ic('arrow',16)}</button>`:`<button class="primary-btn" data-action="scan">${ic('refresh',16)} Find my games</button><button class="secondary-btn" data-action="add">${ic('plus',16)} Add a game</button>`}</div></div>
+ ${feature?`<div class="hero-caption">${ic('gamepad',14)} IN YOUR COLLECTION</div>`:''}<div class="hero-frame" aria-hidden="true"></div></div>
  <div class="collection-summary"><span><strong>${state.games.length}</strong> ${state.games.length===1?'game':'games'} in your library</span><span><strong>${state.games.filter(g=>g.favorite).length}</strong> favorites</span><span><strong>${totalHours()}h</strong> tracked play time</span><button class="small-link" data-action="navigate" data-route="library">Open library ${ic('arrow',14)}</button></div>
  ${recent.length?`<div class="subheading"><h2>Continue playing</h2><button class="small-link" data-action="navigate" data-route="recent">Recently played ${ic('arrow',14)}</button></div><div class="continue-grid">${recent.map(continueCard).join('')}</div>`:''}
  <div class="subheading collection-heading"><div><h2>Your collection</h2></div>${state.games.length?`<button class="small-link" data-action="navigate" data-route="library">View all ${state.games.length} ${ic('arrow',14)}</button>`:''}</div>
  <div id="platform-filter-slot">${platformFilters()}</div>
  ${state.games.length?`<div class="games-grid home-games">${collection.map(card).join('')}</div>`:emptyState('Your next favorite belongs here.','Find games from Steam, Epic, GOG, and other installed launchers, or add your own.')}</section>`;
+}
+const nonnegativeSeconds=value=>Number.isFinite(value)&&value>=0?Math.floor(value):0;
+function statisticsTime(value){const seconds=nonnegativeSeconds(value),minutes=Math.floor(seconds/60),hours=Math.floor(minutes/60);return seconds>0&&minutes===0?'<1m':hours?`${hours}h ${minutes%60}m`:`${minutes}m`;}
+function statisticsDate(date){
+ if(typeof date!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(date))return 'Unknown date';
+ const parsed=new Date(`${date}T12:00:00`);
+ return Number.isNaN(parsed.getTime())?'Unknown date':new Intl.DateTimeFormat(undefined,{month:'short',day:'numeric'}).format(parsed);
+}
+function statisticsContent(){
+ const stats=state.statistics;
+ if(stats.status==='loading')return `<div class="statistics-state" role="status"><span class="statistics-state-icon">${ic('refresh',22)}</span> <h2 class="statistics-state-title">Reading your play sessions…</h2><p class="statistics-state-description">Calculating the past 30 local calendar days.</p></div>`;
+ if(stats.status==='error')return `<div class="statistics-state" role="status"><span class="statistics-state-icon">${ic('info',24)}</span> <h2 class="statistics-state-title">Statistics unavailable</h2><p class="statistics-state-description">${esc(stats.error||'Could not retrieve session history.')}</p><p class="statistics-state-description">Library and play controls are still available.</p></div>`;
+ if(stats.status!=='ready'||!stats.data)return `<div class="statistics-state" role="status"><p class="statistics-state-description">Open statistics to load your recorded sessions.</p></div>`;
+ const result=stats.data,totals=result.totals||{},meta=result.meta||{};
+ const daily=Array.isArray(result.daily)?result.daily.filter(day=>typeof day?.date==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(day.date)).slice(-30):[];
+ const peak=Math.max(1,...daily.map(day=>nonnegativeSeconds(day.seconds)));
+ const today=daily.length?daily[daily.length-1].seconds:0;
+ const from=daily.length?statisticsDate(daily[0].date):'Unknown';
+ const to=daily.length?statisticsDate(daily[daily.length-1].date):'Unknown';
+ const summary=[['Today',today,'Recorded today'],['Last 7 days',totals.week,'Rolling 7 local days'],['Last 30 days',totals.month,'Rolling 30 local days'],['All recorded time',totals.allTime,'Finished sessions only']];
+ const rows=Array.isArray(result.recentGames)?result.recentGames.slice(0,8):[];
+ const best=daily.reduce((winner,day)=>nonnegativeSeconds(day.seconds)>nonnegativeSeconds(winner?.seconds)?day:winner,null);
+ const lastSeven=daily.slice(-7).reduce((total,day)=>total+nonnegativeSeconds(day.seconds),0);
+ const previousSeven=daily.slice(-14,-7).reduce((total,day)=>total+nonnegativeSeconds(day.seconds),0);
+ const trend=daily.length>=14?(lastSeven>previousSeven?`${statisticsTime(lastSeven-previousSeven)} more than the previous 7 days`:lastSeven<previousSeven?`${statisticsTime(previousSeven-lastSeven)} less than the previous 7 days`:'Same recorded time as the previous 7 days'):'Needs at least 14 dated entries';
+ const note=nonnegativeSeconds(meta.overlapSeconds)>0?`Overlapping same-game session time excluded from charts: ${statisticsTime(meta.overlapSeconds)}. `:'';
+ const adjusted=nonnegativeSeconds(meta.adjustedSeconds)>0?`Inconsistent session durations adjusted by ${statisticsTime(meta.adjustedSeconds)}. `:'';
+ const integrity=nonnegativeSeconds(meta.invalidSessions)>0||meta.truncated?'Some session records were excluded or the available history was limited. ':'';
+ const inProgress=nonnegativeSeconds(meta.openSessions)>0?`${meta.openSessions} in-progress ${meta.openSessions===1?'session is':'sessions are'} excluded until completed. `:'';
+ return `<div class="statistics-loaded"><div class="statistics-metrics">${summary.map(([label,value,caption],index)=>`<article class="statistics-metric ${index===1?'featured':''}"><span class="statistics-metric-label">${esc(label)}</span><strong class="statistics-metric-value">${esc(statisticsTime(value))}</strong><small class="statistics-metric-caption">${esc(caption)}</small></article>`).join('')}</div>
+  <div class="statistics-insights"><div class="statistics-insight"><span class="statistics-insight-icon">${ic('trophy',19)}</span> <div class="statistics-insight-body"><span class="statistics-insight-label">Best day · last 30 days</span><strong class="statistics-insight-value">${best&&nonnegativeSeconds(best.seconds)?esc(statisticsTime(best.seconds)):'No recorded playtime'} </strong><small class="statistics-insight-caption">${best&&nonnegativeSeconds(best.seconds)?esc(statisticsDate(best.date)):'No daily record yet'}</small></div></div><div class="statistics-insight"><span class="statistics-insight-icon">${ic('chart',19)}</span> <div class="statistics-insight-body"><span class="statistics-insight-label">7-day trend</span><strong class="statistics-insight-value">${esc(statisticsTime(lastSeven))} this week</strong><small class="statistics-insight-caption">${esc(trend)}</small></div></div></div>
+  <section class="statistics-panel" aria-labelledby="statistics-chart-title"><div class="statistics-panel-head"><div><span class="statistics-kicker">PLAYTIME HISTORY</span><h2 class="statistics-panel-title" id="statistics-chart-title">Your last 30 days</h2><p class="statistics-panel-subtitle">${esc(from)} – ${esc(to)} · local calendar dates</p></div><span class="statistics-legend"><i></i> Recorded play time</span></div>
+   ${daily.length?`<div class="statistics-graph" role="img" aria-label="Recorded daily playtime from ${esc(from)} to ${esc(to)}"><div class="statistics-bars">${daily.map(day=>`<span class="statistics-bar-slot" title="${esc(statisticsDate(day.date))}: ${esc(statisticsTime(day.seconds))}"><span class="statistics-bar ${nonnegativeSeconds(day.seconds)?'has-time':''}" style="height:${Math.max(3,Math.round(nonnegativeSeconds(day.seconds)/peak*100))}%"></span></span>`).join('')}</div><div class="statistics-axis"><span>${esc(from)}</span><span>${esc(to)}</span></div></div><ul class="statistics-visually-hidden" aria-label="Daily recorded playtime">${daily.map(day=>`<li>${esc(day.date)}: ${esc(statisticsTime(day.seconds))}</li>`).join('')}</ul>`:'<p class="statistics-empty">No dated sessions are available for this period.</p>'}
+  </section>
+  <section class="statistics-panel" aria-labelledby="statistics-recent-title"><div class="statistics-panel-head"><div><span class="statistics-kicker">SESSION RECORDS</span><h2 class="statistics-panel-title" id="statistics-recent-title">Recently played games</h2><p class="statistics-panel-subtitle">Latest games with completed sessions</p></div></div>
+   ${rows.length?`<div class="statistics-recent-list">${rows.map(game=>{const art=artwork(game.cover)||artwork(game.icon);return `<div class="statistics-recent-row">${art?`<img src="${art}" loading="lazy" decoding="async" alt="" />`:`<div class="statistics-recent-placeholder" aria-hidden="true">${ic('gamepad',18)}</div>`}<div class="statistics-recent-name"><strong class="statistics-recent-title">${esc(game.name||'Unknown game')}</strong><span class="statistics-recent-source">${esc(sourceNames[game.source]||'Recorded game')} · ${esc(formatDate(game.lastPlayedAt))}</span></div><span class="statistics-recent-duration">${esc(statisticsTime(game.seconds))}</span></div>`}).join('')}</div>`:'<p class="statistics-empty">No completed game sessions have been recorded yet.</p>'}
+  </section>
+  <p class="statistics-disclaimer"><span class="statistics-info-icon">${ic('info',15)}</span> Based on recorded sessions. ${esc(note+adjusted+integrity+inProgress)}Older records may include duplicates or incomplete tracking, and these figures can differ from game library lifetime totals.</p>
+ </div>`;
+}
+function statisticsView(){return `<section class="page statistics-page">${headline('ACTIVITY OVERVIEW','Gaming statistics','See how your time is recorded across games. Data stays on your device.',`<button class="secondary-btn" data-action="refresh-statistics" ${state.statistics.status==='loading'?'disabled aria-busy="true"':''}>${ic('refresh',16)} Refresh</button>`)}
+  <div id="statistics-content" aria-live="polite" aria-atomic="false">${statisticsContent()}</div></section>`;}
+function refreshStatisticsContent(){
+ if(state.route!=='statistics')return;
+ const content=el('statistics-content');if(content)content.innerHTML=statisticsContent();
+ const refresh=document.querySelector('[data-action="refresh-statistics"]');
+ if(refresh){refresh.disabled=state.statistics.status==='loading';refresh.setAttribute('aria-busy',String(state.statistics.status==='loading'));}
+}
+let statisticsRequestId=0;
+async function loadStatistics(){
+ const request=++statisticsRequestId;
+ state.statistics={status:'loading',data:null,error:''};refreshStatisticsContent();
+ if(typeof window.orbit?.getStatistics!=='function'){
+  state.statistics={status:'error',data:null,error:'Update Orbit to a version that supports recorded-session statistics.'};
+  refreshStatisticsContent();return;
+ }
+ try{
+  const result=await window.orbit.getStatistics({days:30});
+  if(request!==statisticsRequestId)return;
+  if(!result||typeof result!=='object'||!result.totals||!Array.isArray(result.daily)||!Array.isArray(result.recentGames))throw Error('The statistics response was incomplete.');
+  state.statistics={status:'ready',data:result,error:''};
+ }catch(error){
+  if(request!==statisticsRequestId)return;
+  state.statistics={status:'error',data:null,error:error?.message||'Could not retrieve recorded sessions.'};
+ }
+ refreshStatisticsContent();
 }
 function emptyState(title,body,extra=''){return `<div class="empty-state"><div class="empty-illustration">${ic('gamepad',47)}</div><h2>${esc(title)}</h2><p>${esc(body)}</p><div class="empty-actions">${extra||`<button class="primary-btn" data-action="scan">${ic('refresh',16)} Discover games</button><button class="secondary-btn" data-action="add">${ic('plus',16)} Add game</button>`}</div></div>`}
 function libraryView(){const subtitle={library:'',favorites:'',recent:''};const title={library:'Your game library',favorites:'Your favorites',recent:'Recently played'};const tags=[...new Set(state.games.flatMap(g=>g.tags||[]))].sort((a,b)=>a.localeCompare(b)).slice(0,100);const genres=[...new Set(state.games.map(g=>g.genre).filter(Boolean))].sort((a,b)=>a.localeCompare(b)).slice(0,100);
@@ -222,12 +292,12 @@ function renderShell(){el('app').innerHTML=`<div class="app-shell"><div id="side
 let scrollFrame=null,previousRenderedRoute=null;
 function renderPage({keepScroll=false}={}){closeGameActions();const slot=el('page-slot'),scroller=el('main-scroll');if(!slot)return;const old=keepScroll?scroller.scrollTop:0;
  virtualRangeKey=null;virtualGamesRef=null;virtualRunningRef=null;virtualItems=new Map();
- slot.innerHTML=state.route==='home'?home():state.route==='settings'?settingsView():libraryView();scroller.scrollTop=old;
+ slot.innerHTML=state.route==='home'?home():state.route==='settings'?settingsView():state.route==='statistics'?statisticsView():libraryView();scroller.scrollTop=old;
  if(previousRenderedRoute!==state.route)slot.firstElementChild?.classList.add('page-enter');
  previousRenderedRoute=state.route;
  if(['library','favorites','recent'].includes(state.route))renderVirtual();syncActivity();}
 function refreshNavigation(keepScroll=false){el('side-slot').innerHTML=sidebar();el('top-slot').innerHTML=topbar();renderPage({keepScroll});}
-function navigate(route){if(!['home','library','favorites','recent','settings'].includes(route))return;state.route=route;state.query='';state.filter='all';state.tag='all';state.genre='all';refreshNavigation();}
+function navigate(route){if(!['home','library','favorites','recent','statistics','settings'].includes(route))return;state.route=route;state.query='';state.filter='all';state.tag='all';state.genre='all';refreshNavigation();if(route==='statistics')void loadStatistics();}
 function toast(message,error=false){const item=document.createElement('div');item.className=`toast ${error?'error':''}`;item.innerHTML=ic(error?'alert':'check',19)+`<p>${esc(message)}</p>`;const root=el('toast-root');root.appendChild(item);while(root.children.length>3)root.firstElementChild.remove();setTimeout(()=>item.remove(),4600)}
 let libraryUpdates=null;
 async function loadLibrarySnapshot(){
@@ -333,7 +403,7 @@ function detail(g){if(!g)return dialogFrame('Game unavailable','This game no lon
  const playing=state.runningIds.includes(g.id);
  const banner=artwork(g.banner),cover=artwork(g.cover);
  const backdrop=banner||cover;
- const launchNote=g.launch_uri?'Launched through '+sourceLabel(g)+'. Playtime is confirmed after Orbit detects the game process.':g.executable?'Playtime updates after your session ends while Orbit is running.':'Choose an executable or launcher URI in Edit details to play.';
+ const launchNote=g.source==='xbox'?'Some PC Game Pass titles require the Xbox app to launch and may not start from a direct EXE.':g.launch_uri?'Launched through '+sourceLabel(g)+'. Playtime is confirmed after Orbit detects the game process.':g.executable?'Playtime updates after your session ends while Orbit is running.':'Choose an executable or launcher URI in Edit details to play.';
  return `<div class="dialog-scrim showcase-scrim" data-action="scrim"><section class="dialog detail-showcase" role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="showcase-summary">
   <div class="showcase-hero ${banner?'has-banner':cover?'has-cover-backdrop':'no-artwork'}">
    ${backdrop?`<img class="showcase-hero-art ${banner?'showcase-hero-banner':'showcase-hero-cover'}" src="${backdrop}" alt="" decoding="async" />`:''}
@@ -361,10 +431,11 @@ function importDialog(){
  const description=`Found ${games.length} installed ${games.length===1?'game':'games'}. ${addable.length} new ${addable.length===1?'entry':'entries'} can be imported.`;
  const diagnostics=scanDiagnostics();
  const warnings=state.scanWarnings.length?`<div class="warning-line">${ic('alert',15)} ${esc(state.scanWarnings.slice(0,3).join(' • '))}${state.scanWarnings.length>3?` · ${state.scanWarnings.length-3} more warnings`:''}</div>`:'';
+ const xboxNotice=games.some(game=>game.source==='xbox')?`<div class="warning-line">${ic('info',15)} Some PC Game Pass games require the Xbox app to start, even when an installed executable is found.</div>`:'';
  const rows=games.slice(first,first+IMPORT_PAGE_SIZE).map((g,offset)=>{const i=first+offset;return `<label class="import-item ${g.alreadyAdded?'added':''}"><input type="checkbox" data-import-index="${i}" ${state.selectedImports.has(i)?'checked':''} ${g.alreadyAdded?'disabled':''}/><div class="icon-box">${ic(g.source==='steam'?'gamepad':'folder',18)}</div><span style="min-width:0;flex:1"><strong>${esc(g.name)}</strong><small>${esc(sourceLabel(g))} · ${esc(g.install_path||g.executable||'Launcher entry')}${g.alreadyAdded?' · Already in library':''}</small></span></label>`}).join('');
  const paging=pageCount>1?`<div class="import-toolbar" aria-label="Import result pages"><span class="muted" style="font-size:12px">Showing ${first+1}–${Math.min(games.length,first+IMPORT_PAGE_SIZE)} of ${games.length} (page ${state.importPage+1} of ${pageCount})</span><div style="display:flex;gap:8px"><button class="secondary-btn" data-action="import-page" data-page="prev" ${state.importPage===0?'disabled':''}>Previous</button><button class="secondary-btn" data-action="import-page" data-page="next" ${state.importPage===pageCount-1?'disabled':''}>Next</button></div></div>`:'';
  const selectionHint=addable.length>MAX_IMPORT_SELECTION?`<p class="setting-help">Each import supports up to ${MAX_IMPORT_SELECTION.toLocaleString()} games. Import the selected games, then rescan to import the remaining titles.</p>`:'';
- return dialogFrame('Discover installed games',description,`<div class="dialog-body">${warnings}${diagnostics}<div class="import-toolbar"><span class="muted" style="font-size:12px">${selected} selected across all pages</span><button class="small-link" data-action="toggle-all-import">${selected?'Deselect all':'Select all new'}</button></div>${games.length?`<div class="import-list">${rows}</div>${paging}${selectionHint}`:emptyState('No installed games found','Add your preferred library folders in Settings or add an executable manually.',`<button class="secondary-btn" data-action="add">${ic('plus',15)} Add manually</button>`)}</div>`,`<div class="dialog-footer"><button class="secondary-btn" data-action="close-modal">Cancel</button><button class="primary-btn" data-action="import" ${selected?'':'disabled'}>${ic('download',16)} Import ${selected} ${selected===1?'game':'games'}</button></div>`,true);
+ return dialogFrame('Discover installed games',description,`<div class="dialog-body">${warnings}${xboxNotice}${diagnostics}<div class="import-toolbar"><span class="muted" style="font-size:12px">${selected} selected across all pages</span><button class="small-link" data-action="toggle-all-import">${selected?'Deselect all':'Select all new'}</button></div>${games.length?`<div class="import-list">${rows}</div>${paging}${selectionHint}`:emptyState('No installed games found','Add your preferred library folders in Settings or add an executable manually.',`<button class="secondary-btn" data-action="add">${ic('plus',15)} Add manually</button>`)}</div>`,`<div class="dialog-footer"><button class="secondary-btn" data-action="close-modal">Cancel</button><button class="primary-btn" data-action="import" ${selected?'':'disabled'}>${ic('download',16)} Import ${selected} ${selected===1?'game':'games'}</button></div>`,true);
 }
 function renderModal(){const modal=state.modal;if(!modal){el('modal-root').innerHTML='';return}let html='';
  if(modal.type==='game')html=editor(modal.id?state.games.find(g=>g.id===modal.id):null);
@@ -393,6 +464,7 @@ function scanDiagnostics(){
  return `<details class="scan-diagnostics"><summary>Scan report <span>${state.scanDiagnostics.length} locations checked</span></summary><div class="diagnostics-list">${state.scanDiagnostics.map(d=>`<div class="diagnostic ${['ok','warning','error'].includes(d.status)?d.status:'warning'}"><div><span class="diagnostic-status">${ic(d.status==='ok'?'check':d.status==='error'?'close':'alert',14)}</span><strong>${esc(names[d.provider]||d.provider)}</strong><span>${Number(d.games)||0} games · ${Math.max(0,Math.round(Number(d.durationMs)||0))} ms</span></div>${d.path?`<p title="${esc(d.path)}">${esc(d.path)}</p>`:''}${(Array.isArray(d.warnings)?d.warnings:[]).map(w=>`<p>${esc(w)}</p>`).join('')}</div>`).join('')}</div></details>`;
 }
 function syncActivity(){
+ document.body.dataset.gameActive=String(state.runningIds.length>0);
  for(const button of document.querySelectorAll('[data-action="launch"]')){
   const pending=state.pendingLaunches.has(button.dataset.id),running=state.runningIds.includes(button.dataset.id);
   button.classList.toggle('launch-pending',pending);
@@ -461,6 +533,7 @@ async function handleAction(button){const action=button.dataset.action,id=button
    case 'check-update':{const status=await window.orbit.checkForUpdates();state.updateStatus=status;const element=el('update-status');if(element)element.textContent=status.message||'';break;}
    case 'install-update':try{await window.orbit.installUpdate()}catch(error){toast(error.message||'Cannot install update.',true)}break;
   case 'navigate':navigate(button.dataset.route);break;
+  case 'refresh-statistics':await loadStatistics();break;
   case 'shuffle':{if(state.games.length){const game=state.games[Math.floor(Math.random()*state.games.length)];openModal('detail',{id:game.id});}else toast('Add a game to your library first.');break;}
   case 'platform':{state.filter=button.dataset.source;if(state.route==='home'){state.route='library';el('side-slot').innerHTML=sidebar();el('top-slot').innerHTML=topbar();}renderPage();break;}
   case 'add':openModal('game');break;

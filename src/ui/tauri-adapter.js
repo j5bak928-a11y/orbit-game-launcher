@@ -17,7 +17,7 @@
   };
   const methods = [
     'bootstrap', 'getWindowState', 'setFullscreen', 'librarySnapshot',
-    'listGames', 'runningGames', 'getGame', 'addGame', 'updateGame',
+    'listGames', 'getStatistics', 'runningGames', 'getGame', 'addGame', 'updateGame',
     'removeGame', 'favoriteGame', 'saveSettings', 'chooseExecutable',
     'inspectGameFile', 'findOnlineCover', 'chooseArtwork', 'chooseFolder',
     'discoverGames', 'repairSteamArtwork', 'importGames', 'launchGame',

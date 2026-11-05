@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Orbit Launcher Rust Preview",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "identifier": "com.orbitlauncher.rustpreview",
   "build": {
     "beforeDevCommand": "node scripts/prepare-tauri.cjs",

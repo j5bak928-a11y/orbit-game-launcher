@@ -125,3 +125,57 @@ measure the background WebView2/RAM savings in a standalone installation.
 That test also did **not** exercise actual tray Open/recreation or live
 game-session persistence. These remain real-device verification requirements
 before promoting the Rust preview as Orbit's production release.
+
+## Repeatable Windows release gate for 2026-11-05 changes
+
+Use the freshly built unsigned Rust preview and an **isolated/disposable Windows
+profile**, rather than the user's installed Electron/Tauri application data.
+The 2026-11-02 evidence above is historical and does not verify subsequent
+code or binaries. Do not reuse those historical PIDs, hashes or RAM values.
+
+Start with read-only config and process checks:
+
+~~~powershell
+node --test tests/tauri-release-readiness.test.cjs tests/tauri-tray-runtime.test.cjs
+powershell -NoProfile -File tests/windows/tauri-release-readonly.ps1 -ArtifactPath 'C:\Review\orbit-launcher.exe'
+~~~
+
+An unsigned preview is allowed as a **test artifact**, never considered
+production-authenticated. Compare its SHA-256 to a trusted same-runner CI
+artifact manifest before manually running it. The read-only inspector reports
+signature status but cannot verify the expected publisher identity by itself.
+
+On the isolated profile, verify all transitions in order:
+
+1. Open from the fresh installer or a build produced from the exact reviewed
+   commit; confirm one Rust tracker and one visible WebView2 main window.
+2. Close with X. Expect the original HWND to be **destroyed**, Rust PID and
+   session tracker still alive, and no unrequested new window.
+3. Select **Open Orbit** from its tray menu, using
+   ORBIT_TAURI_E2E_RESTORE=yes with the opt-in test described above. Expect
+   one new visible HWND on the **same** Rust PID and the UI to re-bootstrap
+   the original library and settings from SQLite.
+4. Repeat close/open 5 times; rapidly double-click Open during teardown;
+   confirm no duplicate windows, stuck tray icon, orphaned WebView2 processes
+   or additional Rust tracker processes. Restarting from the executable while
+   in the tray should activate the same Rust instance.
+5. Change monitor layout/DPI between cycles; validate window bounds are
+   usable on the currently attached monitors. Check fullscreen and controller
+   focus after recreation. Repeat with Performance Guard while a disposable
+   game fixture is running.
+6. While the Rust process is still active but the UI is destroyed, confirm
+   game playtime continues after two background polling cycles. Reopen to
+   check the same game/session; then choose explicit **Quit Orbit** and
+   inspect persisted totals for duplication or missed final checkpoints.
+
+For memory comparisons, use the supplied process-tree sampler with the same
+PID (not just Orbit's Rust parent process) in three conditions: window visible,
+5–10 seconds after close and after tray reopen. Report per-process WebView2
+descendants and CPU separately, with all three measurements. A lower Rust
+parent working set or a single-process snapshot cannot prove renderer/GPU
+memory release; shared or detached child processes require independent review.
+
+**Blockers until witnessed:** installer upgrade/uninstall behavior, real tray
+Open/recreation after the latest build, rapid-click/monitor recovery, live
+playtime and backup parity, code signing and update trust. All automated tests
+passing is not sufficient to make the Electron replacement release-ready.

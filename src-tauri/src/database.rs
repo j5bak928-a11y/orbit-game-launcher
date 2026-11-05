@@ -2,10 +2,11 @@
 //! intentionally match the Electron database (src/core/database.cjs).
 //! Opening this database migrates existing files in place; it never replaces them.
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime, SecondsFormat, Utc};
+use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{json, Map, Value};
-use std::collections::HashSet;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 use uuid::Uuid;
@@ -36,7 +37,7 @@ const SETTING_KEYS: [&str; 12] = [
     "autoUpdates",
     "libraryDensity",
 ];
-const SOURCES: [&str; 8] = [
+const SOURCES: [&str; 9] = [
     "manual",
     "steam",
     "epic",
@@ -44,10 +45,279 @@ const SOURCES: [&str; 8] = [
     "ea",
     "ubisoft",
     "battlenet",
+    "xbox",
     "folder",
 ];
 const MAX_SESSION_SECONDS: i64 = 7 * 86_400;
+const STATS_MAX_ROWS: i64 = 100_000;
 type DbResult<T> = Result<T, String>;
+
+#[derive(Clone)]
+struct StatisticsRow {
+    game_id: String,
+    start: String,
+    finish: String,
+    seconds: Option<i64>,
+    name: String,
+    source: String,
+    cover: String,
+    icon: String,
+}
+
+#[derive(Clone, Copy)]
+struct StatisticsEvent {
+    at: i64,
+    index: usize,
+    rate: f64,
+    opening: bool,
+}
+
+#[derive(Clone, Copy)]
+struct StatisticsRate {
+    rate: f64,
+    index: usize,
+}
+impl PartialEq for StatisticsRate {
+    fn eq(&self, other: &Self) -> bool {
+        self.rate.to_bits() == other.rate.to_bits() && self.index == other.index
+    }
+}
+impl Eq for StatisticsRate {}
+impl PartialOrd for StatisticsRate {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for StatisticsRate {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.rate
+            .total_cmp(&other.rate)
+            .then_with(|| self.index.cmp(&other.index))
+    }
+}
+
+struct StatisticsGame {
+    id: String,
+    name: String,
+    source: String,
+    cover: String,
+    icon: String,
+    last_played_at: String,
+    last_time: i64,
+    seconds: f64,
+    events: Vec<StatisticsEvent>,
+}
+
+fn statistics_midnight_after(timestamp: i64) -> DbResult<i64> {
+    let current = Local
+        .timestamp_millis_opt(timestamp)
+        .single()
+        .ok_or("Invalid statistics timestamp.")?;
+    let date = current
+        .date_naive()
+        .succ_opt()
+        .ok_or("Statistics date out of range.")?;
+    // Some time zones change UTC offset at midnight. Find the first real
+    // local hour instead of assuming every local day lasts 24 hours.
+    for hour in 0..24 {
+        let naive = date
+            .and_hms_opt(hour, 0, 0)
+            .ok_or("Invalid calendar hour.")?;
+        if let Some(next) = Local.from_local_datetime(&naive).earliest() {
+            return Ok(next.timestamp_millis());
+        }
+    }
+    Err("No valid local calendar boundary.".into())
+}
+
+fn statistics_allocate(
+    mut from: i64,
+    to: i64,
+    rate: f64,
+    game: &mut StatisticsGame,
+    days: &mut BTreeMap<String, f64>,
+    total: &mut f64,
+) -> DbResult<()> {
+    while from < to {
+        let day = Local
+            .timestamp_millis_opt(from)
+            .single()
+            .ok_or("Invalid statistics timestamp.")?
+            .format("%Y-%m-%d")
+            .to_string();
+        let until = to.min(statistics_midnight_after(from)?);
+        if until <= from {
+            return Err("Statistics calendar cannot advance.".into());
+        }
+        let seconds = (until - from) as f64 * rate / 1000.0;
+        *days.entry(day).or_default() += seconds;
+        game.seconds += seconds;
+        *total += seconds;
+        from = until;
+    }
+    Ok(())
+}
+
+fn statistics_from_rows(
+    rows: Vec<StatisticsRow>,
+    open_sessions: i64,
+    days: i64,
+    as_of: DateTime<Local>,
+) -> DbResult<Value> {
+    let mut games: HashMap<String, StatisticsGame> = HashMap::new();
+    let mut day_seconds: BTreeMap<String, f64> = BTreeMap::new();
+    let mut invalid_sessions = 0_i64;
+    let mut raw_seconds = 0_f64;
+    let mut eligible_seconds = 0_f64;
+    let mut credited = 0_f64;
+    let now = as_of.timestamp_millis();
+    for row in rows {
+        let start = DateTime::parse_from_rfc3339(&row.start);
+        let end = DateTime::parse_from_rfc3339(&row.finish);
+        let Some((start, end, raw)) =
+            start
+                .ok()
+                .zip(end.ok())
+                .zip(row.seconds)
+                .map(|((start, end), seconds)| {
+                    (start.timestamp_millis(), end.timestamp_millis(), seconds)
+                })
+        else {
+            invalid_sessions += 1;
+            continue;
+        };
+        if raw < 0
+            || end <= start
+            || end - start > MAX_SESSION_SECONDS * 1000
+            || end > now.saturating_add(300_000)
+        {
+            invalid_sessions += 1;
+            continue;
+        }
+        let game = games
+            .entry(row.game_id.clone())
+            .or_insert_with(|| StatisticsGame {
+                id: row.game_id,
+                name: row.name,
+                source: row.source,
+                cover: row.cover,
+                icon: row.icon,
+                last_played_at: row.finish.clone(),
+                last_time: i64::MIN,
+                seconds: 0.0,
+                events: Vec::new(),
+            });
+        if end > game.last_time {
+            game.last_time = end;
+            game.last_played_at = row.finish;
+        }
+        raw_seconds += raw as f64;
+        let credit = (raw.min(MAX_SESSION_SECONDS) as f64).min((end - start) as f64 / 1000.0);
+        eligible_seconds += credit;
+        if credit <= 0.0 {
+            continue;
+        }
+        let rate = credit * 1000.0 / (end - start) as f64;
+        let index = game.events.len() / 2;
+        game.events.push(StatisticsEvent {
+            at: start,
+            index,
+            rate,
+            opening: true,
+        });
+        game.events.push(StatisticsEvent {
+            at: end,
+            index,
+            rate,
+            opening: false,
+        });
+    }
+    for game in games.values_mut() {
+        game.events
+            .sort_unstable_by(|a, b| a.at.cmp(&b.at).then_with(|| a.opening.cmp(&b.opening)));
+        let events = std::mem::take(&mut game.events);
+        let mut active: HashSet<usize> = HashSet::new();
+        let mut heap: BinaryHeap<StatisticsRate> = BinaryHeap::new();
+        let mut previous = None;
+        let mut index = 0;
+        while index < events.len() {
+            let time = events[index].at;
+            while heap.peek().is_some_and(|top| !active.contains(&top.index)) {
+                heap.pop();
+            }
+            if let Some(from) = previous {
+                if time > from {
+                    if let Some(top) = heap.peek() {
+                        statistics_allocate(
+                            from,
+                            time,
+                            top.rate,
+                            game,
+                            &mut day_seconds,
+                            &mut credited,
+                        )?;
+                    }
+                }
+            }
+            while index < events.len() && events[index].at == time {
+                let event = events[index];
+                if event.opening {
+                    active.insert(event.index);
+                    heap.push(StatisticsRate {
+                        rate: event.rate,
+                        index: event.index,
+                    });
+                } else {
+                    active.remove(&event.index);
+                }
+                index += 1;
+            }
+            previous = Some(time);
+        }
+    }
+    let today = as_of.date_naive();
+    let day_key = |back: i64| -> DbResult<String> {
+        Ok(today
+            .checked_sub_signed(chrono::Duration::days(back))
+            .ok_or("Statistics calendar out of range.")?
+            .format("%Y-%m-%d")
+            .to_string())
+    };
+    let total_days = |count: i64| -> DbResult<i64> {
+        let mut sum = 0_f64;
+        for back in 0..count {
+            sum += day_seconds.get(&day_key(back)?).copied().unwrap_or(0.0);
+        }
+        Ok(sum.round() as i64)
+    };
+    let mut daily = Vec::with_capacity(days as usize);
+    for back in (0..days).rev() {
+        let date = day_key(back)?;
+        daily.push(json!({"date":date,"seconds":day_seconds.get(&date).copied().unwrap_or(0.0).round() as i64}));
+    }
+    let mut recent = games.into_values().collect::<Vec<_>>();
+    recent.sort_unstable_by(|a, b| b.last_time.cmp(&a.last_time).then_with(|| a.id.cmp(&b.id)));
+    let recent_games = recent
+        .into_iter()
+        .take(8)
+        .map(|game| {
+            json!({
+                "id":game.id,"name":game.name,"source":game.source,"cover":game.cover,
+                "icon":game.icon,"seconds":game.seconds.round() as i64,
+                "lastPlayedAt":game.last_played_at
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "days":days,"daily":daily,
+        "totals":{"week":total_days(7)?,"month":total_days(30)?,"allTime":credited.round() as i64},
+        "recentGames":recent_games,
+        "meta":{"openSessions":open_sessions,"invalidSessions":invalid_sessions,
+                "overlapSeconds":(eligible_seconds - credited).max(0.0).round() as i64,
+                "adjustedSeconds":(raw_seconds - eligible_seconds).max(0.0).round() as i64,
+                "truncated":false}
+    }))
+}
 
 fn error(err: impl std::fmt::Display) -> String {
     err.to_string()
@@ -630,6 +900,55 @@ impl LibraryDatabase {
         Ok(Value::Array(games))
     }
 
+    /// Reporting only: reads completed session rows and never updates historical
+    /// playtime, counters, checkpoints, or session ownership.
+    pub fn get_statistics(&self, days: i64) -> DbResult<Value> {
+        self.get_statistics_at(days, Local::now())
+    }
+
+    fn get_statistics_at(&self, days: i64, as_of: DateTime<Local>) -> DbResult<Value> {
+        if !(7..=90).contains(&days) {
+            return Err("Statistics days must be an integer from 7 to 90.".into());
+        }
+        let open_sessions: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE finished_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(error)?;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT s.game_id,s.started_at,s.finished_at,s.seconds,g.name,g.source,g.cover,g.icon
+                 FROM sessions s INNER JOIN games g ON g.id=s.game_id
+                 WHERE s.finished_at IS NOT NULL
+                 ORDER BY s.game_id,s.started_at,s.id LIMIT ?1",
+            )
+            .map_err(error)?;
+        let rows = stmt
+            .query_map([STATS_MAX_ROWS + 1], |row| {
+                Ok(StatisticsRow {
+                    game_id: row.get(0)?,
+                    start: row.get::<_, String>(1).unwrap_or_default(),
+                    finish: row.get::<_, String>(2).unwrap_or_default(),
+                    seconds: row.get::<_, i64>(3).ok(),
+                    name: row.get(4)?,
+                    source: row.get(5)?,
+                    cover: row.get(6)?,
+                    icon: row.get(7)?,
+                })
+            })
+            .map_err(error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(error)?;
+        if rows.len() > STATS_MAX_ROWS as usize {
+            return Err("Statistics history exceeds the safe 100000-session read limit.".into());
+        }
+        statistics_from_rows(rows, open_sessions, days, as_of)
+    }
+
     pub fn list_activity_games(&self) -> DbResult<Value> {
         let mut stmt = self.conn.prepare(
             "SELECT id,name,source,install_path,executable,launch_uri FROM games
@@ -722,10 +1041,25 @@ fn field<'a>(game: &'a Value, key: &str) -> &'a str {
     game.get(key).and_then(Value::as_str).unwrap_or("")
 }
 
+fn has_store_identity(game: &Value) -> bool {
+    !field(game, "source_id").is_empty()
+        && !field(game, "source").is_empty()
+        && !["manual", "folder"].contains(&field(game, "source"))
+}
+
 fn find_executable_duplicate_on(
     conn: &Connection,
     executable: &str,
     except: &str,
+) -> DbResult<Option<String>> {
+    find_executable_duplicate_for(conn, executable, except, false)
+}
+
+fn find_executable_duplicate_for(
+    conn: &Connection,
+    executable: &str,
+    except: &str,
+    alias_only: bool,
 ) -> DbResult<Option<String>> {
     if executable.is_empty() {
         return Ok(None);
@@ -735,10 +1069,15 @@ fn find_executable_duplicate_on(
     } else {
         "executable=?1"
     };
+    // Verified store product identities remain distinct even when they share
+    // an installed executable. Unkeyed/manual entries remain deduplicated.
+    let filter = if alias_only {
+        " AND (source IN ('manual','folder') OR source_id = '')"
+    } else {
+        ""
+    };
     conn.query_row(
-        &format!(
-            "SELECT id FROM games WHERE executable != '' AND {comparison} AND id != ?2 LIMIT 1"
-        ),
+        &format!("SELECT id FROM games WHERE executable != '' AND {comparison} AND id != ?2{filter} ORDER BY rowid LIMIT 1"),
         params![normalized_executable(executable), except],
         |r| r.get(0),
     )
@@ -747,11 +1086,25 @@ fn find_executable_duplicate_on(
 }
 
 fn find_uri_duplicate_on(conn: &Connection, uri: &str, except: &str) -> DbResult<Option<String>> {
+    find_uri_duplicate_for(conn, uri, except, false)
+}
+
+fn find_uri_duplicate_for(
+    conn: &Connection,
+    uri: &str,
+    except: &str,
+    alias_only: bool,
+) -> DbResult<Option<String>> {
     if uri.is_empty() {
         return Ok(None);
     }
+    let filter = if alias_only {
+        " AND (source IN ('manual','folder') OR source_id = '')"
+    } else {
+        ""
+    };
     conn.query_row(
-        "SELECT id FROM games WHERE launch_uri != '' AND launch_uri=?1 COLLATE NOCASE AND id != ?2 LIMIT 1",
+        &format!("SELECT id FROM games WHERE launch_uri != '' AND launch_uri=?1 COLLATE NOCASE AND id != ?2{filter} ORDER BY rowid LIMIT 1"),
         params![uri, except],
         |r| r.get(0),
     ).optional().map_err(error)
@@ -776,10 +1129,13 @@ fn find_duplicate_on(
             return Ok(Some(id));
         }
     }
-    if let Some(id) = find_executable_duplicate_on(conn, field(game, "executable"), except)? {
+    let alias_only = has_store_identity(game);
+    if let Some(id) =
+        find_executable_duplicate_for(conn, field(game, "executable"), except, alias_only)?
+    {
         return Ok(Some(id));
     }
-    find_uri_duplicate_on(conn, field(game, "launch_uri"), except)
+    find_uri_duplicate_for(conn, field(game, "launch_uri"), except, alias_only)
 }
 
 fn insert_on(conn: &Connection, game: &Value, key: &str) -> DbResult<Value> {
@@ -836,10 +1192,24 @@ fn update_on(conn: &Connection, id: &str, patch: &Value) -> DbResult<Value> {
         return Err("Game not found.".into());
     }
     let game = clean_game(patch, Some(&previous))?;
-    if find_executable_duplicate_on(conn, field(&game, "executable"), id)?.is_some() {
+    if find_executable_duplicate_for(
+        conn,
+        field(&game, "executable"),
+        id,
+        has_store_identity(&game),
+    )?
+    .is_some()
+    {
         return Err("This executable is already in your library.".into());
     }
-    if find_uri_duplicate_on(conn, field(&game, "launch_uri"), id)?.is_some() {
+    if find_uri_duplicate_for(
+        conn,
+        field(&game, "launch_uri"),
+        id,
+        has_store_identity(&game),
+    )?
+    .is_some()
+    {
         return Err("This launcher link is already in your library.".into());
     }
     let key = duplicate_key(&game);
@@ -1274,6 +1644,85 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn statistics_split_local_midnight_deduplicate_and_ignore_open_sessions_without_writes() {
+        with_database(|db, _| {
+            let main = db
+                .upsert(&json!({"name":"Main","source":"steam","source_id":"stats-main"}))
+                .unwrap();
+            let bonus = db
+                .upsert(&json!({"name":"Bonus","source":"epic","source_id":"stats-bonus"}))
+                .unwrap();
+            let main_id = field(&main["game"], "id");
+            let bonus_id = field(&bonus["game"], "id");
+            let local_time = |day, hour, minute| {
+                Local
+                    .with_ymd_and_hms(2026, 11, day, hour, minute, 0)
+                    .single()
+                    .unwrap()
+                    .to_rfc3339()
+            };
+            for (id, game_id, start, finish, seconds) in [
+                (
+                    "main",
+                    main_id,
+                    local_time(3, 23, 50),
+                    local_time(4, 0, 10),
+                    1200,
+                ),
+                (
+                    "overlap",
+                    main_id,
+                    local_time(3, 23, 55),
+                    local_time(4, 0, 5),
+                    600,
+                ),
+                (
+                    "bonus",
+                    bonus_id,
+                    local_time(4, 0, 0),
+                    local_time(4, 0, 30),
+                    1800,
+                ),
+            ] {
+                db.conn.execute(
+                    "INSERT INTO sessions(id,game_id,started_at,finished_at,seconds) VALUES (?1,?2,?3,?4,?5)",
+                    params![id, game_id, start, finish, seconds],
+                ).unwrap();
+            }
+            db.conn.execute(
+                "INSERT INTO sessions(id,game_id,started_at,heartbeat_seconds) VALUES (?1,?2,?3,?4)",
+                params!["open",main_id,local_time(5,8,0),9000]
+            ).unwrap();
+            db.conn.execute(
+                "INSERT INTO sessions(id,game_id,started_at,finished_at,seconds) VALUES (?1,?2,?3,?4,?5)",
+                params!["corrupt",main_id,"1900-01-01T00:00:00Z","2026-11-03T00:00:00Z",300]
+            ).unwrap();
+            let now = Local
+                .with_ymd_and_hms(2026, 11, 5, 12, 0, 0)
+                .single()
+                .unwrap();
+            let stats = db.get_statistics_at(7, now).unwrap();
+            assert_eq!(
+                stats["totals"],
+                json!({"week":3000,"month":3000,"allTime":3000})
+            );
+            assert_eq!(stats["meta"]["overlapSeconds"], 600);
+            assert_eq!(stats["meta"]["openSessions"], 1);
+            assert_eq!(stats["meta"]["invalidSessions"], 1);
+            assert_eq!(
+                stats["daily"][4],
+                json!({"date":"2026-11-03","seconds":600})
+            );
+            assert_eq!(
+                stats["daily"][5],
+                json!({"date":"2026-11-04","seconds":2400})
+            );
+            assert_eq!(db.get(main_id).unwrap()["total_play_seconds"], 0);
+            assert!(db.get_statistics(91).is_err());
+        });
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_network_share_root_survives_dot_dot_and_stored_path_keeps_case() {
@@ -1333,6 +1782,117 @@ mod tests {
             assert!(db.update(&id, &json!({"source":"unknown"})).is_err());
             assert_eq!(db.remove(&id).unwrap(), true);
             assert_eq!(db.count().unwrap(), 1);
+        });
+    }
+
+    #[test]
+    fn distinct_verified_store_products_can_share_executable_and_uri_without_losing_user_data() {
+        with_database(|db, _| {
+            let executable = r"C:\Orbit\Shared\Game.exe";
+            let uri = "com.epicgames.launcher://apps/shared?action=launch";
+            let first = db
+                .upsert(&json!({
+                    "name":"Epic 125","source":"epic","source_id":"125",
+                    "executable":executable,"launch_uri":uri,"install_path":r"C:\Orbit\Shared"
+                }))
+                .unwrap();
+            let first_id = field(&first["game"], "id").to_string();
+            db.update(&first_id, &json!({"favorite":true})).unwrap();
+            let started = db.start_session(&first_id).unwrap();
+            assert!(db.finish_session(&started, 59).unwrap());
+            let second = db
+                .upsert(&json!({
+                    "name":"Epic 126","source":"epic","source_id":"126",
+                    "executable":executable,"launch_uri":uri,"install_path":r"C:\Orbit\Shared"
+                }))
+                .unwrap();
+            assert_eq!(second["added"], true);
+            let second_id = field(&second["game"], "id").to_owned();
+            assert_ne!(second_id, first_id);
+            let gog = db
+                .upsert(&json!({
+                    "name":"GOG independent product","source":"gog","source_id":"126",
+                    "executable":executable,"launch_uri":uri
+                }))
+                .unwrap();
+            assert_eq!(gog["added"], true);
+            assert_ne!(gog["game"]["id"], second["game"]["id"]);
+            assert_eq!(db.count().unwrap(), 3);
+            assert_eq!(db.get(&first_id).unwrap()["favorite"], true);
+            assert_eq!(db.get(&first_id).unwrap()["total_play_seconds"], 59);
+            let batch = db.upsert_batch(&[
+                json!({"name":"Epic 127","source":"epic","source_id":"127","executable":executable}),
+                json!({"name":"Epic 126 again","source":"epic","source_id":"126","executable":executable}),
+            ]).unwrap();
+            assert_eq!(batch["imported"], 1);
+            assert_eq!(batch["skipped"], 1);
+            assert_eq!(
+                db.upsert(&json!({
+                    "name":"Repeat same store product","source":"epic","source_id":"126",
+                    "executable":executable
+                }))
+                .unwrap()["game"]["id"],
+                second_id
+            );
+            assert_eq!(
+                db.upsert(&json!({
+                    "name":"Manual alias","source":"manual","executable":executable
+                }))
+                .unwrap()["added"],
+                false
+            );
+            assert_eq!(
+                db.upsert(&json!({
+                    "name":"Folder alias","source":"folder","executable":executable
+                }))
+                .unwrap()["added"],
+                false
+            );
+            assert_eq!(db.count().unwrap(), 4);
+            assert_eq!(
+                db.update(&second_id, &json!({"executable":executable}))
+                    .unwrap()["id"],
+                second_id
+            );
+            assert!(db.update(&second_id, &json!({"source_id":"125"})).is_err());
+            assert_eq!(db.get(&second_id).unwrap()["source_id"], "126");
+        });
+    }
+
+    #[test]
+    fn store_source_ids_are_case_insensitive_and_unkeyed_manual_aliases_still_coalesce() {
+        with_database(|db, _| {
+            let path = r"C:\Orbit\Shared\Other.exe";
+            let first = db
+                .upsert(&json!({
+                    "name":"Epic DLC","source":"epic","source_id":"DLC-XYZ",
+                    "executable":path
+                }))
+                .unwrap();
+            let repeated = db
+                .upsert(&json!({
+                    "name":"Epic DLC case variant","source":"epic","source_id":"dlc-xyz",
+                    "executable":path
+                }))
+                .unwrap();
+            assert_eq!(repeated["added"], false);
+            assert_eq!(repeated["game"]["id"], first["game"]["id"]);
+            assert_eq!(db.count().unwrap(), 1);
+            let manual_path = r"C:\Orbit\Shared\ManualFirst.exe";
+            let manual = db
+                .upsert(&json!({
+                    "name":"Previously linked","source":"manual","executable":manual_path
+                }))
+                .unwrap();
+            assert_eq!(
+                db.upsert(&json!({
+                    "name":"Store on existing manual alias","source":"epic","source_id":"new-id",
+                    "executable":manual_path
+                }))
+                .unwrap()["game"]["id"],
+                manual["game"]["id"]
+            );
+            assert_eq!(db.count().unwrap(), 2);
         });
     }
 

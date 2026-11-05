@@ -4,6 +4,7 @@
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, DirEntry};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
@@ -13,6 +14,7 @@ const MAX_ENTRIES: usize = 6_000;
 const MAX_ROOTS: usize = 64;
 const MANIFEST_BYTES: u64 = 3 * 1024 * 1024;
 const MAX_SESSIONS: usize = 128;
+const MAX_STORE_RECORDS: usize = 2_048;
 
 fn field<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or("")
@@ -1279,13 +1281,37 @@ fn gog_roots() -> Vec<PathBuf> {
     roots
 }
 
-fn gog_from_dir(dir: &Path, items: &[DirEntry], warnings: &mut Vec<String>) -> Option<Value> {
-    let manifest = items.iter().find(|item| {
-        let name = filename(&item.path()).to_ascii_lowercase();
-        name.starts_with("goggame-")
-            && name.ends_with(".info")
-            && item.file_type().is_ok_and(|t| t.is_file())
-    })?;
+fn gog_from_dir(dir: &Path, items: &[DirEntry], warnings: &mut Vec<String>) -> Vec<Value> {
+    let manifests = items
+        .iter()
+        .filter(|item| {
+            let name = filename(&item.path()).to_ascii_lowercase();
+            name.starts_with("goggame-")
+                && name.ends_with(".info")
+                && item
+                    .file_type()
+                    .is_ok_and(|t| t.is_file() && !t.is_symlink())
+        })
+        .collect::<Vec<_>>();
+    if manifests.len() > 256 {
+        warnings.push(format!(
+            "GOG manifest limit reached in {} (256 files).",
+            dir.display()
+        ));
+    }
+    let mut games = Vec::new();
+    let mut ids = HashSet::new();
+    for manifest in manifests.into_iter().take(256) {
+        if let Some(game) = gog_from_manifest(dir, manifest, warnings) {
+            if ids.insert(field(&game, "source_id").to_ascii_lowercase()) {
+                games.push(game);
+            }
+        }
+    }
+    games
+}
+
+fn gog_from_manifest(dir: &Path, manifest: &DirEntry, warnings: &mut Vec<String>) -> Option<Value> {
     let doc: Value = match small_text(&manifest.path())
         .and_then(|s| serde_json::from_str(&s).map_err(|e| e.to_string()))
     {
@@ -1360,10 +1386,13 @@ fn discover_gog() -> (Vec<Value>, Vec<String>) {
         if truncated {
             warnings.push("GOG scan reached its metadata entry limit.".into());
         }
-        if let Some(game) = gog_from_dir(&root, &entries, &mut warnings) {
-            let id = field(&game, "source_id").to_string();
-            if ids.insert(id) {
-                games.push(game);
+        let root_games = gog_from_dir(&root, &entries, &mut warnings);
+        if !root_games.is_empty() {
+            for game in root_games {
+                let id = field(&game, "source_id").to_ascii_lowercase();
+                if ids.insert(id) {
+                    games.push(game);
+                }
             }
             continue;
         }
@@ -1385,8 +1414,8 @@ fn discover_gog() -> (Vec<Value>, Vec<String>) {
                     location.display()
                 ));
             }
-            if let Some(game) = gog_from_dir(&location, &items, &mut warnings) {
-                let id = field(&game, "source_id").to_string();
+            for game in gog_from_dir(&location, &items, &mut warnings) {
+                let id = field(&game, "source_id").to_ascii_lowercase();
                 if ids.insert(id) {
                     games.push(game);
                 }
@@ -1394,6 +1423,659 @@ fn discover_gog() -> (Vec<Value>, Vec<String>) {
         }
     }
     (games, warnings)
+}
+
+// Battle.net's Agent product.db is a protobuf wire stream, not JSON/SQLite.
+// Read only the three documented fields needed for installed products; reject
+// malformed lengths, unlimited nesting and unknown wire types. Never run the
+// Agent or guess a launcher URI from a product code.
+fn protobuf_varint(bytes: &[u8], offset: &mut usize) -> Result<u64, String> {
+    let mut value = 0u64;
+    for shift in (0..70).step_by(7) {
+        let byte = *bytes.get(*offset).ok_or("Truncated protobuf varint")?;
+        *offset += 1;
+        if shift == 63 && byte > 1 {
+            return Err("Protobuf varint overflow".into());
+        }
+        value |= ((byte & 0x7f) as u64)
+            .checked_shl(shift)
+            .ok_or("Protobuf varint overflow")?;
+        if byte & 0x80 == 0 {
+            return Ok(value);
+        }
+    }
+    Err("Protobuf varint too long".into())
+}
+
+fn protobuf_fields<'a>(bytes: &'a [u8]) -> Result<Vec<(u32, &'a [u8])>, String> {
+    let mut fields = Vec::new();
+    let mut at = 0;
+    let mut count = 0usize;
+    while at < bytes.len() {
+        count += 1;
+        if count > MAX_STORE_RECORDS * 20 {
+            return Err("Too many protobuf fields".into());
+        }
+        let key = protobuf_varint(bytes, &mut at)?;
+        if key >> 3 == 0 || key >> 3 > u32::MAX as u64 {
+            return Err("Invalid protobuf field number".into());
+        }
+        let field = (key >> 3) as u32;
+        match key & 7 {
+            0 => {
+                let _ = protobuf_varint(bytes, &mut at)?;
+            }
+            1 | 5 => {
+                at = at
+                    .checked_add(if key & 7 == 1 { 8 } else { 4 })
+                    .filter(|end| *end <= bytes.len())
+                    .ok_or("Truncated protobuf fixed field")?;
+            }
+            2 => {
+                let len = usize::try_from(protobuf_varint(bytes, &mut at)?)
+                    .map_err(|_| "Protobuf length overflow")?;
+                let end = at
+                    .checked_add(len)
+                    .filter(|end| *end <= bytes.len())
+                    .ok_or("Truncated protobuf bytes")?;
+                fields.push((field, &bytes[at..end]));
+                at = end;
+            }
+            _ => return Err("Unsupported protobuf wire type".into()),
+        }
+    }
+    Ok(fields)
+}
+
+fn battlenet_products(bytes: &[u8]) -> Result<Vec<(String, String)>, String> {
+    if bytes.len() > MANIFEST_BYTES as usize {
+        return Err("Battle.net database exceeds metadata size limit".into());
+    }
+    let mut found = Vec::new();
+    let mut seen = HashSet::new();
+    for (field, product) in protobuf_fields(bytes)? {
+        if field != 1 {
+            continue;
+        }
+        if found.len() >= MAX_STORE_RECORDS {
+            break;
+        }
+        let mut code = None;
+        let mut path = None;
+        for (key, data) in protobuf_fields(product)? {
+            match key {
+                2 => code = std::str::from_utf8(data).ok(),
+                3 => {
+                    for (setting, value) in protobuf_fields(data)? {
+                        if setting == 1 {
+                            path = std::str::from_utf8(value).ok();
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let (Some(code), Some(path)) = (code, path) else {
+            continue;
+        };
+        if code.len() < 2
+            || code.len() > 48
+            || !code.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+            || ["agent", "bna"].contains(&code.to_ascii_lowercase().as_str())
+            || !safe_text(path, 4_000)
+        {
+            continue;
+        }
+        if seen.insert(code.to_ascii_lowercase()) {
+            found.push((code.to_string(), path.to_string()));
+        }
+    }
+    Ok(found)
+}
+
+fn battlenet_executable(dir: &Path, code: &str, title: &str) -> Option<PathBuf> {
+    // Product codes only select a small list of known conventional binaries;
+    // each candidate MUST exist within the installed product directory.
+    let known: &[&str] = match code.to_ascii_lowercase().as_str() {
+        "wow" => &["_retail_/Wow.exe", "Wow.exe"],
+        "wow_classic" => &["_classic_/WowClassic.exe"],
+        "wow_classic_era" => &["_classic_era_/WowClassic.exe"],
+        "d3" => &["Diablo III.exe", "Diablo III/Diablo III.exe"],
+        "fenris" => &["Diablo IV.exe"],
+        "osi" => &["_retail_/Overwatch.exe", "Overwatch.exe"],
+        _ => &[],
+    };
+    for relative in known {
+        if let Some(file) = contained_file(dir, relative) {
+            if extension(&file) == "exe" && !ignored_executable(&file) {
+                return Some(file);
+            }
+        }
+    }
+    // For unknown codes, accept an EXACT title-to-executable match only.
+    // Other helper binaries, storefront launchers and heuristic guesses are
+    // not safe to publish as a runnable launch target.
+    let expected = normalized_name(title);
+    if expected.len() < 4 {
+        return None;
+    }
+    let mut queue = VecDeque::from([(dir.to_path_buf(), 0usize)]);
+    let mut remaining = 256usize;
+    let mut matches = Vec::new();
+    while let Some((folder, depth)) = queue.pop_front() {
+        if remaining == 0 {
+            return None; // An incomplete scan cannot claim a unique owner.
+        }
+        let Ok((items, truncated)) = entries_at(&folder, remaining) else {
+            return None;
+        };
+        remaining -= items.len();
+        if truncated {
+            return None;
+        }
+        for entry in items {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            if kind.is_dir() && depth < 3 && !ignored_dir(&path) {
+                queue.push_back((path, depth + 1));
+            } else if kind.is_file() && extension(&path) == "exe" && !ignored_executable(&path) {
+                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                if normalized_name(stem) == expected {
+                    let relative = path.strip_prefix(dir).ok()?.to_str()?;
+                    if let Some(verified) = contained_file(dir, relative) {
+                        matches.push(verified);
+                        if matches.len() > 1 {
+                            return None;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    matches.pop()
+}
+
+fn discover_battlenet_at(database: &Path) -> (Vec<Value>, Vec<String>) {
+    let mut games = Vec::new();
+    let mut warnings = Vec::new();
+    if !database.is_file() {
+        return (games, warnings);
+    }
+    let bytes = (|| -> Result<Vec<u8>, String> {
+        let metadata = fs::metadata(database).map_err(|e| e.to_string())?;
+        if !metadata.is_file() || metadata.len() > MANIFEST_BYTES {
+            return Err("Battle.net product.db exceeds metadata size limit".into());
+        }
+        // Bound actual bytes read even if the Agent replaces its file after
+        // the metadata check. Never follow a product entry to read content.
+        let mut file = fs::File::open(database)
+            .map_err(|e| e.to_string())?
+            .take(MANIFEST_BYTES + 1);
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+        if bytes.len() as u64 > MANIFEST_BYTES {
+            return Err("Battle.net product.db exceeds metadata size limit".into());
+        }
+        Ok(bytes)
+    })();
+    let products = bytes.and_then(|bytes| battlenet_products(&bytes));
+    match products {
+        Ok(products) => {
+            for (code, install) in products {
+                let Some(directory) = safe_installed_dir(&install) else {
+                    continue;
+                };
+                // Cached Agent records can outlive uninstallations. An
+                // existing folder alone is insufficient proof of a game.
+                if !directory.join(".build.info").is_file() {
+                    continue;
+                }
+                let title = clean_name(&filename(&directory));
+                if !valid_title(&title)
+                    || ["battle net", "agent", "cache", "battle.net"]
+                        .contains(&title.to_ascii_lowercase().as_str())
+                {
+                    continue;
+                }
+                let Some(executable) = battlenet_executable(&directory, &code, &title) else {
+                    warnings.push(format!(
+                        "Battle.net {} requires manual executable selection; no unique verified game binary found.",
+                        code
+                    ));
+                    continue;
+                };
+                // Launch URI formats vary by product. A verified executable
+                // may still require the Battle.net client for authentication.
+                games.push(json!({"name":title,"source":"battlenet","source_id":code,
+                    "install_path":directory,"executable":executable,"tags":[]}));
+            }
+            if !games.is_empty() {
+                warnings.push("Battle.net executables were verified on disk, but online titles can still require Battle.net authentication or launcher activation.".into());
+            }
+        }
+        Err(error) => warnings.push(format!("Battle.net Agent product database: {error}")),
+    }
+    (games, warnings)
+}
+
+fn discover_battlenet() -> (Vec<Value>, Vec<String>) {
+    #[cfg(windows)]
+    {
+        let root = std::env::var_os("ProgramData")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
+        return discover_battlenet_at(&root.join("Battle.net/Agent/product.db"));
+    }
+    #[cfg(not(windows))]
+    (Vec::new(), Vec::new())
+}
+
+// Strict, bounded XML structure+attribute reader for MicrosoftGame.config.
+// No DTD, CDATA, external entities, XInclude or remote resource processing.
+// Unlike a start-tag regex, it rejects unmatched/misnested closing tags,
+// duplicate XML attributes and a second root. Every requested field is only
+// returned after the ENTIRE manifest has passed structure validation.
+fn xbox_xml_tags(source: &str, wanted: &str) -> Option<Vec<HashMap<String, String>>> {
+    if source.len() > 128 * 1024 {
+        return None;
+    }
+    let mut tags = Vec::new();
+    let mut remaining = source.trim_start_matches('\u{feff}');
+    let mut visits = 0;
+    let mut stack: Vec<&str> = Vec::new();
+    let mut roots = 0;
+    loop {
+        let Some(start) = remaining.find('<') else {
+            if !stack.is_empty()
+                || !xml_text_valid(remaining)
+                || (roots > 0 && !remaining.trim().is_empty())
+            {
+                return None;
+            }
+            break;
+        };
+        if !xml_text_valid(&remaining[..start])
+            || (stack.is_empty() && !remaining[..start].trim().is_empty())
+        {
+            return None;
+        }
+        visits += 1;
+        if visits > MAX_STORE_RECORDS {
+            return None;
+        }
+        remaining = &remaining[start + 1..];
+        if remaining.starts_with("!--") {
+            let end = remaining.find("-->")?;
+            if remaining[3..end].contains("--") {
+                return None;
+            }
+            remaining = &remaining[end + 3..];
+            continue;
+        }
+        if remaining.starts_with('?') {
+            let end = remaining.find("?>")?;
+            if end > 8_192 {
+                return None;
+            }
+            remaining = &remaining[end + 2..];
+            continue;
+        }
+        if remaining.starts_with('!') {
+            return None;
+        }
+        // A '>' inside an XML quoted attribute isn't a tag terminator.
+        // A raw '<' inside a tag is never valid.
+        let mut quote = None;
+        let mut end = None;
+        for (index, byte) in remaining.bytes().enumerate() {
+            match (quote, byte) {
+                (Some(current), value) if value == current => quote = None,
+                (None, b'\'' | b'"') => quote = Some(byte),
+                (None, b'<') => return None,
+                (None, b'>') => {
+                    end = Some(index);
+                    break;
+                }
+                _ => {}
+            }
+            if index > 8_192 {
+                return None;
+            }
+        }
+        let end = end?;
+        if end > 8_192 {
+            return None;
+        }
+        let body = remaining[..end].trim();
+        remaining = &remaining[end + 1..];
+        if let Some(close) = body.strip_prefix('/') {
+            let close = close.trim();
+            if !xml_name_valid(close) || stack.pop() != Some(close) {
+                return None;
+            }
+            continue;
+        }
+        let (body, self_closing) = match body.strip_suffix('/') {
+            Some(tag) => (tag.trim_end(), true),
+            None => (body, false),
+        };
+        let name_len = body.find(char::is_whitespace).unwrap_or(body.len());
+        let name = &body[..name_len];
+        if !xml_name_valid(name) {
+            return None;
+        }
+        if stack.is_empty() {
+            roots += 1;
+            if roots != 1 || name != "Game" {
+                return None;
+            }
+        }
+        if !self_closing && stack.len() >= 32 {
+            return None;
+        }
+        let mut attrs = HashMap::new();
+        let mut rest = &body[name_len..];
+        while !rest.trim_start().is_empty() {
+            rest = rest.trim_start();
+            let key_len = rest
+                .find(|c: char| !c.is_ascii_alphanumeric() && !matches!(c, '_' | ':' | '-' | '.'))
+                .unwrap_or(rest.len());
+            if key_len == 0 || !xml_name_valid(&rest[..key_len]) || attrs.len() >= 64 {
+                return None;
+            }
+            let key = &rest[..key_len];
+            rest = rest[key_len..].trim_start();
+            rest = rest.strip_prefix('=')?.trim_start();
+            let quote = rest.chars().next()?;
+            if quote != '"' && quote != '\'' {
+                return None;
+            }
+            rest = &rest[1..];
+            let stop = rest.find(quote)?;
+            let value = &rest[..stop];
+            if value.contains('<') {
+                return None;
+            }
+            let decoded = xml_unescape_attribute(value)?;
+            if attrs.insert(key.to_string(), decoded).is_some() {
+                return None;
+            }
+            rest = &rest[stop + 1..];
+            // XML attributes require whitespace separators; a sequence like
+            // Name="x"Id="y" must not be accepted as a valid start tag.
+            if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+                return None;
+            }
+        }
+        if name == wanted {
+            tags.push(attrs);
+        }
+        if !self_closing {
+            stack.push(name);
+        }
+    }
+    (roots == 1 && stack.is_empty()).then_some(tags)
+}
+
+fn xml_text_valid(text: &str) -> bool {
+    if text.contains("]]>")
+        || text
+            .chars()
+            .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
+    {
+        return false;
+    }
+    let mut rest = text;
+    while let Some(start) = rest.find('&') {
+        rest = &rest[start..];
+        let Some(end) = rest.find(';').filter(|end| *end <= 13) else {
+            return false;
+        };
+        if xml_unescape_attribute(&rest[..=end]).is_none() {
+            return false;
+        }
+        rest = &rest[end + 1..];
+    }
+    true
+}
+
+fn xml_name_valid(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name.bytes().enumerate().all(|(i, byte)| {
+            byte.is_ascii_alphabetic()
+                || byte == b'_'
+                || byte == b':'
+                || (i > 0 && (byte.is_ascii_digit() || byte == b'-' || byte == b'.'))
+        })
+}
+
+fn xml_unescape_attribute(raw: &str) -> Option<String> {
+    let mut result = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(index) = rest.find('&') {
+        result.push_str(&rest[..index]);
+        let escaped = &rest[index + 1..];
+        let end = escaped.find(';').filter(|end| *end <= 12)?;
+        let entity = &escaped[..end];
+        let ch = match entity {
+            "amp" => '&',
+            "quot" => '"',
+            "apos" => '\'',
+            "lt" => '<',
+            "gt" => '>',
+            _ if entity.starts_with("#x") => {
+                char::from_u32(u32::from_str_radix(&entity[2..], 16).ok()?)?
+            }
+            _ if entity.starts_with('#') => char::from_u32(entity[1..].parse::<u32>().ok()?)?,
+            _ => return None,
+        };
+        if ch.is_control() {
+            return None;
+        }
+        result.push(ch);
+        rest = &escaped[end + 1..];
+        if result.len() > 4_000 {
+            return None;
+        }
+    }
+    result.push_str(rest);
+    if result.len() > 4_000 || result.chars().any(char::is_control) {
+        return None;
+    }
+    Some(result)
+}
+
+fn xbox_from_manifest(root: &Path, file: &Path) -> Option<Value> {
+    if fs::metadata(file).ok()?.len() > 128 * 1024 {
+        return None;
+    }
+    let doc = small_text(file).ok()?;
+    if xbox_xml_tags(&doc, "Game")?.len() != 1
+        || !doc.contains("</Game>")
+        || xbox_xml_tags(&doc, "ExecutableList")?.is_empty()
+    {
+        return None;
+    }
+    let identity = xbox_xml_tags(&doc, "Identity")?.into_iter().next()?;
+    let id = identity.get("Name")?;
+    let publisher = identity.get("Publisher")?;
+    if !valid_app_id(id) || !safe_text(publisher, 256) {
+        return None;
+    }
+    // Most Gaming Services installations keep the manifest/executable in
+    // <title>/Content. Keep the title-level root for identity and dedup.
+    let owner = if filename(root).eq_ignore_ascii_case("Content") {
+        root.parent().unwrap_or(root)
+    } else {
+        root
+    };
+    let title = xbox_xml_tags(&doc, "ShellVisuals")?
+        .into_iter()
+        .next()
+        .and_then(|shell| shell.get("DefaultDisplayName").cloned())
+        .filter(|name| valid_title(name) && !name.starts_with("ms-resource:"))
+        .unwrap_or_else(|| clean_name(&filename(owner)));
+    if !valid_title(&title) {
+        return None;
+    }
+    let mut executable = None;
+    for entry in xbox_xml_tags(&doc, "Executable")?.into_iter().take(32) {
+        if entry
+            .get("IsDevOnly")
+            .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+        {
+            continue;
+        }
+        if entry.get("TargetDeviceFamily").is_some_and(|v| v != "PC") {
+            continue;
+        }
+        if let Some(file) = entry
+            .get("Name")
+            .and_then(|name| contained_file(root, name))
+        {
+            if extension(&file) == "exe" && !ignored_executable(&file) {
+                executable = Some(file);
+                break;
+            }
+        }
+    }
+    let executable = executable?;
+    Some(json!({"name":title,"source":"xbox","source_id":id,
+        "install_path":owner,"executable":executable,"tags":[]}))
+}
+
+fn discover_xbox_roots(roots: &[PathBuf]) -> (Vec<Value>, Vec<String>) {
+    let mut games = Vec::new();
+    let mut warnings = Vec::new();
+    let mut seen = HashSet::new();
+    let mut budget = MAX_ENTRIES;
+    let mut manifests_left = 512usize;
+    for root in roots.iter().take(MAX_ROOTS) {
+        if !root.is_dir() || budget == 0 || manifests_left == 0 {
+            continue;
+        }
+        let mut candidates = vec![root.to_path_buf()];
+        if let Ok((items, truncated)) = entries_at(root, budget) {
+            budget -= items.len();
+            if truncated {
+                warnings.push("Xbox metadata scan reached its entry limit.".into());
+            }
+            for item in items {
+                if item
+                    .file_type()
+                    .is_ok_and(|kind| kind.is_dir() && !kind.is_symlink())
+                {
+                    candidates.push(item.path());
+                }
+            }
+        }
+        for game_root in candidates {
+            for dir in [game_root.clone(), game_root.join("Content")] {
+                if manifests_left == 0 {
+                    break;
+                }
+                let manifest = dir.join("MicrosoftGame.config");
+                let safe = fs::canonicalize(&game_root)
+                    .ok()
+                    .zip(fs::canonicalize(&manifest).ok())
+                    .is_some_and(|(parent, file)| file.starts_with(&parent))
+                    && fs::symlink_metadata(&manifest).is_ok_and(|meta| meta.is_file());
+                if !safe {
+                    continue;
+                }
+                manifests_left -= 1;
+                if let Some(game) = xbox_from_manifest(&dir, &manifest) {
+                    let id = field(&game, "source_id").to_ascii_lowercase();
+                    if seen.insert(id) {
+                        games.push(game);
+                    }
+                } else {
+                    warnings.push(format!("Xbox GDK manifest is inaccessible, incomplete, or lacks a verified PC executable: {}", manifest.display()));
+                }
+            }
+        }
+    }
+    if manifests_left == 0 {
+        warnings.push("Xbox manifest scan reached its metadata processing limit.".into());
+    }
+    if !games.is_empty() {
+        warnings.push("Xbox GDK metadata verifies an installed PC executable, but packaged games may require Gaming Services identity activation; direct executable launch is not guaranteed.".into());
+    }
+    (games, warnings)
+}
+
+fn discover_xbox(settings: &Value) -> (Vec<Value>, Vec<String>) {
+    let mut roots = Vec::new();
+    #[cfg(windows)]
+    {
+        let drive = std::env::var("SystemDrive")
+            .ok()
+            .filter(|drive| {
+                drive.len() == 2
+                    && drive.ends_with(':')
+                    && drive.as_bytes()[0].is_ascii_alphabetic()
+            })
+            .unwrap_or_else(|| "C:".to_string());
+        add_root(&mut roots, PathBuf::from(format!(r"{}\XboxGames", drive)));
+    }
+    if let Some(folders) = settings.get("libraryFolders").and_then(Value::as_array) {
+        for folder in folders.iter().take(60).filter_map(Value::as_str) {
+            if !safe_text(folder, 4_000) {
+                continue;
+            }
+            let root = PathBuf::from(folder);
+            add_root(&mut roots, root.clone());
+            add_root(&mut roots, root.join("XboxGames"));
+        }
+    }
+    discover_xbox_roots(&roots)
+}
+
+/// Storefront IDs are the identity of separately launchable products, even
+/// when two editions or an expansion share a single executable. File-path
+/// suppression applies only to untrusted folder/manual discoveries. This
+/// matches Electron discovery's authoritative-store-first policy.
+fn append_discovered_game(
+    game: Value,
+    all: &mut Vec<Value>,
+    seen: &mut HashSet<String>,
+    seen_files: &mut HashSet<String>,
+    store_dirs: &mut HashSet<String>,
+) -> bool {
+    let source = field(&game, "source");
+    let source_id = field(&game, "source_id");
+    let file = field(&game, "executable").to_ascii_lowercase();
+    let folder = field(&game, "install_path").to_ascii_lowercase();
+    let uri = field(&game, "launch_uri");
+    let key = if !source_id.is_empty() {
+        format!("{source}:{source_id}").to_ascii_lowercase()
+    } else if !file.is_empty() {
+        format!("file:{file}")
+    } else {
+        format!("uri:{uri}")
+    };
+    let untrusted = matches!(source, "folder" | "manual");
+    if seen.contains(&key)
+        || (untrusted && !file.is_empty() && seen_files.contains(&file))
+        || (source == "folder" && store_dirs.contains(&folder))
+    {
+        return false;
+    }
+    seen.insert(key);
+    if !file.is_empty() {
+        seen_files.insert(file);
+    }
+    if !untrusted && !folder.is_empty() {
+        store_dirs.insert(folder);
+    }
+    all.push(game);
+    true
 }
 
 /// Store metadata and only explicitly configured library folders are scanned.
@@ -1413,32 +2095,7 @@ pub fn discover_games(settings: &Value) -> Result<Value, String> {
         let num_warnings = notes.len();
         warnings.extend(notes);
         for game in games {
-            let source = field(&game, "source");
-            let source_id = field(&game, "source_id");
-            let file = field(&game, "executable").to_ascii_lowercase();
-            let folder = field(&game, "install_path").to_ascii_lowercase();
-            let uri = field(&game, "launch_uri");
-            let key = if !source_id.is_empty() {
-                format!("{source}:{source_id}")
-            } else if !file.is_empty() {
-                format!("file:{file}")
-            } else {
-                format!("uri:{uri}")
-            };
-            if seen.contains(&key)
-                || (!file.is_empty() && seen_files.contains(&file))
-                || (source == "folder" && store_dirs.contains(&folder))
-            {
-                continue;
-            }
-            seen.insert(key);
-            if !file.is_empty() {
-                seen_files.insert(file);
-            }
-            if !matches!(source, "folder" | "manual") && !folder.is_empty() {
-                store_dirs.insert(folder);
-            }
-            all.push(game);
+            append_discovered_game(game, &mut all, &mut seen, &mut seen_files, &mut store_dirs);
         }
         let mut diag = json!({"provider":provider,"status":if num_warnings>0 {"warning"}else{"ok"},
             "games":count,"warnings":num_warnings,"durationMs":ms.min(u64::MAX as u128) as u64});
@@ -1451,11 +2108,15 @@ pub fn discover_games(settings: &Value) -> Result<Value, String> {
         ("steam", discover_steam as fn() -> (Vec<Value>, Vec<String>)),
         ("epic", discover_epic),
         ("gog", discover_gog),
+        ("battlenet", discover_battlenet),
     ] {
         let tick = Instant::now();
         let (games, notes) = discover();
         append(provider, None, games, notes, tick.elapsed().as_millis());
     }
+    let tick = Instant::now();
+    let (games, notes) = discover_xbox(settings);
+    append("xbox", None, games, notes, tick.elapsed().as_millis());
     let mut roots = Vec::new();
     if let Some(folders) = settings.get("libraryFolders").and_then(Value::as_array) {
         if folders.len() > 60 {
@@ -2377,6 +3038,251 @@ pub fn acknowledge_activity_session(id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn distinct_store_ids_can_share_an_executable_without_losing_expansions() {
+        let exe = r"C:\Games\Example\SharedLauncher.exe";
+        let install = r"C:\Games\Example";
+        let mut all = Vec::new();
+        let mut seen = HashSet::new();
+        let mut seen_files = HashSet::new();
+        let mut store_dirs = HashSet::new();
+        let mut append = |game| {
+            append_discovered_game(game, &mut all, &mut seen, &mut seen_files, &mut store_dirs)
+        };
+        assert!(append(json!({
+            "name":"Example","source":"epic","source_id":"base",
+            "install_path":install,"executable":exe
+        })));
+        assert!(append(json!({
+            "name":"Example Expansion","source":"epic","source_id":"expansion",
+            "install_path":install,"executable":exe
+        })));
+        assert!(!append(json!({
+            "name":"Example duplicate","source":"epic","source_id":"BASE",
+            "install_path":install,"executable":exe
+        })));
+        assert!(!append(json!({
+            "name":"Folder alias","source":"folder","install_path":install,
+            "executable":exe
+        })));
+        assert!(!append(json!({
+            "name":"Folder install alias","source":"folder","install_path":install,
+            "executable":r"C:\Games\Example\Other.exe"
+        })));
+        assert!(append(json!({
+            "name":"Independent Title","source":"epic","source_id":"other",
+            "install_path":r"C:\Games\Other","executable":r"C:\Games\Other\Other.exe"
+        })));
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0]["source_id"], "base");
+        assert_eq!(all[1]["source_id"], "expansion");
+        assert_eq!(all[2]["source_id"], "other");
+        let verified = json!([
+            {"id":"base","name":"Example","source":"epic","source_id":"base",
+                "install_path":install,"executable":exe},
+            {"id":"expansion","name":"Example Expansion","source":"epic",
+                "source_id":"expansion","install_path":install,"executable":exe}
+        ]);
+        assert!(installation_alias_ids(&verified, "base").is_empty());
+        assert!(installation_alias_ids(&verified, "expansion").is_empty());
+        #[cfg(windows)]
+        assert!(
+            match_game_processes(&verified, &[PathBuf::from(exe)]).is_empty(),
+            "same-executable store IDs are ambiguous for background detection"
+        );
+        let store_records = json!([
+            {"id":"base","name":"Example","source":"epic","source_id":"base",
+                "install_path":install,"executable":exe},
+            {"id":"expansion","name":"Example Expansion","source":"epic",
+                "source_id":"expansion","install_path":install,"executable":exe}
+        ]);
+        assert!(installation_alias_ids(&store_records, "base").is_empty());
+        assert!(installation_alias_ids(&store_records, "expansion").is_empty());
+        #[cfg(windows)]
+        assert!(
+            match_game_processes(&store_records, &[PathBuf::from(exe)]).is_empty(),
+            "an ambiguous shared executable must not create two background sessions"
+        );
+    }
+
+    #[test]
+    fn gog_shared_folder_manifests_keep_two_real_store_ids() {
+        let root = std::env::temp_dir().join(format!("orbit-gog-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("GameMain.exe"), b"fixture; do not execute").unwrap();
+        for (manifest, id, title) in [
+            ("goggame-111.info", "111", "Example Game"),
+            ("goggame-222.info", "222", "Independent Expansion"),
+            ("goggame-333.info", "111", "Duplicate Record"),
+        ] {
+            fs::write(
+                root.join(manifest),
+                json!({
+                    "gameId":id,"name":title,
+                    "playTasks":[{"type":"FileTask","path":"GameMain.exe","isPrimary":true}]
+                })
+                .to_string(),
+            )
+            .unwrap();
+        }
+        let entries = entries_at(&root, 32).unwrap().0;
+        let mut warnings = Vec::new();
+        let games = gog_from_dir(&root, &entries, &mut warnings);
+        let ids = games
+            .iter()
+            .map(|game| field(game, "source_id").to_string())
+            .collect::<HashSet<_>>();
+        assert_eq!(ids, HashSet::from(["111".to_string(), "222".to_string()]));
+        assert_eq!(games.len(), 2, "distinct launchable IDs must be preserved");
+        assert!(games.iter().all(|game| field(game, "source") == "gog"));
+        assert!(games
+            .iter()
+            .all(|game| field(game, "executable").ends_with("GameMain.exe")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn pb_chunk(field: u64, payload: &[u8]) -> Vec<u8> {
+        fn put_varint(out: &mut Vec<u8>, mut value: u64) {
+            while value >= 0x80 {
+                out.push((value as u8 & 0x7f) | 0x80);
+                value >>= 7;
+            }
+            out.push(value as u8);
+        }
+        let mut out = Vec::new();
+        put_varint(&mut out, (field << 3) | 2);
+        put_varint(&mut out, payload.len() as u64);
+        out.extend_from_slice(payload);
+        out
+    }
+
+    #[test]
+    fn battlenet_protobuf_discovers_only_installed_game_records() {
+        let settings = pb_chunk(1, b"C:/Games/Diablo IV");
+        let mut product = pb_chunk(2, b"fenris");
+        product.extend(pb_chunk(3, &settings));
+        let mut agent = pb_chunk(2, b"agent");
+        agent.extend(pb_chunk(3, &settings));
+        let mut bytes = pb_chunk(1, &product);
+        bytes.extend(pb_chunk(1, &agent));
+        bytes.extend(pb_chunk(1, &product));
+        assert_eq!(
+            battlenet_products(&bytes).unwrap(),
+            vec![("fenris".into(), "C:/Games/Diablo IV".into())]
+        );
+        assert!(battlenet_products(&[0x0a, 0x7f, 0x01]).is_err());
+        assert!(
+            battlenet_products(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02])
+                .is_err()
+        );
+        assert!(battlenet_products(&vec![0; MANIFEST_BYTES as usize + 1]).is_err());
+    }
+
+    #[test]
+    fn battlenet_scan_skips_stale_directory_without_install_metadata() {
+        let root =
+            std::env::temp_dir().join(format!("orbit-bnet-fixture-{}", uuid::Uuid::new_v4()));
+        let directory = root.join("Diablo IV");
+        fs::create_dir_all(&directory).unwrap();
+        let file = root.join("product.db");
+        let path = directory.to_str().unwrap();
+        let settings = pb_chunk(1, path.as_bytes());
+        let mut product = pb_chunk(2, b"fenris");
+        product.extend(pb_chunk(3, &settings));
+        fs::write(&file, pb_chunk(1, &product)).unwrap();
+        assert!(discover_battlenet_at(&file).0.is_empty());
+        fs::write(directory.join(".build.info"), b"fixture, not executed").unwrap();
+        assert!(
+            discover_battlenet_at(&file).0.is_empty(),
+            "metadata alone must not import an unlaunchable record"
+        );
+        let executable = directory.join("Diablo IV.exe");
+        fs::write(&executable, b"fixture, not executed").unwrap();
+        let discovered = discover_battlenet_at(&file).0;
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0]["source"], "battlenet");
+        assert_eq!(discovered[0]["source_id"], "fenris");
+        assert_eq!(discovered[0]["name"], "Diablo IV");
+        assert_eq!(discovered[0]["executable"], json!(executable));
+        assert!(discovered[0].get("launch_uri").is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn xbox_gdk_manifest_accepts_only_verified_contained_pc_exe() {
+        let root =
+            std::env::temp_dir().join(format!("orbit-xbox-fixture-{}", uuid::Uuid::new_v4()));
+        let game = root.join("Sample Game");
+        let content = game.join("Content");
+        fs::create_dir_all(&content).unwrap();
+        let exe = content.join("Sample.exe");
+        fs::write(&exe, b"fixture, not executed").unwrap();
+        let manifest = content.join("MicrosoftGame.config");
+        let sample = r#"<?xml version="1.0" encoding="utf-8"?>
+<Game configVersion="1">
+ <Identity Name="ExamplePublisher.SampleGame" Publisher="CN=Valid"/>
+ <ExecutableList><Executable Name="../Outside.exe" Id="Outside"/>
+   <Executable Name="Dev.exe" IsDevOnly="true"/>
+   <Executable Name="Sample.exe" Id="Game" TargetDeviceFamily="PC"/></ExecutableList>
+ <ShellVisuals DefaultDisplayName="Sample Game"/>
+</Game>"#;
+        fs::write(&manifest, sample).unwrap();
+        let discovered = xbox_from_manifest(&content, &manifest).unwrap();
+        assert_eq!(discovered["source"], "xbox");
+        assert_eq!(discovered["source_id"], "ExamplePublisher.SampleGame");
+        assert_eq!(discovered["name"], "Sample Game");
+        assert_eq!(discovered["executable"], json!(exe));
+        let (list, warnings) = discover_xbox_roots(&[root.clone()]);
+        assert!(warnings
+            .iter()
+            .any(|message| message.contains("Gaming Services")));
+        assert_eq!(list.len(), 1);
+        fs::write(&manifest, sample.replace("Sample.exe", "../../Outside.exe")).unwrap();
+        assert!(xbox_from_manifest(&content, &manifest).is_none());
+        fs::write(
+            &manifest,
+            format!("<!DOCTYPE Game [<!ENTITY x SYSTEM \"file:///secret\">]>{sample}"),
+        )
+        .unwrap();
+        assert!(xbox_from_manifest(&content, &manifest).is_none());
+        for invalid in [
+            sample.replace("</ExecutableList>", "</Wrong>"),
+            sample.replace("</Game>", "</NotGame>"),
+            sample.replace("</Game>", "</Game><Game></Game>"),
+            sample.replace("<ExecutableList>", "<ExecutableList><Executable>"),
+            sample.replace(
+                "Name=\"Sample.exe\"",
+                "Name=\"Sample.exe\" Name=\"Sample.exe\"",
+            ),
+            sample.replace("Name=\"Sample.exe\" Id=", "Name=\"Sample.exe\"Id="),
+            sample.replace("Sample Game", "Sample &broken Game"),
+            sample.replace("</Game>", "<!-- unfinished </Game>"),
+        ] {
+            fs::write(&manifest, invalid).unwrap();
+            assert!(
+                xbox_from_manifest(&content, &manifest).is_none(),
+                "malformed XML must never produce a trusted Xbox record"
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn xbox_xml_ignores_fake_identity_inside_comments() {
+        let doc = r#"<Game><!-- <Identity Name="fake" Publisher="CN=Fake"/> -->
+          <Identity Name="real.game" Publisher="CN=Real"/>
+          <ShellVisuals DefaultDisplayName="Real Game"/></Game>"#;
+        let identities = xbox_xml_tags(doc, "Identity").unwrap();
+        assert_eq!(identities.len(), 1);
+        assert_eq!(identities[0]["Name"], "real.game");
+        assert!(xbox_xml_tags("<Game><!ENTITY evil SYSTEM 'secret'></Game>", "Game").is_none());
+        assert_eq!(
+            xml_unescape_attribute("A &amp; B &#x26; C").as_deref(),
+            Some("A & B & C")
+        );
+        assert!(xml_unescape_attribute("&secret;").is_none());
+    }
 
     #[test]
     fn direct_launch_cancels_stale_activity_without_emitting_a_finish() {

@@ -12,12 +12,13 @@ The main desktop application uses **Electron**. A separate, **experimental Rust 
 
 ## What Orbit can do
 
-- **One game library:** discover installed games, add standalone executables, and organize entries with favorites, tags, categories, and filters.
+- **One game library:** discover supported Steam, Epic, GOG, Battle.net, Xbox PC and standalone installations, add executables, and organize entries with favorites, tags, categories, and filters.
 - **Find games quickly:** search with `Ctrl/Cmd + K`, sort the library, and switch between grid and list views.
 - **Launch through the right client:** use a game's storefront URI or a validated executable, without moving or modifying game installations.
 - **Track playtime:** record supported direct-launch sessions and detect certain externally launched games on Windows. Tracking accuracy depends on how a game starts and which processes can be identified.
-- **Show game artwork:** use cached covers and icons offline, optionally look up online artwork, or select your own cover, banner, and icon.
+- **Show game artwork:** look for validated portrait artwork in bounded neighboring folders, use cached covers and icons offline, optionally look up online artwork, or select your own cover, banner, and icon.
 - **Play with a controller:** use a fullscreen, gamepad-friendly library with keyboard and mouse fallback.
+- **Review gaming statistics:** recorded-session totals for recent days and weeks, a daily activity chart, recent games and a period-best day. Overlapping records for a single game are deduplicated in reports without rewriting play history.
 - **Keep your data local:** store games, settings, and play history in SQLite; export and restore library backups.
 
 <table>
@@ -28,7 +29,7 @@ The main desktop application uses **Electron**. A separate, **experimental Rust 
 
 | | Electron desktop | Rust / Tauri preview |
 | --- | --- | --- |
-| Version in this repository | **0.2.6** | **0.2.5** |
+| Version in this repository | **0.2.7** | **0.2.6** |
 | Status | Main desktop implementation | Experimental Windows preview |
 | UI | Orbit HTML/CSS/JavaScript | The same interface, hosted in WebView2 |
 | Backend | Node.js/Electron, with a native Windows process helper | Rust for library, discovery, tracking, artwork, and backups |
@@ -88,13 +89,14 @@ Use **Find installed games** to preview discoveries before importing them, or **
 | Source | Discovery method / caveat |
 | --- | --- |
 | Steam | Installed app manifests and declared Steam library folders |
-| Epic Games | Installed manifests on Windows |
-| GOG | Local game metadata and supported Windows registry entries |
+| Epic Games | Installed manifests on Windows; independently launchable expansions retain distinct identities |
+| GOG | Local game metadata and supported Windows registry entries; verified separate products are preserved |
 | Heroic and Legendary | Installed-game metadata where their launch handlers or executables are available |
-| EA, Ubisoft, Battle.net | Conservative Windows registry detection, requiring credible install paths |
+| EA, Ubisoft, Battle.net | Conservative Windows registry detection with verified publishers; the Rust preview also reads bounded Battle.net Agent metadata, requiring a real launch target |
+| Xbox PC | Validates local `MicrosoftGame.config` and a contained Windows executable in known Xbox install folders or explicitly chosen library folders; protected/packaged games may not be accessible |
 | Custom folders | Bounded scans of explicitly selected directories; ambiguous entries may need manual selection |
 
-Discovery is read-only and does not launch games. **Downloads is not scanned automatically.** Some protected Xbox/Microsoft Store installations and games with unusual launchers may require manual setup. Optional **Scan at startup** is off by default.
+Discovery is read-only and does not launch games. **Downloads is not scanned automatically.** Some Xbox PC/GDK games require registered Windows app-launch through Gaming Services to obtain title identity; discovering their executable does **not** guarantee that direct EXE launch will work. Protected Microsoft Store installations and unusual launchers may require manual setup. Optional **Scan at startup** is off by default.
 
 Storefront entries still require their respective client and any game-specific authentication. Direct executables are launched without shell command interpolation; advanced launch arguments use a JSON array, for example `["--fullscreen"]`.
 
@@ -114,6 +116,12 @@ Choose the controller button next to Search or press **F11** to enter fullscreen
 
 Orbit uses the browser's standard gamepad mapping. Not every controller or driver has been tested; `npm run test:controller` verifies the browser-level interactions with simulated controller input.
 
+The cinematic controller detail view keeps game artwork contained and provides a large focused Play action. The connected controller is polled at a lower idle rate instead of using a continuous high-frequency animation loop when no input is happening.
+
+## Gaming statistics and recording limits
+
+Open **Statistics** in the sidebar to view the last 7 and 30 local calendar days, an activity chart, period-best day, recent completed games, and all recorded finished-session time. The calculations read session history, not the game's editable/imported aggregate counter. They omit unfinished checkpoints and flag invalid timestamps; overlapping sessions for the **same game ID** are coalesced in this *report only*. Existing historical sessions and `games.total_play_seconds` are not modified, and separate game IDs or two independently running editions may still have separate records. An old imported library with aggregate playtime but no session rows can show lower recorded-session statistics than game cards.
+
 ## Your data and backups
 
 Orbit stores its library, play history, preferences, and cached artwork locally. Use **Settings → Open folder** to find the current edition's data directory.
@@ -123,6 +131,8 @@ Orbit stores its library, play history, preferences, and cached artwork locally.
 - **Restore:** imports supported entries without deleting installed games; game paths may need adjustment on a different computer.
 
 Orbit does not require an Orbit account or upload game executables. Online artwork requests are optional. Store clients and individual games can still have their own online requirements.
+
+**Shared executable ambiguity:** independently identified storefront products (for example, a base game and an expansion) may legitimately use the *same* executable. Orbit preserves those distinct library entries, but external Windows-process tracking cannot reliably tell which product was started from a shared executable. To avoid crediting the same physical game twice, ambiguous background matches are excluded. Starting the desired entry directly from Orbit can retain explicit game ownership where that launcher path is supported. This is not a claim that every shared executable or GDK title can launch directly.
 
 ## Development and verification
 

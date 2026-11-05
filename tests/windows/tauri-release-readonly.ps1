@@ -40,6 +40,22 @@ function Read-Header {
     }
 }
 
+function Get-ReadOnlySha256 {
+    param([string]$Path)
+    # Use .NET directly: some tightly configured Windows CI PowerShell hosts
+    # cannot resolve Get-FileHash even though file IO works normally.
+    $file = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = $algorithm.ComputeHash($file)
+        return [System.BitConverter]::ToString($digest).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $algorithm.Dispose()
+        $file.Dispose()
+    }
+}
+
 $result = [ordered]@{
     schema = 'orbit.release-readonly.v1'
     atUtc = [datetime]::UtcNow.ToString('o')
@@ -69,7 +85,7 @@ if ($ArtifactPath) {
     $result.artifact = [ordered]@{
         fileName = $artifact.Name
         sizeBytes = [long]$artifact.Length
-        sha256 = (Get-FileHash -LiteralPath $artifact.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        sha256 = Get-ReadOnlySha256 -Path $artifact.FullName
         signatureStatus = if ($null -ne $signature) { [string]$signature.Status } else { 'Unavailable' }
         signatureChecked = ($null -ne $signature)
         signatureNote = $signatureNote

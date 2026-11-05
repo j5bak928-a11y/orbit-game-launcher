@@ -53,17 +53,28 @@ if ($ArtifactPath) {
     if ($artifact.PSIsContainer -or $artifact.Extension -notin @('.exe', '.msi')) {
         throw 'Artifact must be a regular .exe or .msi file.'
     }
-    $signature = Get-AuthenticodeSignature -LiteralPath $artifact.FullName
-    $signer = if ($null -ne $signature.SignerCertificate) {
+    # Some Windows CI images expose the cmdlet but cannot load the associated
+    # PowerShell module. Do not turn that into a false signature verification,
+    # and do not fail an otherwise read-only hash inspection.
+    $signature = $null
+    $signatureNote = $null
+    try {
+        $signature = Get-AuthenticodeSignature -LiteralPath $artifact.FullName -ErrorAction Stop
+    } catch {
+        $signatureNote = 'Authenticode inspection unavailable on this host; verify the signer on a trusted Windows machine.'
+    }
+    $signer = if ($null -ne $signature -and $null -ne $signature.SignerCertificate) {
         $signature.SignerCertificate.Thumbprint
     } else { $null }
     $result.artifact = [ordered]@{
         fileName = $artifact.Name
         sizeBytes = [long]$artifact.Length
         sha256 = (Get-FileHash -LiteralPath $artifact.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-        signatureStatus = [string]$signature.Status
+        signatureStatus = if ($null -ne $signature) { [string]$signature.Status } else { 'Unavailable' }
+        signatureChecked = ($null -ne $signature)
+        signatureNote = $signatureNote
         signerThumbprint = $signer
-        signed = ([string]$signature.Status -eq 'Valid')
+        signed = ($null -ne $signature -and [string]$signature.Status -eq 'Valid')
         publisherVerified = $false # requires out-of-band expected certificate
     }
 }

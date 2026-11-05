@@ -216,6 +216,8 @@ test('Windows release inspector flags an unsigned synthetic artifact without run
   assert.equal(report.schema, 'orbit.release-readonly.v1');
   assert.equal(report.artifact.signed, false);
   assert.equal(report.artifact.publisherVerified, false);
+  assert.equal(typeof report.artifact.signatureChecked, 'boolean');
+  if(!report.artifact.signatureChecked)assert.equal(report.artifact.signatureStatus, 'Unavailable');
   assert.equal(report.artifact.sha256, expectedBinary);
   assert.equal(report.backup.expectedHeader, true);
   assert.equal(report.mutatingActions, 0);

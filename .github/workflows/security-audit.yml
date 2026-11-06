@@ -1,11 +1,8 @@
 name: Security audit (Node, Rust, secrets)
 
 on:
-  pull_request:
-  push:
-    branches: [main]
-  schedule:
-    - cron: '24 6 * * 1'
+  # Security checks remain available on demand; no scheduled/automatic
+  # hosted jobs while the owner uses local, unpaid validation.
   workflow_dispatch:
 
 permissions:

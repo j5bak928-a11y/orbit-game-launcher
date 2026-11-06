@@ -22,7 +22,7 @@
 | Semgrep OSS `p/security-audit`, `src`, `src-tauri/src`, `scripts`, `.github/workflows` | **0 findings / 0 blocking** | Automated rule-based static scan, not comprehensive proof of exploit absence |
 | Existing `Verify source` JS tests on PR | passed | Functional regression check, not a dedicated SAST engine |
 
-Scan artifacts: `orbit-security-npm`, `orbit-security-rustsec` and `orbit-security-semgrep` in the linked runs. The new `.github/workflows/security-audit.yml` runs on pull requests, pushes to `main`, weekly schedule and manual dispatch.
+Scan artifacts: `orbit-security-npm`, `orbit-security-rustsec` and `orbit-security-semgrep` in the linked historical runs. **Workflow maintenance update (November 2026):** `security-audit.yml` is now manual-only (`workflow_dispatch`) while hosted Actions are billing-blocked. These historical results must not be presented as a current automatic security gate; perform local security checks before shipping changes.
 
 ## Finding 1 — Moderate: build-time minimatch denial of service (open)
 

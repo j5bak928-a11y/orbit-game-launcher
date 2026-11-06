@@ -29,3 +29,11 @@ userData/
 tauri-web/
 src-tauri/target/
 src-tauri/gen/
+
+# Local Windows helpers, preview installers and generated visual/QA evidence
+# (keep existing tracked historical reports; never commit newly generated outputs)
+assets/bin/
+ready-to-test/
+reports/cinematic-v2/
+reports/poster-cards/
+reports/library-updates/*.png

@@ -1,8 +1,9 @@
 name: Verify source
 
 on:
-  push:
-  pull_request:
+  # Local validation is the default while hosted Actions are billing-blocked.
+  # Keep the workflow for optional manual use, without automatic run spam.
+  workflow_dispatch:
 
 permissions:
   contents: read

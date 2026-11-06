@@ -175,7 +175,10 @@ descendants and CPU separately, with all three measurements. A lower Rust
 parent working set or a single-process snapshot cannot prove renderer/GPU
 memory release; shared or detached child processes require independent review.
 
-**Blockers until witnessed:** installer upgrade/uninstall behavior, real tray
-Open/recreation after the latest build, rapid-click/monitor recovery, live
-playtime and backup parity, code signing and update trust. All automated tests
-passing is not sufficient to make the Electron replacement release-ready.
+**Remaining functional blockers before removing Electron:** installer upgrade/
+uninstall behavior, real tray-menu Open/recreation after the latest build,
+rapid-click/monitor recovery, live playtime and complete backup/restore parity.
+An unsigned locally tested Rust-first preview with Electron fallback is allowed;
+paid GitHub Actions and code signing are not prerequisites. Keep automatic
+updates disabled until a trusted update channel is in place. All automated tests
+passing is not sufficient to delete the Electron installation or its user data.

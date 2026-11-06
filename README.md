@@ -37,6 +37,30 @@ The main desktop application uses **Electron**. A separate, **experimental Rust 
 
 The editions have **different application IDs and data directories**. On first launch, the Rust preview can make a snapshot of an existing Electron library and copy compatible artwork without modifying the original database. Changes made later in one edition do not automatically sync to the other.
 
+## Roadmap: Rust-first Orbit 1.0
+
+**Direction:** make the fast, local-first Rust/Tauri edition the primary Windows launcher, then develop library organization, a console-quality controller experience, and optional offline intelligence. Keep the existing Electron edition as a fallback during the transition; do not throw away users' libraries or playtime history to accelerate a version bump.
+
+These are **planned milestones, not released features or promised dates**. The NextGen development branch also uses version `0.2.7` for its Electron package; the versions below refer specifically to **future Rust releases**.
+
+| Planned Rust version | Theme | Deliverable / exit criteria |
+| --- | --- | --- |
+| **0.2.7 — Reliability** | Protect the foundation | Preserve the **full session history** in portable backups and restore; verify existing-profile upgrades, first-run library migration, tray recreation, single-instance startup, game tracking and recovery on real Windows fixtures. Keep Electron and Rust libraries separate until verified. |
+| **0.3.0 — Rust First** | Primary Windows edition | Use Rust as the actively developed, recommended edition, with Electron still available as a fallback. Confirm game launching, artwork, discovery, controller behavior and playtime parity; provide a reproducible local unsigned installer and portable package. |
+| **0.4.0 — Your Gaming Library** | Organization and personalization | Smart collections (**Currently Playing**, **Backlog**, **Completed**), custom collections, advanced filtering, tags, favorites, per-game launch preferences, and responsive libraries with 5,000+ games. |
+| **0.5.0 — Console Experience** | Controller Mode 2.0 | A polished fullscreen/couch interface, immersive game details, robust controller ownership and focus recovery, plus efficient idle gamepad polling. |
+| **0.6.0 — Orbit Intelligence** | Useful local insights | Offline playtime insights, activity heatmaps, game suggestions, neglected-backlog prompts and optional milestones. No mandatory accounts, constantly running AI service or new background overhead. |
+| **1.0.0 — Orbit Complete** | Stable release | Verified install/upgrade/uninstall, safe migration and full backup round trips, reliable session recovery, accessible polished UI, repeatable performance results and documented limitations. |
+
+**Rules for every release:**
+
+1. **Protect performance.** Use the maintainer's observations of roughly **5 MB in tracking-only background use** and **130–180 MB with the UI open** as *reference measurements*, not hard guarantees. Compare whole process trees (including WebView2), startup time, game-launch latency and CPU on matched workloads. Reject unnecessary services, unbounded scans and regressions.
+2. **Protect data.** Never silently alter or double-count historical playtime. Test SQLite migrations, backups, restores and crash/sleep recovery using disposable profiles. Do not run separate Electron/Rust trackers against the same game during migration testing without establishing ownership.
+3. **Ship useful functionality, not cosmetic version bumps.** Keep the existing Orbit visual identity and use restrained animation. Features must work with actual games and native Windows behavior, not just browser mocks.
+4. **Keep local builds available.** Paid GitHub Actions and code signing are **not prerequisites for locally tested, unsigned preview builds**. Signing and trusted update distribution can be considered separately for future public releases; automatic unsigned updates remain disabled.
+
+**Repository maintenance:** GitHub Actions workflows are preserved as optional `workflow_dispatch` tools, but are not triggered by every push, pull request or scheduled run while hosted builds are billing-blocked. Run `npm run check`, `npm test`, `npm run lint`, the browser tests and the native Rust tests locally for each release candidate; do not infer green checks from a skipped hosted workflow.
+
 ### Memory usage (maintainer observations)
 
 | Edition / state | Reported RAM |

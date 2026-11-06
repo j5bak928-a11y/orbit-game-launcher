@@ -74,6 +74,7 @@ test('poster cards keep the existing Orbit shell and expose working artwork acti
  assert.equal(await card.locator('.cover-play').evaluate(x=>getComputedStyle(x).backgroundColor),'rgb(36, 184, 245)');
  if(screenshotDir){fs.mkdirSync(screenshotDir,{recursive:true});await page.screenshot({path:path.join(screenshotDir,'orbit-posters-desktop.png')});}
  const heart=card.locator('.favorite-float');await heart.click();
+ await card.locator('.favorite-float.active').waitFor({state:'attached'});
  assert(await card.locator('.favorite-float.active').count(),'heart action updates favorite instead of opening details');
  await card.locator('.card-menu-float').click();
  await page.locator('#game-actions-popup').waitFor();

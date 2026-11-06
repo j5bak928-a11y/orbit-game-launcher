@@ -100,7 +100,13 @@ To create a Windows preview installer:
 npm run tauri:build
 ```
 
-Tauri builds place the Windows NSIS and MSI packages under `src-tauri/target/release/bundle/`. If your machine lacks the Windows native build tools, the [Tauri Windows CI workflow](https://github.com/j5bak928-a11y/orbit-game-launcher/actions/workflows/tauri-windows.yml) can compile the preview and provide build artifacts.
+Tauri builds place the Windows NSIS and MSI packages under `src-tauri/target/release/bundle/`. CI is optional: **you do not need paid GitHub Actions or a code-signing certificate to build an unsigned local preview**. On Windows without MSVC Build Tools, install the `stable-x86_64-pc-windows-gnullvm` Rust toolchain, LLVM-MinGW, Node/npm and 7-Zip, then run:
+
+```powershell
+powershell -NoProfile -File scripts/windows/build-tauri-local-unsigned.ps1
+```
+
+The script runs native Rust tests, compiles the preview, bundles the GNU-LLVM runtime (`WebView2Loader.dll` and `libunwind.dll`) **beside** the executable in NSIS/MSI, verifies their inclusion, and generates a portable ZIP under `src-tauri/target/x86_64-pc-windows-gnullvm/release/local-distribution/`. A bare executable built with that toolchain cannot be distributed without its runtime DLLs. This script does not install or run Orbit and does not open application profiles. The [Tauri Windows CI workflow](https://github.com/j5bak928-a11y/orbit-game-launcher/actions/workflows/tauri-windows.yml) remains an optional build path, not a prerequisite for local testing.
 
 **This preview is unsigned and not promoted to a production release.** The separate Electron build and installed games remain unaffected. The Rust preview's close-to-tray behavior frees its UI window while retaining native tracking; use **Quit Orbit** in the tray to stop the application completely.
 
@@ -153,6 +159,8 @@ Orbit stores its library, play history, preferences, and cached artwork locally.
 - **Portable `.orbit` backup:** includes library metadata, settings, and cached artwork.
 - **JSON export:** library metadata without embedded artwork.
 - **Restore:** imports supported entries without deleting installed games; game paths may need adjustment on a different computer.
+
+**Rust migration limit:** a Rust `.orbit` or JSON backup currently saves aggregate game playtime but **not the individual completed-session rows** used by the daily/weekly/monthly statistics. Do not treat it as a full history backup. A first-run migration into an empty Rust profile copies the Electron SQLite library read-only, including sessions, but an existing Rust profile does not automatically re-import later Electron changes. Keep independent raw SQLite backups and the Electron fallback until migration and full session-history restore have been verified.
 
 Orbit does not require an Orbit account or upload game executables. Online artwork requests are optional. Store clients and individual games can still have their own online requirements.
 

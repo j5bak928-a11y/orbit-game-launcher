@@ -64,3 +64,49 @@ An earlier isolated empty-library Windows smoke recorded approximately 39 MB for
 3. Review signing/distribution and test safe exit via the tray. PR #19 was merged as an isolated preview, but do not promote it to a production replacement until manual behavior parity is established.
 
 Native Steam artwork search and repair are supported through the Rust backend when the user enables online artwork in Settings, subject to request limits and Performance Guard. Automatic update installation remains disabled in the unsigned Rust preview; the interface reports an unsupported status. Do not distribute the Rust preview as a production replacement until the above checks succeed.
+
+## Release-readiness contract (2026-11-05; still experimental)
+
+The native shell is **not approved to replace Electron** solely because Rust builds or the preview installer starts. The review covers changes to game discovery, artwork, cinematic UI, statistics and Rust desktop parity. Release decisions must distinguish automated source-contract checks from **runtime proof on Windows**.
+
+Run the non-destructive automated gates from the repository root:
+
+~~~powershell
+node --test tests/tauri-release-readiness.test.cjs tests/tauri-tray-runtime.test.cjs
+cargo test --manifest-path src-tauri/Cargo.toml --locked
+npm test
+~~~
+
+The first command validates the *current* preview package identity, bundled frontend and restricted main-window capabilities; tests the Electron portable-backup encoder with synthetic artwork; checks key Rust cancellation/migration/update contracts; and exercises native Windows read-only inspection on a temporary test-owned SQLite fixture. These tests **do not** install packages, open a real library in write mode, or prove that Tauri's file dialogs or installer work on the user's computer. The optional live tray test is disabled unless explicitly opted in as described in [Windows tray verification](VERIFICATION-TAURI-TRAY-WEBVIEW.md).
+
+For a real artifact, database **header** or existing backup, an operator can run the read-only inspection:
+
+~~~powershell
+powershell -NoProfile -File tests/windows/tauri-release-readonly.ps1 -ArtifactPath 'C:\Review\Orbit Launcher Rust Preview_0.2.6_x64-setup.exe'
+powershell -NoProfile -File tests/windows/tauri-release-readonly.ps1 -LegacyDbPath 'C:\Review\library.sqlite' -BackupPath 'C:\Review\collection.orbit'
+~~~
+
+The inspector never launches or installs an executable, never modifies SQLite, and never restores a backup. It reports SHA-256 and Authenticode status for a supplied installer/EXE, checks a SQLite **header only**, and checks a .orbit archive's gzip header and bounded size. For an explicit read-only *format* validation of an existing .orbit or .json backup (without restoring it):
+
+~~~powershell
+$env:ORBIT_TAURI_READONLY_BACKUP = 'C:\Review\collection.orbit'
+node --test tests/tauri-release-readiness.test.cjs
+Remove-Item Env:\ORBIT_TAURI_READONLY_BACKUP
+~~~
+
+Only use files you own and intend to inspect. A valid archive format does not prove a complete restorable library or image integrity beyond the format's checks. Do **not** test migration by deleting, renaming or changing the actual installed preview's SQLite database.
+
+### Windows acceptance checklist and remaining evidence
+
+| Gate | Safe check | Required evidence / current limitation |
+| --- | --- | --- |
+| **Parallel installation** | Compare Tauri preview ID com.orbitlauncher.rustpreview with Electron com.orbitlauncher.desktop; install NSIS and MSI **on a disposable Windows profile**, one installer type at a time | Confirm Start Menu/Uninstall entries, installation locations, upgrade and uninstall behavior, and Electron remains working. Source/config checks cannot verify installer actions. |
+| **First-run import** | Use a **disposable copied Electron fixture and an isolated Windows account/VM**; start Tauri once with no existing Tauri DB | Confirm SQLite rows, playtime, favorites, cover/icon/banner assets and settings match the fixture; confirm original Electron DB and WAL are unchanged. VACUUM INTO is used with the Electron connection opened read-only, then a temporary DB is renamed only after artwork handling. This import happens **only if the Tauri DB is absent**; subsequent changes do not sync. |
+| **Cancel dialogs** | Cancel Choose Executable/Folder/Artwork, Export Library and Restore Library in a disposable instance | A cancelled picker should not alter the library, generate a backup, create artwork or trigger a restore. Automated checks verify early cancellation branches; actual native dialog interactions still require manual verification. |
+| **Backup parity** | Export **both** .orbit and .json, using a disposable library with all three artwork types and known playtime; restore into a clean disposable profile; cross-check with Electron | .orbit is gzip JSON plus referenced artwork; .json is **metadata-only**. Verify missing artwork is reported, repeated imports do not overwrite existing user artwork, and invalid/corrupt archives fail safely. An archive header or unit test is not a substitute for an end-to-end restore. |
+| **Windows game workflows** | Test Steam, Epic, GOG and manually linked EXEs, launch, session recovery, controller mode, discovery, artwork, and Performance Guard | Compare expected discovered paths/IDs, real game playtime before/after suspend/restart, and absence of duplicate sessions. No live credentials or production game data are needed for synthetic fixtures. |
+| **Tray/WebView2** | Follow the real HWND test and complete process-tree measurement in [tray verification](VERIFICATION-TAURI-TRAY-WEBVIEW.md) | X closes **destroy** WebView2 while Rust PID continues; tray Open must recreate and bootstrap; only Quit Orbit ends the backend. A previous close-only test **did not** verify reopen or live session persistence. |
+| **Distribution/update trust** | Verify package contents (including native runtime DLLs), hashes, fresh Windows installer startup and absence of automatic installation | **Unsigned local test releases are allowed**, just like the existing Electron edition, and require no paid GitHub Actions. The installer must work on an isolated Windows profile. Automatic updates remain disabled because no authenticated update channel exists; publisher trust is a separate public-distribution concern, not a local-preview release gate. |
+| **Renderer hardening** | Audit tauri-web's staged CSP, orbit-art scheme, navigation rules and exposed IPC against untrusted game metadata | Tauri app.security.csp is currently null while the bundled HTML has a restrictive CSP meta policy. This is a defense-in-depth concern, **not** evidence of exploitation. Tighten only after WebView2 CSP compatibility and full UI paths are tested. |
+
+**Current release decision:** **CONDITIONAL GO** for unsigned Rust-first development/testing **side by side with an Electron fallback**, with no requirement for paid GitHub Actions or signing. **NO-GO for deleting the Electron app or its user data** until clean Windows install/upgrade, complete session-history backup and restore, first-run migration, native dialogs, real tray recreation and live-session persistence are validated against isolated fixtures. The Rust `.orbit`/JSON export currently omits detailed completed-session history even though aggregate game playtime is preserved. Keep both profiles and raw SQLite backups; do not enable automatic unsigned updates.

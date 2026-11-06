@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const os=require('node:os');const path=require('node:path');
-const {LibraryDatabase,cleanGame,duplicateKey}=require('../src/core/database.cjs');
+const {LibraryDatabase,cleanGame,duplicateKey,reconcileDiscoveredGames}=require('../src/core/database.cjs');
 function withDb(fn){const dir=fs.mkdtempSync(path.join(os.tmpdir(),'orbit-test-'));const db=new LibraryDatabase(path.join(dir,'data','library.sqlite'));try{return fn(db,dir)}finally{db.close();fs.rmSync(dir,{recursive:true,force:true})}}
 test('creates usable SQLite database and persists games and settings across reopen',()=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'orbit-reopen-'));const file=path.join(dir,'library.db');try{
@@ -14,6 +14,68 @@ test('detects duplicate storefront ids and direct executables',()=>withDb(db=>{
  assert.equal(db.upsert(game).added,true);assert.equal(db.upsert({...game,name:'New title'}).added,false);assert.equal(db.count(),1);
  assert.equal(db.upsert({name:'Local',executable:'/games/local/game'}).added,true);
  assert.equal(db.upsert({name:'Local Copy',executable:'/games/local/game'}).added,false);assert.equal(db.count(),2);
+}));
+test('distinct authoritative storefront products coexist across the same executable and URI without losing metadata',()=>withDb(db=>{
+ const executable=path.join(os.tmpdir(),'Orbit DLC','Shared.exe'),launch_uri='com.epicgames.launcher://apps/shared?action=launch';
+ const first=db.upsert({name:'Epic edition 125',source:'epic',source_id:'125',executable,launch_uri,install_path:path.dirname(executable)}).game;
+ assert.equal(db.update(first.id,{favorite:true}).favorite,true);
+ const session=db.startSession(first.id);assert.equal(db.finishSession(session,59),true);
+ const second=db.upsert({name:'Epic edition 126',source:'epic',source_id:'126',executable,launch_uri,install_path:path.dirname(executable)});
+ const third=db.upsert({name:'GOG separate product',source:'gog',source_id:'126',executable,launch_uri});
+ assert.equal(second.added,true);assert.equal(third.added,true);
+ assert.notEqual(first.id,second.game.id);assert.notEqual(second.game.id,third.game.id);
+ assert.equal(db.count(),3);assert.equal(db.get(first.id).total_play_seconds,59);assert.equal(db.get(first.id).favorite,true);
+ assert.equal(db.upsert({name:'Epic repeat ID ignoring case',source:'epic',source_id:'126',executable}).game.id,second.game.id);
+ assert.equal(db.upsert({name:'Manual alias',source:'manual',executable}).added,false);
+ assert.equal(db.upsert({name:'Folder alias',source:'folder',executable}).added,false);
+ assert.equal(db.upsertBatch([
+  {name:'Fourth verified edition',source:'epic',source_id:'127',executable},
+  {name:'Repeated edition',source:'epic',source_id:'126',executable}
+ ]).imported,1);
+ assert.equal(db.count(),4);
+}));
+test('authoritative source IDs compare case-insensitively without collapsing different products',()=>withDb(db=>{
+ const executable=path.join(os.tmpdir(),'Orbit DLC','CaseSensitive.exe');
+ const first=db.upsert({name:'Epic DLC',source:'epic',source_id:'DLC-AbC',executable}).game;
+ const repeated=db.upsert({name:'Epic DLC lowercased',source:'epic',source_id:'dlc-abc',executable});
+ assert.equal(repeated.added,false);assert.equal(repeated.game.id,first.id);
+ const distinct=db.upsert({name:'Different Epic DLC',source:'epic',source_id:'dlc-abd',executable});
+ assert.equal(distinct.added,true);
+ assert.equal(db.count(),2);
+ assert.deepEqual(reconcileDiscoveredGames(db.list(),[
+  {name:'Same DLC upper',source:'epic',source_id:'DLC-ABC',executable},
+  {name:'Next DLC',source:'epic',source_id:'DLC-ABE',executable}
+ ]).map(game=>game.alreadyAdded),[true,false]);
+}));
+test('store product edits accept another trusted product path but reject manual collisions',()=>withDb(db=>{
+ const executable=path.join(os.tmpdir(),'Orbit DLC','Shared.exe');
+ const first=db.upsert({name:'Edition A',source:'epic',source_id:'125',executable}).game;
+ const other=db.upsert({name:'Edition B',source:'epic',source_id:'126',executable:path.join(os.tmpdir(),'edition-b.exe')}).game;
+ assert.equal(db.update(other.id,{executable}).executable,executable);
+ assert.equal(db.count(),2);
+ const manual=db.upsert({name:'Different manual',source:'manual',executable:path.join(os.tmpdir(),'manual-unique.exe')}).game;
+ assert.throws(()=>db.update(manual.id,{executable}),/already in your library/);
+ assert.equal(db.get(manual.id).name,'Different manual');
+ assert.throws(()=>db.update(other.id,{source_id:'125'}),/already in your library/);
+ assert.equal(db.get(first.id).source_id,'125');assert.equal(db.get(other.id).source_id,'126');
+}));
+test('discovery alreadyAdded honors verified storefront ID before shared executable and URI',()=>withDb(db=>{
+ const executable=path.join(os.tmpdir(),'Orbit DLC','Shared.exe'),launch_uri='steam://rungameid/000';
+ const one=db.upsert({name:'Epic 125',source:'epic',source_id:'125',executable,launch_uri}).game;
+ const discovered=[
+  {name:'Epic 126',source:'epic',source_id:'126',executable,launch_uri},
+  {name:'Epic 125 again',source:'epic',source_id:'125',executable,launch_uri},
+  {name:'Manual alias',source:'manual',executable},
+ ];
+ const result=reconcileDiscoveredGames(db.list(),discovered);
+ assert.deepEqual(result.map(g=>g.alreadyAdded),[false,true,true]);
+ const imported=db.upsertBatch(result.filter(g=>!g.alreadyAdded));
+ assert.equal(imported.imported,1);assert.equal(db.count(),2);assert.equal(db.get(one.id).source_id,'125');
+ const manualFirst=path.join(os.tmpdir(),'Orbit DLC','ManualFirst.exe');
+ db.upsert({name:'Local alias first',source:'manual',executable:manualFirst});
+ const candidate={name:'Store linked to local',source:'gog',source_id:'product-new',executable:manualFirst};
+ assert.equal(reconcileDiscoveredGames(db.list(),[candidate])[0].alreadyAdded,true);
+ assert.equal(db.upsert(candidate).added,false);
 }));
 test('favorites, editing, sessions and removal preserve game data',()=>withDb(db=>{
  const g=db.upsert({name:'Adventure',executable:'/games/a',tags:['RPG']}).game;

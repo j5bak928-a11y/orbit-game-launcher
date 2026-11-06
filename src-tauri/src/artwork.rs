@@ -60,7 +60,7 @@ fn client() -> Result<Client, String> {
         .connect_timeout(Duration::from_secs(2))
         .timeout(Duration::from_secs(4))
         .redirect(Policy::none())
-        .user_agent("OrbitLauncher/0.2.5")
+        .user_agent("OrbitLauncher/0.2.6")
         .build()
         .map_err(|e| e.to_string())
 }

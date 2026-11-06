@@ -120,13 +120,15 @@ async function discoverSteam(roots,{platform=process.platform,queryRegistry:quer
 }
 function epicUri(id,namespace,item){const launchId=appId(namespace)&&appId(item)?`${namespace}:${item}:${id}`:id;return `com.epicgames.launcher://apps/${encodeURIComponent(launchId)}?action=launch&silent=true`;}
 function mergeGame(map,game){
- const key=`${game.source}:${game.source_id}`;const previous=map.get(key);
+ // Match SQLite's case-insensitive source identity: duplicate metadata must
+ // not produce two entries which collide once imported into the library.
+ const key=`${game.source}:${game.source_id}`.toLowerCase();const previous=map.get(key);
  if(!previous){map.set(key,game);return;}
  if(!previous.executable&&game.executable)previous.executable=game.executable;
  if(previous.source==='epic'&&game.launch_uri?.includes('%3A')&&!previous.launch_uri?.includes('%3A'))previous.launch_uri=game.launch_uri;
 }
 async function discoverEpic(roots=epicManifestRoots()){
- const map=new Map(),warnings=[];let budget=MAX_ENTRIES;
+ const map=new Map(),warnings=[],standaloneDlc=[];let budget=MAX_ENTRIES;
  for(const root of unique(roots)){
   if(budget<=0)break;let entries;try{entries=await entriesAt(root,budget);}catch{continue;}
   budget-=entries.length;if(entries.truncated)warnings.push('Epic scan reached its metadata entry limit.');
@@ -134,13 +136,192 @@ async function discoverEpic(roots=epicManifestRoots()){
    try{
     const data=JSON.parse(await readText(path.join(root,item.name))),id=appId(data.AppName),name=title(data.DisplayName),install=clean(data.InstallLocation);
     if(!id||!name||!path.isAbsolute(install)||!(await isDir(install)))continue;
-    if(data.bIsIncompleteInstall===true||data.bNeedsValidation===true||data.bIsDlc===true||(clean(data.MainGameAppName)&&data.MainGameAppName!==id))continue;
+    if(data.bIsIncompleteInstall===true||data.bNeedsValidation===true)continue;
     const executable=await executableWithin(install,data.LaunchExecutable);
-    mergeGame(map,{name,source:'epic',source_id:id,install_path:install,executable,launch_uri:epicUri(id,data.CatalogNamespace,data.CatalogItemId),tags:[]});
+    // Non-launchable DLC is not a separate game, but an independently
+    // launchable add-on must not be silently merged into its parent title.
+    const isDlc=data.bIsDlc===true||(clean(data.MainGameAppName)&&data.MainGameAppName!==id);
+    if(isDlc&&(!executable||!likelyGameExecutable(path.basename(executable),'win32')))continue;
+    const game={name,source:'epic',source_id:id,install_path:install,executable,launch_uri:epicUri(id,data.CatalogNamespace,data.CatalogItemId),tags:[]};
+    if(isDlc)standaloneDlc.push({game,parentId:appId(data.MainGameAppName)});
+    else mergeGame(map,game);
    }catch(error){warnings.push(`Epic ${item.name}: ${error.message}`);}
   }
  }
+ for(const {game,parentId} of standaloneDlc){
+  const parent=parentId&&map.get(`epic:${parentId}`.toLowerCase());
+  // A shared parent executable is a library add-on, not an independently
+  // launchable game. Separate verified DLC binaries retain their own IDs.
+  if(parent?.executable&&pathKey(parent.executable)===pathKey(game.executable))continue;
+  mergeGame(map,game);
+ }
  return {games:[...map.values()],warnings};
+}
+// Xbox PC titles may expose a MicrosoftGame.config inside their installed
+// content directory. This is an install manifest, not permission to invent a
+// shell command or an undocumented Gaming Services URI. Until the library has
+// a native Xbox launch integration, only expose Xbox products with a verified
+// contained desktop executable; packaged/UWP-only games are skipped.
+function xboxRoots(platform=process.platform){
+ if(platform!=='win32')return [];
+ const drive=process.env.SystemDrive&&/^[a-z]:$/i.test(process.env.SystemDrive)?process.env.SystemDrive:'C:';
+ return unique([path.join(drive+path.sep,'XboxGames')]);
+}
+// A small, strict, NON-expanding XML recognizer for a single, capped GDK
+// manifest. Regex extraction without balanced tags can silently accept
+// truncated/forged XML and misidentify an executable as a game. We do not
+// process DTDs, entities, CDATA, external files or arbitrary XML features.
+function xmlText(value){
+ const raw=String(value);
+ if(raw.includes('<')||[...raw].some(ch=>ch.charCodeAt(0)<32&&![9,10,13].includes(ch.charCodeAt(0)))||raw.replace(/&(?:amp|lt|gt|quot|apos|#\d+|#x[\da-fA-F]+);/g,'').includes('&'))throw Error('Invalid XML entity or attribute value');
+ return raw.replace(/&(amp|lt|gt|quot|apos|#\d+|#x[\da-fA-F]+);/g,(_,entity)=>{
+  const basic={amp:'&',lt:'<',gt:'>',quot:'"',apos:"'"};
+  if(Object.hasOwn(basic,entity))return basic[entity];
+  const number=entity.startsWith('#x')?Number.parseInt(entity.slice(2),16):Number.parseInt(entity.slice(1),10);
+  if(!Number.isSafeInteger(number)||number<32&&![9,10,13].includes(number)||number>0x10ffff||number>=0xd800&&number<=0xdfff)throw Error('Invalid XML code point');
+  return String.fromCodePoint(number);
+ });
+}
+function xmlAttributes(raw){
+ const attrs=Object.create(null);
+ let rest=raw;
+ while(rest.length){
+  if(!rest.trim())break;
+  const match=rest.match(/^\s+([A-Za-z_][A-Za-z0-9_.:-]*)\s*=\s*(["'])(.*?)\2/s);
+  if(!match||match[3].length>2048)throw Error('Malformed or oversized XML attribute');
+  const key=match[1].toLowerCase();
+  if(Object.hasOwn(attrs,key))throw Error('Duplicate XML attribute');
+  attrs[key]=xmlText(match[3]);
+  rest=rest.slice(match[0].length);
+ }
+ return attrs;
+}
+function parseXboxConfig(xml){
+ if(typeof xml!=='string'||Buffer.byteLength(xml,'utf8')>128*1024)throw Error('Xbox manifest exceeds size limit');
+ const source=xml.replace(/^\uFEFF/,'');
+ let cursor=0,count=0,rootCount=0,xmlDeclaration=false;
+ const stack=[],fields={identity:null,visuals:null,executable:null};
+ while(cursor<source.length){
+  if(source[cursor]!=='<'){
+   const next=source.indexOf('<',cursor);
+   const text=source.slice(cursor,next<0?source.length:next);
+   if(!stack.length&&text.trim())throw Error('Text outside Xbox game root');
+   xmlText(text);cursor=next<0?source.length:next;continue;
+  }
+  if(source.startsWith('<!--',cursor)){
+   const end=source.indexOf('-->',cursor+4);
+   if(end<0||source.slice(cursor+4,end).includes('--'))throw Error('Unclosed or malformed XML comment');
+   cursor=end+3;continue;
+  }
+  if(source.startsWith('<?',cursor)){
+   const end=source.indexOf('?>',cursor+2);
+   if(end<0||stack.length||rootCount||xmlDeclaration)throw Error('Unexpected XML processing instruction');
+   const decl=source.slice(cursor+2,end);
+   if(!/^xml\s/.test(decl))throw Error('Unexpected XML processing instruction');
+   const attrs=xmlAttributes(decl.slice(3));
+   if(!['1.0','1.1'].includes(attrs.version))throw Error('Invalid XML declaration');
+   xmlDeclaration=true;
+   cursor=end+2;continue;
+  }
+  if(source.startsWith('<!',cursor))throw Error('Unsupported XML declaration or entity');
+  let end=cursor+1,quote='';
+  for(;end<source.length;end++){
+   const ch=source[end];
+   if(quote){if(ch===quote)quote='';}
+   else if(ch==='"'||ch==="'")quote=ch;
+   else if(ch==='>')break;
+   if(end-cursor>4096)throw Error('Oversized XML tag');
+  }
+  if(end>=source.length||quote)throw Error('Unclosed XML tag or quote');
+  const token=source.slice(cursor+1,end);
+  cursor=end+1;
+  if(token.startsWith('/')){
+   const close=token.match(/^\/([A-Za-z_][A-Za-z0-9_.:-]*)\s*$/);
+   if(!close||stack.pop()!==close[1])throw Error('Mismatched XML closing tag');
+   continue;
+  }
+  const tag=token.match(/^([A-Za-z_][A-Za-z0-9_.:-]*)/);
+  if(!tag)throw Error('Malformed XML opening tag');
+  const selfClosing=/\/\s*$/.test(token);
+  const rest=token.slice(tag[0].length).replace(/\/\s*$/,'');
+  const attrs=xmlAttributes(rest);
+  const name=tag[1],parent=stack.at(-1);
+  if(!parent){if(name!=='Game'||rootCount++)throw Error('Multiple or invalid Xbox game roots');}
+  if(++count>2048||stack.length>32)throw Error('Xbox XML element limit exceeded');
+  if(name==='Identity'||name==='ShellVisuals'||name==='Executable'){
+   const key=name==='Identity'?'identity':name==='ShellVisuals'?'visuals':'executable';
+   if(fields[key])throw Error(`Duplicate Xbox ${name} element`);
+   if(name==='Executable'?(parent!=='ExecutableList'||stack.at(-2)!=='Game'):parent!=='Game')throw Error(`Misplaced Xbox ${name} element`);
+   fields[key]=attrs;
+  }
+  if(!selfClosing)stack.push(name);
+ }
+ if(stack.length||rootCount!==1||!fields.identity||!fields.visuals)throw Error('Unclosed or incomplete Xbox game XML');
+ return fields;
+}
+async function xboxFromDirectory(dir,entries,warnings){
+ const manifest=entries.find(entry=>entry.isFile()&&entry.name.toLowerCase()==='microsoftgame.config');
+ if(!manifest)return null;
+ try{
+  const xml=await readText(path.join(dir,manifest.name),128*1024);
+  const {identity,visuals,executable:target}=parseXboxConfig(xml);
+  const id=appId(identity.name);
+  const exeName=clean(target?.name);
+  const display=clean(visuals?.defaultdisplayname);
+  // An install may have Content/MicrosoftGame.config. Never use the outer
+  // package directory as a second executable search root.
+  const owner=path.basename(dir).toLowerCase()==='content'?path.dirname(dir):dir;
+  const name=title(display&&!/^ms-resource:/i.test(display)?display:path.basename(owner));
+  if(!id||!name)return null;
+  if(target?.targetdevicefamily&&!/^pc$/i.test(target.targetdevicefamily)){
+   if(warnings.length<12)warnings.push(`Xbox ${name}: executable targets ${target.targetdevicefamily}, not PC.`);
+   return null;
+  }
+  if(!/\.exe$/i.test(exeName)){
+   if(warnings.length<12)warnings.push(`Xbox ${name}: no verified direct executable; packaged-only titles need the Xbox launcher.`);
+   return null;
+  }
+  const executable=await executableWithin(dir,exeName);
+  if(!executable||!likelyGameExecutable(path.basename(executable),'win32')){
+   if(warnings.length<12)warnings.push(`Xbox ${name}: executable missing, outside the install, or not a game.`);
+   return null;
+  }
+  // Microsoft GDK: file presence is NOT proof that the executable can launch
+  // with Gaming Runtime title identity. The Xbox app/Start menu may be needed.
+  if(warnings.length<12)warnings.push(`Xbox ${name}: executable found, but direct launch may lack Gaming Runtime identity; use Xbox app or Start menu if needed.`);
+  return {name,source:'xbox',source_id:id,install_path:owner,executable,tags:[]};
+ }catch(error){warnings.push(`Xbox metadata ${manifest.name}: ${error.message}`);return null;}
+}
+async function discoverXbox(roots=xboxRoots(),{platform=process.platform}={}){
+ const games=[],warnings=[];
+ if(platform!=='win32')return {games,warnings};
+ let budget=MAX_ENTRIES;
+ for(const root of unique(roots)){
+  if(budget<=0)break;let entries;
+  try{entries=await entriesAt(root,budget);}catch{continue;}
+  budget-=entries.length;
+  if(entries.truncated)warnings.push('Xbox scan reached its metadata entry limit.');
+  const direct=await xboxFromDirectory(root,entries,warnings);
+  if(direct)games.push(direct);
+  for(const child of entries){
+   if(!child.isDirectory()||child.isSymbolicLink()||budget<=0)continue;
+   const install=path.join(root,child.name);let files;
+   try{files=await entriesAt(install,budget);}catch{continue;}
+   budget-=files.length;
+   if(files.truncated)warnings.push(`Xbox metadata limit at ${install}`);
+   const direct=await xboxFromDirectory(install,files,warnings);
+   if(direct){games.push(direct);continue;}
+   const contentDir=files.find(entry=>entry.isDirectory()&&!entry.isSymbolicLink()&&entry.name.toLowerCase()==='content');
+   if(budget<=0||!contentDir)continue;
+   const content=path.join(install,contentDir.name);let contents;
+   try{contents=await entriesAt(content,budget);}catch{continue;}
+   budget-=contents.length;
+   if(contents.truncated)warnings.push(`Xbox metadata limit at ${content}`);
+   const game=await xboxFromDirectory(content,contents,warnings);if(game)games.push(game);
+  }
+ }
+ if(budget<=0)warnings.push('Xbox scan stopped at its metadata entry limit.');
+ return {games,warnings};
 }
 const ignored=/^(?:unins\d*|uninstall|setup|install|installer|crashreport|unitycrash|vc_redist|vcredist|dxsetup|update|updater|bootstrapper|launcher\s*setup|eac|easyanticheat|eos|redist|redistributable|configuration|repair)(?:[_.\d-]|$)/i;
 const ignoredDirectory=/^(?:node_modules|\.git|__pycache__|redist|redistributables|_commonredist|engine|plugins|content|data|assets|support|prerequisites|windows|system32|tools|installers|directx|easyanticheat|crashreporter|documentation)$/i;
@@ -155,7 +336,7 @@ async function gogFromDirectory(location,entries,warnings){
  const manifest=entries.find(entry=>entry.isFile()&&/^goggame-\d+\.info$/i.test(entry.name));if(!manifest)return null;
  try{
   const doc=JSON.parse(await readText(path.join(location,manifest.name))),id=String(doc.gameId||manifest.name.match(/\d+/)[0]);
-  if(!/^\d{1,20}$/.test(id))return null;
+  if(!/^\d{1,20}$/.test(id)||id!==manifest.name.match(/^goggame-(\d+)\.info$/i)[1])return null;
   const tasks=Array.isArray(doc.playTasks)?doc.playTasks.slice(0,80).filter(task=>task&&(!task.type||task.type==='FileTask')).sort((a,b)=>Number(!!b.isPrimary)-Number(!!a.isPrimary)):[];
   let executable='';
   for(const task of tasks){
@@ -173,16 +354,28 @@ async function gogFromDirectory(location,entries,warnings){
   return {name:title(doc.name)||path.basename(location).slice(0,140),source:'gog',source_id:id,install_path:location,executable,tags:[]};
  }catch(error){warnings.push(`GOG ${manifest.name}: ${error.message}`);return null;}
 }
+async function gogGamesFromDirectory(location,entries,warnings){
+ const manifests=entries.filter(entry=>entry.isFile()&&/^goggame-\d+\.info$/i.test(entry.name));
+ // One verified .info per installed product. An independently launchable
+ // expansion can share its parent's directory without losing its GOG ID.
+ if(manifests.length>32)warnings.push(`GOG ${location}: metadata limited to 32 game records.`);
+ const games=[];
+ for(const manifest of manifests.slice(0,32)){
+  const game=await gogFromDirectory(location,[manifest],warnings);
+  if(game)games.push(game);
+ }
+ return games;
+}
 async function discoverGog(roots=gogRoots()){
  const map=new Map(),warnings=[];let budget=MAX_ENTRIES;
  for(const root of unique(roots)){
   if(budget<=0)break;let entries;try{entries=await entriesAt(root,budget);}catch{continue;}
   budget-=entries.length;if(entries.truncated)warnings.push('GOG scan reached its metadata entry limit.');
-  const direct=await gogFromDirectory(root,entries,warnings);if(direct){mergeGame(map,direct);continue;}
+  const direct=await gogGamesFromDirectory(root,entries,warnings);if(direct.length){for(const game of direct)mergeGame(map,game);continue;}
   for(const dir of entries){if(!dir.isDirectory()||budget<=0)continue;const location=path.join(root,dir.name);let files;
    try{files=await entriesAt(location,budget);}catch{continue;}
    budget-=files.length;if(files.truncated)warnings.push(`GOG metadata scan reached its entry limit in ${location}.`);
-   const game=await gogFromDirectory(location,files,warnings);if(game)mergeGame(map,game);
+   for(const game of await gogGamesFromDirectory(location,files,warnings))mergeGame(map,game);
   }
  }
  return {games:[...map.values()],warnings};
@@ -296,8 +489,18 @@ async function scanFolder(root,{limit=6000,maxDepth=5,platform=process.platform}
   const {dir,depth}=queue[cursor];let entries;
   try{entries=await entriesAt(dir,limit-seen);}catch(error){warnings.push(`Cannot read ${dir}: ${error.code||error.message}`);continue;}
   seen+=entries.length;truncated ||= !!entries.truncated;
-  const gog=await gogFromDirectory(dir,entries,warnings);
-  if(gog){games.push(gog);storeDirectories.add(dir);continue;}
+  const gog=await gogGamesFromDirectory(dir,entries,warnings);
+  if(gog.length){games.push(...gog);storeDirectories.add(dir);continue;}
+  if(platform==='win32'){
+   let xbox=await xboxFromDirectory(dir,entries,warnings);
+   if(!xbox&&entries.some(entry=>entry.isDirectory()&&!entry.isSymbolicLink()&&entry.name.toLowerCase()==='content')){
+    // Do not walk all package assets. Only inspect the bounded metadata at
+    // the single well-known Content/MicrosoftGame.config location.
+    const content=path.join(dir,entries.find(entry=>entry.isDirectory()&&!entry.isSymbolicLink()&&entry.name.toLowerCase()==='content').name);
+    try{const files=await entriesAt(content,256);if(files.truncated)warnings.push(`Xbox metadata list limit at ${content}`);xbox=await xboxFromDirectory(content,files,warnings);}catch{}
+   }
+   if(xbox){games.push(xbox);storeDirectories.add(xbox.install_path);continue;}
+  }
   for(const entry of entries){
    const full=path.join(dir,entry.name);if(entry.isSymbolicLink())continue;
    if(entry.isDirectory()){
@@ -317,7 +520,7 @@ async function scanFolder(root,{limit=6000,maxDepth=5,platform=process.platform}
   const candidates=groups.get(owner)||[];candidates.push({file,owner,score,identity,fallbackName});groups.set(owner,candidates);
  }
  for(const [owner,candidates] of groups){
-  if(storeDirectories.has(owner))continue;
+  if([...storeDirectories].some(store=>owner===store||within(store,owner)))continue;
   candidates.sort((a,b)=>b.score-a.score||a.file.localeCompare(b.file));
   // Multiple known standalone titles in a selected flat folder remain separate.
   const known=candidates.filter(candidate=>candidate.identity.kind==='executable');
@@ -351,7 +554,8 @@ async function discoverAll(settings={},options={}){
   {provider:'steam',run:()=>discoverSteam(undefined,{platform})},{provider:'epic',run:()=>discoverEpic()},
   {provider:'gog',run:()=>discoverGog()},{provider:'gog-registry',run:()=>discoverGogRegistry({platform})},
   {provider:'heroic',run:()=>discoverHeroic(undefined,{platform})},{provider:'legendary',run:()=>discoverLegendary(undefined,{platform})},
-  {provider:'windows-stores',run:()=>discoverWindowsRegistry({platform})}
+  {provider:'windows-stores',run:()=>discoverWindowsRegistry({platform})},
+  {provider:'xbox',run:()=>discoverXbox(undefined,{platform})}
  ];
  // Downloads is intentionally absent. Only explicitly selected library folders
  // and bounded, known storefront metadata locations are searched.
@@ -364,15 +568,26 @@ async function discoverAll(settings={},options={}){
    catch(error){results[i]={games:[],warnings:[`${job.provider}: ${error.message}`],diagnostic:{provider:job.provider,status:'error',games:0,warnings:1,durationMs:Math.round(performance.now()-start)}};}
   }
  }));
- const games=[],warnings=[],diagnostics=[],seen=new Set(),seenExecutables=new Set(),seenStorePaths=new Set();
- for(const result of results){warnings.push(...result.warnings);diagnostics.push(result.diagnostic);
-  for(const game of result.games){
-   const key=game.source_id&&game.source!=='folder'&&game.source!=='manual'?`${game.source}:${game.source_id}`:`file:${game.executable||game.launch_uri}`;
-   const executable=game.executable?pathKey(game.executable):'',folder=game.install_path?pathKey(game.install_path):'';
-   if(seen.has(key)||(executable&&seenExecutables.has(executable))||(game.source==='folder'&&folder&&seenStorePaths.has(folder)))continue;
-   seen.add(key);if(executable)seenExecutables.add(executable);if(game.source!=='folder'&&game.source!=='manual'&&folder)seenStorePaths.add(folder);games.push(game);
-  }
+ const games=[],warnings=[],diagnostics=[],seen=new Set(),trustedExecutables=new Set(),seenStorePaths=new Set();
+ const discovered=[];
+ for(const result of results){warnings.push(...result.warnings);diagnostics.push(result.diagnostic);discovered.push(...result.games);}
+ // Authoritative store IDs outrank a selected-folder candidate for the same
+ // executable, regardless of provider completion order. Different verified
+ // store IDs (including separately launchable DLC/editions) remain separate
+ // even if they share a launcher binary or installation directory.
+ const trusted=game=>!!game.source_id&&game.source!=='folder'&&game.source!=='manual';
+ const order=[...discovered.filter(trusted),...discovered.filter(game=>!trusted(game))];
+ for(const game of order){
+  const authoritative=trusted(game),executable=game.executable?pathKey(game.executable):'';
+  const folder=game.install_path?pathKey(game.install_path):'';
+  const key=authoritative?`store:${game.source}:${game.source_id}`.toLowerCase():executable?`file:${executable}`:game.launch_uri?`uri:${game.launch_uri}`:'';
+  if(!key||seen.has(key))continue;
+  if(!authoritative&&((executable&&trustedExecutables.has(executable))||
+    (game.source==='folder'&&folder&&seenStorePaths.has(folder))))continue;
+  seen.add(key);
+  if(authoritative){if(executable)trustedExecutables.add(executable);if(folder)seenStorePaths.add(folder);}
+  games.push(game);
  }
  return {games,warnings,diagnostics};
 }
-module.exports={parseVdf,discoverSteam,discoverEpic,discoverGog,discoverGogRegistry,scanFolder,scanDownloadsFolder,discoverAll,steamRoots,epicManifestRoots,gogRoots,discoverHeroic,discoverLegendary,discoverWindowsRegistry,heroicRoots,legendaryRoots};
+module.exports={parseVdf,discoverSteam,discoverEpic,discoverGog,discoverGogRegistry,scanFolder,scanDownloadsFolder,discoverAll,steamRoots,epicManifestRoots,gogRoots,discoverHeroic,discoverLegendary,discoverWindowsRegistry,discoverXbox,xboxRoots,heroicRoots,legendaryRoots};

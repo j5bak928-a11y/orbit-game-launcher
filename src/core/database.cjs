@@ -12,6 +12,90 @@ const DEFAULT_SETTINGS = Object.freeze({
 });
 const SORTS = {name: 'name COLLATE NOCASE ASC', recent: 'last_played_at DESC, name COLLATE NOCASE ASC', added: 'created_at DESC', time: 'total_play_seconds DESC, name COLLATE NOCASE ASC'};
 const COLUMNS = ['id','name','source','source_id','executable','launch_uri','install_path','cover','banner','icon','genre','tags','favorite','total_play_seconds','last_played_at','created_at','updated_at','launch_args','working_dir','cover_fit','cover_position'];
+const STATS_MAX_ROWS=100000,STATS_MAX_SESSION_SECONDS=7*86400;
+function statisticsDays(options){
+  if(options===undefined||options===null)return 30;
+  if(typeof options!=='object'||Array.isArray(options))throw Error('Statistics options must be an object.');
+  const days=options.days??30;
+  if(!Number.isInteger(days)||days<7||days>90)throw Error('Statistics days must be an integer from 7 to 90.');
+  return days;
+}
+function statisticsDate(value){
+  if(typeof value!=='string')return NaN;
+  const parts=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
+  if(!parts)return NaN;
+  const [year,month,day,hour,minute,second]=parts.slice(1,7).map(Number);
+  const date=new Date(0);date.setUTCFullYear(year,month-1,day);date.setUTCHours(0,0,0,0);
+  if(date.getUTCFullYear()!==year||date.getUTCMonth()!==month-1||date.getUTCDate()!==day||hour>23||minute>59||second>59)return NaN;
+  const offset=/(?:([+-])(\d{2}):(\d{2}))$/.exec(value);
+  if(offset&&(Number(offset[2])>23||Number(offset[3])>59))return NaN;
+  const timestamp=Date.parse(value);
+  return Number.isFinite(timestamp)?timestamp:NaN;
+}
+const localDateKey=date=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+function statisticsFromRows(rows,openSessions,days,asOf){
+  const now=asOf.getTime();
+  if(!Number.isFinite(now))throw Error('Invalid statistics reference date.');
+  const byGame=new Map(),daySeconds=new Map();
+  let invalidSessions=0,rawSeconds=0,eligibleSeconds=0,creditedSeconds=0;
+  for(const row of rows){
+    const start=statisticsDate(row.started_at),end=statisticsDate(row.finished_at);
+    if(!Number.isFinite(start)||!Number.isFinite(end)||end<=start||end-start>STATS_MAX_SESSION_SECONDS*1000||end>now+300000||
+        !Number.isSafeInteger(row.seconds)||row.seconds<0){
+      invalidSessions++;continue;
+    }
+    const game=byGame.get(row.game_id)||{id:row.game_id,name:row.name,source:row.source,cover:row.cover,icon:row.icon,lastPlayedAt:row.finished_at,lastTime:-Infinity,events:[],seconds:0};
+    if(end>game.lastTime){game.lastTime=end;game.lastPlayedAt=row.finished_at;}
+    byGame.set(row.game_id,game);
+    rawSeconds+=row.seconds;
+    const credit=Math.min(row.seconds,STATS_MAX_SESSION_SECONDS,(end-start)/1000);
+    eligibleSeconds+=credit;
+    if(credit<=0)continue;
+    const index=game.events.length/2,rate=credit*1000/(end-start);
+    game.events.push({at:start,index,rate,opening:true},{at:end,index,rate,opening:false});
+  }
+  function assign(from,to,rate,game){
+    while(from<to){
+      const point=new Date(from),day=localDateKey(point);
+      const midnight=new Date(point.getTime());midnight.setHours(0,0,0,0);midnight.setDate(midnight.getDate()+1);
+      const until=Math.min(to,midnight.getTime()),seconds=(until-from)*rate/1000;
+      if(until<=from)break;
+      daySeconds.set(day,(daySeconds.get(day)||0)+seconds);
+      creditedSeconds+=seconds;game.seconds+=seconds;from=until;
+    }
+  }
+  // A per-game max-rate sweep merges overlapping historical rows without
+  // rewriting any session or counting the same wall-clock second twice.
+  for(const game of byGame.values()){
+    const events=game.events.sort((a,b)=>a.at-b.at||Number(a.opening)-Number(b.opening));
+    const active=new Set(),heap=[];
+    const push=entry=>{heap.push(entry);let at=heap.length-1;while(at){const p=(at-1)>>1;if(heap[p].rate>=heap[at].rate)break;[heap[p],heap[at]]=[heap[at],heap[p]];at=p;}};
+    const pop=()=>{const last=heap.pop();if(!heap.length)return;if(last)heap[0]=last;let at=0;while(true){const l=at*2+1,r=l+1;let max=at;if(l<heap.length&&heap[l].rate>heap[max].rate)max=l;if(r<heap.length&&heap[r].rate>heap[max].rate)max=r;if(max===at)break;[heap[at],heap[max]]=[heap[max],heap[at]];at=max;}};
+    let previous=null;
+    for(let index=0;index<events.length;){
+      const time=events[index].at;
+      while(heap.length&&!active.has(heap[0].index))pop();
+      if(previous!==null&&time>previous&&heap.length)assign(previous,time,heap[0].rate,game);
+      while(index<events.length&&events[index].at===time){
+        const item=events[index++];
+        if(item.opening){active.add(item.index);push(item);}else active.delete(item.index);
+      }
+      previous=time;
+    }
+  }
+  const midnight=new Date(asOf);midnight.setHours(0,0,0,0);
+  const makeRange=count=>{
+    let total=0;
+    for(let i=0;i<count;i++){const date=new Date(midnight);date.setDate(date.getDate()-i);total+=daySeconds.get(localDateKey(date))||0;}
+    return Math.round(total);
+  };
+  const daily=[];
+  for(let i=days-1;i>=0;i--){const date=new Date(midnight);date.setDate(date.getDate()-i);const key=localDateKey(date);daily.push({date:key,seconds:Math.round(daySeconds.get(key)||0)});}
+  const recentGames=[...byGame.values()].sort((a,b)=>b.lastTime-a.lastTime||a.id.localeCompare(b.id)).slice(0,8).map(g=>({id:g.id,name:g.name,source:g.source,cover:g.cover,icon:g.icon,seconds:Math.round(g.seconds),lastPlayedAt:g.lastPlayedAt}));
+  return {days,daily,totals:{week:makeRange(7),month:makeRange(30),allTime:Math.round(creditedSeconds)},recentGames,
+    meta:{openSessions,invalidSessions,overlapSeconds:Math.round(Math.max(0,eligibleSeconds-creditedSeconds)),
+      adjustedSeconds:Math.round(Math.max(0,rawSeconds-eligibleSeconds)),truncated:false}};
+}
 const json = (value, fallback) => { try {return JSON.parse(value)} catch {return fallback} };
 const encode = x => JSON.stringify(x);
 const now = () => new Date().toISOString();
@@ -21,7 +105,7 @@ function cleanGame(raw, previous = {}) {
   const name = String(raw.name ?? previous.name ?? '').trim();
   if (!name || name.length > 140) throw new Error('Game name must contain 1–140 characters.');
   const source = String(raw.source ?? previous.source ?? 'manual');
-  if (!['manual','steam','epic','gog','ea','ubisoft','battlenet','folder'].includes(source)) throw new Error('Unsupported game source.');
+  if (!['manual','steam','epic','gog','ea','ubisoft','battlenet','xbox','folder'].includes(source)) throw new Error('Unsupported game source.');
   const result = {};
   for (const key of ['source_id','executable','launch_uri','install_path','cover','banner','icon','genre','working_dir']) {
     const val = raw[key] !== undefined ? raw[key] : previous[key];
@@ -48,6 +132,18 @@ function duplicateKey(game){
   if (game.executable) return `file:${normalizedPath(game.executable)}`;
   if (game.launch_uri) return `uri:${game.launch_uri.toLowerCase()}`;
   return '';
+}
+const hasStoreIdentity=game=>!!(game?.source_id&&game?.source&&!['manual','folder'].includes(game.source));
+function reconcileDiscoveredGames(library,candidates,platform=process.platform){
+  const knownSources=new Set(library.filter(hasStoreIdentity).map(duplicateKey));
+  const knownFiles=new Set(library.filter(g=>g.executable).map(g=>normalizedPath(g.executable,platform)));
+  const knownUris=new Set(library.filter(g=>g.launch_uri).map(g=>g.launch_uri.toLowerCase()));
+  const aliasFiles=new Set(library.filter(g=>!hasStoreIdentity(g)&&g.executable).map(g=>normalizedPath(g.executable,platform)));
+  const aliasUris=new Set(library.filter(g=>!hasStoreIdentity(g)&&g.launch_uri).map(g=>g.launch_uri.toLowerCase()));
+  return candidates.map(g=>({...g,alreadyAdded:!!(
+    (hasStoreIdentity(g)&&knownSources.has(duplicateKey(g))) ||
+    (g.executable&&(hasStoreIdentity(g)?aliasFiles:knownFiles).has(normalizedPath(g.executable,platform))) ||
+    (g.launch_uri&&(hasStoreIdentity(g)?aliasUris:knownUris).has(g.launch_uri.toLowerCase())))}));
 }
 function deserialize(row){if(!row)return null;return {...row, favorite:!!row.favorite, tags:json(row.tags,[]),launch_args:json(row.launch_args,[]) };}
 class LibraryDatabase {
@@ -121,22 +217,35 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
     this.activityList ??= this.db.prepare("SELECT id,name,source,install_path,executable,launch_uri FROM games WHERE executable != '' OR (install_path != '' AND (source IN ('steam','epic') OR launch_uri != ''))");
     return this.activityList.all();
   }
+  getStatistics(options={},asOf=new Date()){
+    const days=statisticsDays(options);
+    const openSessions=this.db.prepare('SELECT COUNT(*) AS count FROM sessions WHERE finished_at IS NULL').get().count;
+    const rows=this.db.prepare(`SELECT s.game_id,s.started_at,s.finished_at,s.seconds,g.name,g.source,g.cover,g.icon
+      FROM sessions s INNER JOIN games g ON g.id=s.game_id WHERE s.finished_at IS NOT NULL
+      ORDER BY s.game_id,s.started_at,s.id LIMIT ?`).all(STATS_MAX_ROWS+1);
+    if(rows.length>STATS_MAX_ROWS)throw Error('Statistics history exceeds the safe 100000-session read limit.');
+    return statisticsFromRows(rows,openSessions,days,asOf);
+  }
   get(id){return deserialize(this.db.prepare(`SELECT ${COLUMNS.join(',')} FROM games WHERE id=?`).get(id));}
   count(){return this.db.prepare('SELECT COUNT(*) as count FROM games').get().count;}
-  findExecutableDuplicate(executable,exceptId=''){
+  findExecutableDuplicate(executable,exceptId='',incoming=null){
     if(!executable)return undefined;
     const comparison=process.platform==='win32'?'executable=? COLLATE NOCASE':'executable=?';
-    const row=this.db.prepare(`SELECT id FROM games WHERE executable != '' AND ${comparison} AND id != ? LIMIT 1`).get(path.normalize(executable),exceptId);
+    // A verified store product can share a binary with another distinct store
+    // product (DLC/edition). Only manual or legacy unkeyed aliases coalesce.
+    const aliasOnly=hasStoreIdentity(incoming)?" AND (source IN ('manual','folder') OR source_id = '')":'';
+    const row=this.db.prepare(`SELECT id FROM games WHERE executable != '' AND ${comparison} AND id != ?${aliasOnly} ORDER BY rowid LIMIT 1`).get(path.normalize(executable),exceptId);
     return row;
   }
-  findUriDuplicate(uri,exceptId=''){
+  findUriDuplicate(uri,exceptId='',incoming=null){
     if(!uri)return undefined;
-    return this.db.prepare("SELECT id FROM games WHERE launch_uri != '' AND launch_uri=? COLLATE NOCASE AND id != ? LIMIT 1").get(uri,exceptId);
+    const aliasOnly=hasStoreIdentity(incoming)?" AND (source IN ('manual','folder') OR source_id = '')":'';
+    return this.db.prepare(`SELECT id FROM games WHERE launch_uri != '' AND launch_uri=? COLLATE NOCASE AND id != ?${aliasOnly} ORDER BY rowid LIMIT 1`).get(uri,exceptId);
   }
   upsert(raw, updateExisting=false){
     const parsed=cleanGame(raw);
     const key=duplicateKey(parsed);
-    const exists=(key?this.db.prepare('SELECT id FROM games WHERE duplicate_key=?').get(key):undefined)||this.findExecutableDuplicate(parsed.executable)||this.findUriDuplicate(parsed.launch_uri);
+    const exists=(key?this.db.prepare('SELECT id FROM games WHERE duplicate_key=?').get(key):undefined)||this.findExecutableDuplicate(parsed.executable,'',parsed)||this.findUriDuplicate(parsed.launch_uri,'',parsed);
     if(exists){if(!updateExisting)return {game:this.get(exists.id),added:false};return {game:this.update(exists.id,raw),added:false};}
     const id=crypto.randomUUID(), date=now();
     const row={id,...parsed,tags:encode(parsed.tags),launch_args:encode(parsed.launch_args),favorite:Number(parsed.favorite),total_play_seconds:0,last_played_at:null,created_at:date,updated_at:date,duplicate_key:key};
@@ -179,7 +288,7 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
       this.db.exec('COMMIT');return result;
     }catch(e){this.db.exec('ROLLBACK');throw e}
   }
-  update(id,patch){const old=this.get(id);if(!old)throw Error('Game not found.');const parsed=cleanGame(patch,old);if(this.findExecutableDuplicate(parsed.executable,id))throw Error('This executable is already in your library.');if(this.findUriDuplicate(parsed.launch_uri,id))throw Error('This launcher link is already in your library.');const key=duplicateKey(parsed),date=now();const row={...parsed,tags:encode(parsed.tags),launch_args:encode(parsed.launch_args),favorite:Number(parsed.favorite),duplicate_key:key,updated_at:date};
+  update(id,patch){const old=this.get(id);if(!old)throw Error('Game not found.');const parsed=cleanGame(patch,old);if(this.findExecutableDuplicate(parsed.executable,id,parsed))throw Error('This executable is already in your library.');if(this.findUriDuplicate(parsed.launch_uri,id,parsed))throw Error('This launcher link is already in your library.');const key=duplicateKey(parsed),date=now();const row={...parsed,tags:encode(parsed.tags),launch_args:encode(parsed.launch_args),favorite:Number(parsed.favorite),duplicate_key:key,updated_at:date};
     const fields=Object.keys(row);try{this.db.prepare(`UPDATE games SET ${fields.map(k=>`${k}=?`).join(',')} WHERE id=?`).run(...fields.map(k=>row[k]),id)}catch(e){if(String(e).includes('UNIQUE'))throw Error('This game is already in your library.');throw e}
     return this.get(id);
   }
@@ -242,4 +351,4 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
     }catch(error){this.db.exec('ROLLBACK');throw error;}
   }
 }
-module.exports={LibraryDatabase,cleanGame,duplicateKey,normalizedPath,DEFAULT_SETTINGS};
+module.exports={LibraryDatabase,cleanGame,duplicateKey,normalizedPath,reconcileDiscoveredGames,DEFAULT_SETTINGS};

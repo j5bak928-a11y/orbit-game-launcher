@@ -625,6 +625,19 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
         }
         "librarySnapshot" => snapshot(&state),
         "listGames" => state.db.lock().unwrap().list("name"),
+        "getStatistics" => {
+            let days = match args.first() {
+                None | Some(Value::Null) => 30,
+                Some(Value::Object(options)) => match options.get("days") {
+                    None | Some(Value::Null) => 30,
+                    Some(value) => value
+                        .as_i64()
+                        .ok_or("Statistics days must be an integer from 7 to 90.")?,
+                },
+                _ => return Err("Statistics options must be an object.".into()),
+            };
+            state.db.lock().unwrap().get_statistics(days)
+        }
         "runningGames" => Ok(json!(running_ids(&state))),
         "getGame" => state.db.lock().unwrap().get(game_id(args)?),
         "addGame" => {

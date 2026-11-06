@@ -12,12 +12,13 @@ The main desktop application uses **Electron**. A separate, **experimental Rust 
 
 ## What Orbit can do
 
-- **One game library:** discover installed games, add standalone executables, and organize entries with favorites, tags, categories, and filters.
+- **One game library:** discover supported Steam, Epic, GOG, Battle.net, Xbox PC and standalone installations, add executables, and organize entries with favorites, tags, categories, and filters.
 - **Find games quickly:** search with `Ctrl/Cmd + K`, sort the library, and switch between grid and list views.
 - **Launch through the right client:** use a game's storefront URI or a validated executable, without moving or modifying game installations.
 - **Track playtime:** record supported direct-launch sessions and detect certain externally launched games on Windows. Tracking accuracy depends on how a game starts and which processes can be identified.
-- **Show game artwork:** use cached covers and icons offline, optionally look up online artwork, or select your own cover, banner, and icon.
+- **Show game artwork:** look for validated portrait artwork in bounded neighboring folders, use cached covers and icons offline, optionally look up online artwork, or select your own cover, banner, and icon.
 - **Play with a controller:** use a fullscreen, gamepad-friendly library with keyboard and mouse fallback.
+- **Review gaming statistics:** recorded-session totals for recent days and weeks, a daily activity chart, recent games and a period-best day. Overlapping records for a single game are deduplicated in reports without rewriting play history.
 - **Keep your data local:** store games, settings, and play history in SQLite; export and restore library backups.
 
 <table>
@@ -28,7 +29,7 @@ The main desktop application uses **Electron**. A separate, **experimental Rust 
 
 | | Electron desktop | Rust / Tauri preview |
 | --- | --- | --- |
-| Version in this repository | **0.2.6** | **0.2.5** |
+| Version in this repository | **0.2.7** | **0.2.6** |
 | Status | Main desktop implementation | Experimental Windows preview |
 | UI | Orbit HTML/CSS/JavaScript | The same interface, hosted in WebView2 |
 | Backend | Node.js/Electron, with a native Windows process helper | Rust for library, discovery, tracking, artwork, and backups |
@@ -75,6 +76,28 @@ Closing the Rust preview to the tray now destroys its WebView2 window while nati
 
 See [Rust migration](docs/TAURI-MIGRATION.md) and [tray verification](docs/VERIFICATION-TAURI-TRAY-WEBVIEW.md) for methodology and remaining checks.
 
+### Performance comparison: Orbit vs other launchers
+
+This is a **comparison framework, not a claim that Orbit outperforms another launcher**. Steam, Epic Games Launcher, Playnite, Heroic Games Launcher and Ascendara serve different purposes and keep different services running. Published RAM figures from unrelated PCs are not reliable head-to-head benchmarks. The earlier informal Orbit numbers above must **not** be treated as results from this test.
+
+| Launcher | Main UI technology / scope | Controlled idle RAM | Controlled idle CPU |
+| --- | --- | --- | --- |
+| **Orbit Electron 0.2.7** | Electron; unified local library and tracking | Not measured in common test | Not measured |
+| **Orbit Rust Preview 0.2.6** | Tauri 2, Rust, WebView2; native tracking | Not measured in common test | Not measured |
+| [Steam](https://store.steampowered.com/about/) | Full storefront and social client with `steamwebhelper` processes | Not measured | Not measured |
+| [Epic Games Launcher](https://store.epicgames.com/download) | Storefront, social features and library | Not measured | Not measured |
+| [Playnite](https://github.com/JosefNemec/Playnite) | .NET / WPF; unified desktop library and controller mode | Not measured | Not measured |
+| [Heroic](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher) | Electron; Epic, GOG and Amazon game management | Not measured | Not measured |
+| [Ascendara](https://github.com/Ascendara/ascendara) | Electron; game discovery, management and downloads | Not measured | Not measured |
+
+On Windows, run the **read-only** comparison collector, first with one launcher at a time and then with Orbit, using the same display resolution, similar library size and no game running:
+
+```powershell
+powershell -NoProfile -File scripts/windows/compare-launchers-readonly.ps1 -SampleSeconds 5
+```
+
+It lists running processes, totals their **Working Set** (MiB) including known browser/helper descendants, and samples CPU as a percentage of all logical processors. Applications not running are reported as **Not running**, not as zero RAM. This script does not install, start, stop, sign in to, or modify any launcher or game. Repeat measurements after startup settles (e.g. 30 seconds), ideally three times, and report medians together with Windows version, launcher versions, library sizes and whether storefront/social features are enabled. Resident Working Set is **not** private/unique RAM: shared memory can be counted more than once. Startup latency, actual in-game overhead and installer size require separate measurements. Do not fill the table with guesses.
+
 ## Run the Electron edition
 
 Install [Node.js](https://nodejs.org/) **22.13 or newer** and npm, then:
@@ -101,7 +124,13 @@ To create a Windows preview installer:
 npm run tauri:build
 ```
 
-Tauri builds place the Windows NSIS and MSI packages under `src-tauri/target/release/bundle/`. If your machine lacks the Windows native build tools, the [Tauri Windows CI workflow](https://github.com/j5bak928-a11y/orbit-game-launcher/actions/workflows/tauri-windows.yml) can compile the preview and provide build artifacts.
+Tauri builds place the Windows NSIS and MSI packages under `src-tauri/target/release/bundle/`. CI is optional: **you do not need paid GitHub Actions or a code-signing certificate to build an unsigned local preview**. On Windows without MSVC Build Tools, install the `stable-x86_64-pc-windows-gnullvm` Rust toolchain, LLVM-MinGW, Node/npm and 7-Zip, then run:
+
+```powershell
+powershell -NoProfile -File scripts/windows/build-tauri-local-unsigned.ps1
+```
+
+The script runs native Rust tests, compiles the preview, bundles the GNU-LLVM runtime (`WebView2Loader.dll` and `libunwind.dll`) **beside** the executable in NSIS/MSI, verifies their inclusion, and generates a portable ZIP under `src-tauri/target/x86_64-pc-windows-gnullvm/release/local-distribution/`. A bare executable built with that toolchain cannot be distributed without its runtime DLLs. This script does not install or run Orbit and does not open application profiles. The [Tauri Windows CI workflow](https://github.com/j5bak928-a11y/orbit-game-launcher/actions/workflows/tauri-windows.yml) remains an optional build path, not a prerequisite for local testing.
 
 **This preview is unsigned and not promoted to a production release.** The separate Electron build and installed games remain unaffected. The Rust preview's close-to-tray behavior frees its UI window while retaining native tracking; use **Quit Orbit** in the tray to stop the application completely.
 
@@ -112,13 +141,14 @@ Use **Find installed games** to preview discoveries before importing them, or **
 | Source | Discovery method / caveat |
 | --- | --- |
 | Steam | Installed app manifests and declared Steam library folders |
-| Epic Games | Installed manifests on Windows |
-| GOG | Local game metadata and supported Windows registry entries |
+| Epic Games | Installed manifests on Windows; independently launchable expansions retain distinct identities |
+| GOG | Local game metadata and supported Windows registry entries; verified separate products are preserved |
 | Heroic and Legendary | Installed-game metadata where their launch handlers or executables are available |
-| EA, Ubisoft, Battle.net | Conservative Windows registry detection, requiring credible install paths |
+| EA, Ubisoft, Battle.net | Conservative Windows registry detection with verified publishers; the Rust preview also reads bounded Battle.net Agent metadata, requiring a real launch target |
+| Xbox PC | Validates local `MicrosoftGame.config` and a contained Windows executable in known Xbox install folders or explicitly chosen library folders; protected/packaged games may not be accessible |
 | Custom folders | Bounded scans of explicitly selected directories; ambiguous entries may need manual selection |
 
-Discovery is read-only and does not launch games. **Downloads is not scanned automatically.** Some protected Xbox/Microsoft Store installations and games with unusual launchers may require manual setup. Optional **Scan at startup** is off by default.
+Discovery is read-only and does not launch games. **Downloads is not scanned automatically.** Some Xbox PC/GDK games require registered Windows app-launch through Gaming Services to obtain title identity; discovering their executable does **not** guarantee that direct EXE launch will work. Protected Microsoft Store installations and unusual launchers may require manual setup. Optional **Scan at startup** is off by default.
 
 Storefront entries still require their respective client and any game-specific authentication. Direct executables are launched without shell command interpolation; advanced launch arguments use a JSON array, for example `["--fullscreen"]`.
 
@@ -130,6 +160,8 @@ If a cover is missing or incorrect, choose **Settings → Repair library covers*
 
 You can customize how covers fit and align, choose library density, switch between light/dark/system themes, and use reduced-motion settings.
 
+The **poster grid** is artwork-first: covers fill a 2:3 card, with a favorite button at the top left, a compact game actions menu at the top right, and a wide blue **Spelen** button along the bottom on hover, keyboard focus, or touch. Only the cards use this visual treatment; Orbit's sidebar, filters, statistics, details dialog, list view and controller screen remain their own layouts. Cards still use one lazily loaded cover each, with an executable icon or named placeholder when artwork is missing.
+
 ## Controller mode
 
 ![Orbit fullscreen controller mode with sample games](docs/images/orbit-controller-current.png)
@@ -137,6 +169,12 @@ You can customize how covers fit and align, choose library density, switch betwe
 Choose the controller button next to Search or press **F11** to enter fullscreen controller mode. Use the D-pad or left stick to navigate, **A / Cross** to select, and **B / Circle** to go back. **LB / RB** switches pages; the on-screen controls remain usable by keyboard and mouse.
 
 Orbit uses the browser's standard gamepad mapping. Not every controller or driver has been tested; `npm run test:controller` verifies the browser-level interactions with simulated controller input.
+
+The cinematic controller detail view keeps game artwork contained and provides a large focused Play action. The connected controller is polled at a lower idle rate instead of using a continuous high-frequency animation loop when no input is happening.
+
+## Gaming statistics and recording limits
+
+Open **Statistics** in the sidebar to view the last 7 and 30 local calendar days, an activity chart, period-best day, recent completed games, and all recorded finished-session time. The calculations read session history, not the game's editable/imported aggregate counter. They omit unfinished checkpoints and flag invalid timestamps; overlapping sessions for the **same game ID** are coalesced in this *report only*. Existing historical sessions and `games.total_play_seconds` are not modified, and separate game IDs or two independently running editions may still have separate records. An old imported library with aggregate playtime but no session rows can show lower recorded-session statistics than game cards.
 
 ## Your data and backups
 
@@ -146,7 +184,11 @@ Orbit stores its library, play history, preferences, and cached artwork locally.
 - **JSON export:** library metadata without embedded artwork.
 - **Restore:** imports supported entries without deleting installed games; game paths may need adjustment on a different computer.
 
+**Rust migration limit:** a Rust `.orbit` or JSON backup currently saves aggregate game playtime but **not the individual completed-session rows** used by the daily/weekly/monthly statistics. Do not treat it as a full history backup. A first-run migration into an empty Rust profile copies the Electron SQLite library read-only, including sessions, but an existing Rust profile does not automatically re-import later Electron changes. Keep independent raw SQLite backups and the Electron fallback until migration and full session-history restore have been verified.
+
 Orbit does not require an Orbit account or upload game executables. Online artwork requests are optional. Store clients and individual games can still have their own online requirements.
+
+**Shared executable ambiguity:** independently identified storefront products (for example, a base game and an expansion) may legitimately use the *same* executable. Orbit preserves those distinct library entries, but external Windows-process tracking cannot reliably tell which product was started from a shared executable. To avoid crediting the same physical game twice, ambiguous background matches are excluded. Starting the desired entry directly from Orbit can retain explicit game ownership where that launcher path is supported. This is not a claim that every shared executable or GDK title can launch directly.
 
 ## Development and verification
 
@@ -157,6 +199,8 @@ npm run lint
 npm run test:controller
 npm run test:renderer
 npm run test:experience
+npm run test:cinematic
+npm run test:cards
 npm run bench
 ```
 

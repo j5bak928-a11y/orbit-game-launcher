@@ -49,6 +49,14 @@ jobs:
         run: node tests/visual-showcase.cjs
         env:
           ORBIT_SHOWCASE_SCREENSHOT_DIR: ${{ runner.temp }}/orbit-browser
+      - name: Check cinematic NextGen statistics and motion
+        run: npm run test:cinematic
+        env:
+          ORBIT_CINEMATIC_V2_SCREENSHOTS: ${{ runner.temp }}/orbit-browser
+      - name: Check full-art poster cards and overlay buttons
+        run: npm run test:cards
+        env:
+          ORBIT_POSTER_CARD_SCREENSHOTS: ${{ runner.temp }}/orbit-browser
       - name: Check fullscreen controller navigation
         run: npm run test:controller
         env:

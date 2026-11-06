@@ -75,3 +75,109 @@ test('Fortnite fallback never requests the network when artwork is disabled',asy
  const result=await findEpicPortrait({source:'epic',name:'Fortnite',source_id:'Fortnite'},{online:()=>false,fetchImpl:async()=>{requests++;throw Error('offline');}});
  assert.equal(result,null);assert.equal(requests,0);
 });
+
+test('manual, Epic, GOG and Battle.net installs use matching portrait in nearby artwork folders',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'orbit-art-nearby-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ for(const [source,relative] of [['manual','artwork'],['epic','art'],['gog','images'],['battlenet','assets']]){
+  const install=path.join(root,source);
+  await fs.mkdir(path.join(install,relative),{recursive:true});
+  await fs.writeFile(path.join(install,'cover.jpg'),png(1400,700));
+  const portrait=path.join(install,relative,'Cyberpunk 2077 Key Art.WEBP');
+  await fs.writeFile(portrait,png(600,900));
+  assert.equal(await findLocalPortrait({source,install_path:install,name:'Cyberpunk 2077'}),portrait);
+ }
+});
+
+test('matching game title outranks generic cover and ignores unrelated screenshots',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'orbit-art-scoring-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ await fs.writeFile(path.join(root,'cover.png'),png(600,900));
+ await fs.writeFile(path.join(root,'unrelated-game-poster.png'),png(600,900));
+ await fs.writeFile(path.join(root,'Outer Wilds Poster.jpeg'),png(600,900));
+ assert.equal(await findLocalPortrait({source:'gog',install_path:root,name:'Outer Wilds'}),path.join(root,'Outer Wilds Poster.jpeg'));
+ await fs.rm(path.join(root,'Outer Wilds Poster.jpeg'));
+ assert.equal(await findLocalPortrait({source:'gog',install_path:root,name:'Outer Wilds'}),path.join(root,'cover.png'));
+});
+
+test('local artwork lookup cannot scan outside the chosen game install path',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'orbit-art-bounds-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const install=path.join(root,'installed'),other=path.join(root,'other');
+ await fs.mkdir(install);await fs.mkdir(other);
+ await fs.writeFile(path.join(other,'cover.png'),png(600,900));
+ await fs.writeFile(path.join(other,'other.exe'),'fixture');
+ // A launcher or stale executable outside the game's install path is not
+ // evidence that its neighboring images belong to the selected game.
+ assert.equal(await findLocalPortrait({
+  source:'manual',name:'Selected Game',install_path:install,executable:path.join(other,'other.exe')
+ }),null);
+ assert.equal(await findLocalPortrait({source:'steam',install_path:other}),null);
+ assert.equal(await findLocalPortrait({source:'manual',install_path:root}),null);
+});
+
+test('symlinked artwork files and art directories are ignored',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'orbit-art-links-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const install=path.join(root,'game'),outside=path.join(root,'outside');
+ await fs.mkdir(install);await fs.mkdir(outside);
+ const original=path.join(outside,'cover.png');
+ await fs.writeFile(original,png(600,900));
+ try{
+  await fs.symlink(original,path.join(install,'cover.png'),'file');
+  await fs.symlink(outside,path.join(install,'artwork'),process.platform==='win32'?'junction':'dir');
+ }catch(error){
+  if(['EPERM','EACCES','ENOTSUP'].includes(error.code)){t.skip('Host does not permit test symlinks');return;}
+  throw error;
+ }
+ assert.equal(await findLocalPortrait({source:'epic',install_path:install}),null);
+});
+
+test('image discovery uses a fixed directory budget and does not search arbitrary descendants',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'orbit-art-limit-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const install=path.join(root,'game'),art=path.join(install,'artwork');
+ await fs.mkdir(art,{recursive:true});
+ for(let index=0;index<170;index++)await fs.writeFile(path.join(art,`noise-${index}.txt`),'fixture');
+ await fs.writeFile(path.join(art,'cover.png'),png(600,900));
+ const deep=path.join(install,'images','extra');await fs.mkdir(deep,{recursive:true});
+ await fs.writeFile(path.join(deep,'cover.png'),png(600,900));
+ assert.equal(await findLocalPortrait({source:'battlenet',install_path:install}),null);
+});
+
+test('Epic remote lookup refuses non-Epic sources even with a matching name',async()=>{
+ let calls=0;
+ for(const source of ['manual','folder','gog','battlenet','steam']){
+  assert.equal(await findEpicPortrait({source,name:'Fortnite'},{fetchImpl:async()=>{calls++;throw Error('not allowed');}}),null);
+ }
+ assert.equal(calls,0);
+});
+
+test('Epic chooses trusted tall images before thumbnails and deduplicates CDN requests',async()=>{
+ const calls=[],portrait='https://cdn1.epicgames.com/demo/cover.png',thumbnail='https://cdn1.epicgames.com/demo/thumb.png';
+ const metadata={data:{Catalog:{searchStore:{elements:[{title:'Outer Wilds',keyImages:[
+  {type:'Thumbnail',url:thumbnail},{type:'DieselGameBoxTall',url:portrait},
+  {type:'DieselGameBoxTall',url:portrait},{type:'Thumbnail',url:'https://example.org/blocked.png'}
+ ]}]}}}};
+ const result=await findEpicPortrait({source:'epic',name:'Outer Wilds'},{fetchImpl:async url=>{
+  calls.push(url);
+  return url.includes('/graphql?')?new Response(JSON.stringify(metadata)):new Response(png(600,900),{headers:{'content-type':'image/png'}});
+ }});
+ assert.deepEqual(result?.bytes,png(600,900));
+ assert.equal(calls.length,2);
+ assert.equal(calls[1],portrait);
+});
+
+test('Epic stops after bounded failed image candidates and rechecks opt-out after download',async()=>{
+ const urls=Array.from({length:40},(_,index)=>`https://cdn1.epicgames.com/demo/image${index}.png`);
+ const metadata={data:{Catalog:{searchStore:{elements:[{title:'Outer Wilds',keyImages:urls.map(url=>({type:'OfferImageTall',url}))}]}}}};
+ let calls=0;
+ const unavailable=await findEpicPortrait({source:'epic',name:'Outer Wilds'},{fetchImpl:async url=>{
+  calls++;
+  return url.includes('/graphql?')?new Response(JSON.stringify(metadata)):new Response('not found',{status:404});
+ }});
+ assert.equal(unavailable,null);
+ assert.equal(calls,9,'one metadata query plus at most eight image requests');
+ let enabled=true;
+ const stopped=await findEpicPortrait({source:'epic',name:'Outer Wilds'},{online:()=>enabled,fetchImpl:async url=>{
+  if(url.includes('/graphql?'))return new Response(JSON.stringify(metadata));
+  enabled=false;
+  return new Response(png(600,900),{headers:{'content-type':'image/png'}});
+ }});
+ assert.equal(stopped,null,'a download cannot be accepted after online artwork is turned off');
+});

@@ -71,12 +71,12 @@ function filtered(){const key=[state.games,state.route,state.filter,state.tag,st
   if(state.query.trim()){const q=state.query.trim().toLocaleLowerCase();a=a.filter(g=>[g.name,g.genre,g.source,...(g.tags||[])].some(v=>(v||'').toLocaleLowerCase().includes(q)));}
   const result=sortedGames(a);filterCache={key,value:result};return result;
 }
-function card(g){return `<article class="game-card" data-action="detail" data-id="${esc(g.id)}" role="button" tabindex="0" aria-label="View details for ${esc(g.name)}">
+function card(g){return `<article class="game-card poster-card" data-action="detail" data-id="${esc(g.id)}" role="button" tabindex="0" aria-label="View details for ${esc(g.name)}" title="${esc(g.name)}">
   <div class="cover cinematic-card-cover">${coverImage(g)}<span class="cover-letter">${esc(g.name.slice(0,2))}</span>
-  <button class="favorite-float ${g.favorite?'active':''}" data-action="favorite" data-id="${esc(g.id)}" aria-label="${g.favorite?'Remove favorite':'Add favorite'}">${ic('heart',16)}</button>
-  <button class="cover-play" data-action="launch" data-id="${esc(g.id)}" aria-label="Launch ${esc(g.name)}">${ic('play',17)}</button></div>
-  <div class="game-label"><div style="min-width:0"><span class="game-name" title="${esc(g.name)}">${esc(g.name)}</span><span class="game-meta">${state.runningIds?.includes(g.id)?'● Playing now':esc(timeLabel(g.total_play_seconds))}</span></div>
-  <button class="game-menu" data-action="game-actions" data-id="${esc(g.id)}" aria-label="Actions for ${esc(g.name)}" aria-haspopup="menu" aria-controls="game-actions-popup" aria-expanded="false">${ic('dots',18)}</button></div></article>`}
+  <button class="favorite-float ${g.favorite?'active':''}" data-action="favorite" data-id="${esc(g.id)}" aria-label="${g.favorite?'Remove favorite':'Add favorite'}">${ic('heart',19)}</button>
+  <button class="game-menu card-menu-float" data-action="game-actions" data-id="${esc(g.id)}" aria-label="Actions for ${esc(g.name)}" aria-haspopup="menu" aria-controls="game-actions-popup" aria-expanded="false">${ic('dots',20)}</button>
+  <button class="cover-play" data-action="launch" data-id="${esc(g.id)}" aria-label="Launch ${esc(g.name)}">${ic('play',17)}<span>Spelen</span></button></div>
+  <div class="game-label"><div><span class="game-name" title="${esc(g.name)}">${esc(g.name)}</span><span class="game-meta">${state.runningIds?.includes(g.id)?'● Playing now':esc(timeLabel(g.total_play_seconds))}</span></div></div></article>`}
 function rowGame(g){return `<article class="game-row" data-action="detail" data-id="${esc(g.id)}" tabindex="0" role="button" aria-label="View ${esc(g.name)}">
   <div class="row-cover">${esc(g.name.slice(0,1))}${!artwork(g.cover)&&artwork(g.icon)?`<img src="${artwork(g.icon)}" alt="" loading="lazy" decoding="async" class="list-game-icon" />`:''}${artwork(g.cover)?`<img src="${artwork(g.cover)}" data-fallback-icon="${artwork(g.icon)||''}" alt="" loading="lazy" decoding="async" />`:''}</div>
   <div class="row-info"><h3>${esc(g.name)}</h3><p>${esc(sourceLabel(g))}${g.tags?.length?' · '+esc(g.tags.slice(0,2).join(', ')):''}</p></div>

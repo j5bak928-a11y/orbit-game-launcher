@@ -578,3 +578,89 @@ body[data-reduce-motion=true] .games-grid .game-card .cover:before,
 body[data-game-active=true] .games-grid .game-card .cover:before{opacity:0;transition:none}
 body[data-reduce-motion=true] .home-page .continue-card:hover,
 body[data-game-active=true] .home-page .continue-card:hover{transform:none}
+
+/* Poster-only game tiles: same focused card actions as the supplied Epic
+   reference, without changing Orbit's shell, library filters or game details.
+   The single existing cover is still the only image loaded for each tile. */
+#virtual-games{--card-label-height:0px}
+.game-card.poster-card{isolation:isolate;align-self:start}
+#app .game-card.poster-card .cover{
+  border-radius:11px;
+  border:1px solid rgba(255,255,255,.12);
+  box-shadow:0 3px 10px #0002;
+}
+.game-card.poster-card .cover-image{border-radius:inherit}
+.game-card.poster-card .game-label{
+  position:absolute;z-index:4;left:1px;right:1px;bottom:60px;
+  height:auto;min-height:0;margin:0;padding:32px 13px 5px;
+  color:#fff;pointer-events:none;opacity:0;
+  background:linear-gradient(0deg,rgba(7,10,16,.84),rgba(7,10,16,0));
+  transition:opacity .15s ease;
+}
+.game-card.poster-card .game-name{
+  display:block;max-height:none;white-space:nowrap;text-overflow:ellipsis;
+  font-size:12px;line-height:17px;font-weight:700;margin:0 0 3px;color:#fff;
+  text-shadow:0 1px 5px #0009;
+}
+.game-card.poster-card .game-meta{color:#d8dee9;font-size:10px;line-height:13px;text-shadow:0 1px 4px #000a}
+.game-card.poster-card .favorite-float,.game-card.poster-card .card-menu-float{
+  position:absolute;top:11px;z-index:5;
+  width:38px;height:38px;padding:0;display:grid;place-items:center;
+  border-radius:10px;border:1px solid rgba(255,255,255,.15);
+  color:#fff;background:rgba(34,36,43,.83);
+  box-shadow:0 5px 12px #0004;
+  opacity:0;transform:translateY(-3px);
+  transition:opacity .15s ease,background-color .15s ease,transform .15s ease;
+}
+.game-card.poster-card .favorite-float{left:11px;right:auto}
+.game-card.poster-card .card-menu-float{right:11px;left:auto}
+.game-card.poster-card .favorite-float.active{color:#fff}
+.game-card.poster-card .favorite-float.active svg{fill:rgba(255,255,255,.2)}
+.game-card.poster-card .favorite-float:hover,.game-card.poster-card .card-menu-float:hover,
+.game-card.poster-card .favorite-float:focus-visible,.game-card.poster-card .card-menu-float:focus-visible{
+  background:rgba(58,62,72,.96);color:#fff;
+}
+.game-card.poster-card .cover-play{
+  position:absolute;z-index:5;left:12px;right:12px;bottom:12px;
+  width:calc(100% - 24px);height:44px;
+  display:flex;align-items:center;justify-content:center;gap:9px;
+  border:0;border-radius:10px;
+  background:#24b8f5;color:#061a27;font-size:13px;font-weight:750;
+  box-shadow:0 5px 14px #0007;
+  opacity:0;transform:translateY(5px);
+  transition:opacity .16s ease,background-color .16s ease,transform .16s ease;
+}
+.game-card.poster-card .cover-play:hover:not(:disabled){background:#51cdff;filter:none}
+#app .game-card.poster-card .cover-play svg{fill:#061a27;stroke-width:1.7}
+.game-card.poster-card:is(:hover,:focus-within,:focus-visible) .favorite-float,
+.game-card.poster-card:is(:hover,:focus-within,:focus-visible) .card-menu-float,
+.game-card.poster-card:is(:hover,:focus-within,:focus-visible) .cover-play,
+.game-card.poster-card .favorite-float.active,
+.game-card.poster-card .card-menu-float[aria-expanded=true],
+.game-card.poster-card .cover-play[aria-busy=true]{opacity:1;transform:none}
+/* Keep title/metadata available in the card DOM and accessible name without
+   printing a second label over artwork that already contains the game title. */
+#app .game-card.poster-card:focus-visible .cover{border-color:var(--accent)}
+@media(hover:hover) and (pointer:fine){
+  .game-card.poster-card .cover,.game-card.poster-card:hover .cover{transform:none}
+  .game-card.poster-card:hover .cover{box-shadow:0 10px 24px #0005,0 0 0 1px rgba(255,255,255,.12)}
+  .game-card.poster-card:hover .cover-play{transform:none}
+}
+@media(hover:none),(pointer:coarse){
+  .game-card.poster-card .favorite-float,.game-card.poster-card .card-menu-float,
+  .game-card.poster-card .cover-play{opacity:1;transform:none}
+  .game-card.poster-card .game-label{display:none}
+}
+@media(max-width:500px){
+  .game-card.poster-card .favorite-float,.game-card.poster-card .card-menu-float{width:30px;height:30px;top:7px;border-radius:8px}
+  .game-card.poster-card .favorite-float{left:7px}
+  .game-card.poster-card .card-menu-float{right:7px}
+  .game-card.poster-card .cover-play{left:7px;right:7px;bottom:7px;width:calc(100% - 14px);height:34px;gap:5px;font-size:11px;border-radius:8px}
+  .game-card.poster-card .cover-play svg{width:14px;height:14px}
+  .game-card.poster-card .game-label{bottom:46px;padding:20px 8px 3px}
+}
+@media(prefers-reduced-motion:reduce){
+  .game-card.poster-card .cover,.game-card.poster-card:hover .cover{transform:none}
+}
+body:is([data-reduce-motion=true],[data-game-active=true]) #app .game-card.poster-card .cover,
+body:is([data-reduce-motion=true],[data-game-active=true]) #app .game-card.poster-card:hover .cover{transform:none}

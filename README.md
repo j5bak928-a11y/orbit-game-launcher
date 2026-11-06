@@ -52,6 +52,28 @@ Closing the Rust preview to the tray now destroys its WebView2 window while nati
 
 See [Rust migration](docs/TAURI-MIGRATION.md) and [tray verification](docs/VERIFICATION-TAURI-TRAY-WEBVIEW.md) for methodology and remaining checks.
 
+### Performance comparison: Orbit vs other launchers
+
+This is a **comparison framework, not a claim that Orbit outperforms another launcher**. Steam, Epic Games Launcher, Playnite, Heroic Games Launcher and Ascendara serve different purposes and keep different services running. Published RAM figures from unrelated PCs are not reliable head-to-head benchmarks. The earlier informal Orbit numbers above must **not** be treated as results from this test.
+
+| Launcher | Main UI technology / scope | Controlled idle RAM | Controlled idle CPU |
+| --- | --- | --- | --- |
+| **Orbit Electron 0.2.7** | Electron; unified local library and tracking | Not measured in common test | Not measured |
+| **Orbit Rust Preview 0.2.6** | Tauri 2, Rust, WebView2; native tracking | Not measured in common test | Not measured |
+| [Steam](https://store.steampowered.com/about/) | Full storefront and social client with `steamwebhelper` processes | Not measured | Not measured |
+| [Epic Games Launcher](https://store.epicgames.com/download) | Storefront, social features and library | Not measured | Not measured |
+| [Playnite](https://github.com/JosefNemec/Playnite) | .NET / WPF; unified desktop library and controller mode | Not measured | Not measured |
+| [Heroic](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher) | Electron; Epic, GOG and Amazon game management | Not measured | Not measured |
+| [Ascendara](https://github.com/Ascendara/ascendara) | Electron; game discovery, management and downloads | Not measured | Not measured |
+
+On Windows, run the **read-only** comparison collector, first with one launcher at a time and then with Orbit, using the same display resolution, similar library size and no game running:
+
+```powershell
+powershell -NoProfile -File scripts/windows/compare-launchers-readonly.ps1 -SampleSeconds 5
+```
+
+It lists running processes, totals their **Working Set** (MiB) including known browser/helper descendants, and samples CPU as a percentage of all logical processors. Applications not running are reported as **Not running**, not as zero RAM. This script does not install, start, stop, sign in to, or modify any launcher or game. Repeat measurements after startup settles (e.g. 30 seconds), ideally three times, and report medians together with Windows version, launcher versions, library sizes and whether storefront/social features are enabled. Resident Working Set is **not** private/unique RAM: shared memory can be counted more than once. Startup latency, actual in-game overhead and installer size require separate measurements. Do not fill the table with guesses.
+
 ## Run the Electron edition
 
 Install [Node.js](https://nodejs.org/) **22.13 or newer** and npm, then:
@@ -108,6 +130,8 @@ If a cover is missing or incorrect, choose **Settings → Repair library covers*
 
 You can customize how covers fit and align, choose library density, switch between light/dark/system themes, and use reduced-motion settings.
 
+The **poster grid** is artwork-first: covers fill a 2:3 card, with a favorite button at the top left, a compact game actions menu at the top right, and a wide blue **Spelen** button along the bottom on hover, keyboard focus, or touch. Only the cards use this visual treatment; Orbit's sidebar, filters, statistics, details dialog, list view and controller screen remain their own layouts. Cards still use one lazily loaded cover each, with an executable icon or named placeholder when artwork is missing.
+
 ## Controller mode
 
 ![Orbit fullscreen controller mode with sample games](docs/images/orbit-controller-current.png)
@@ -144,6 +168,7 @@ npm run test:controller
 npm run test:renderer
 npm run test:experience
 npm run test:cinematic
+npm run test:cards
 npm run bench
 ```
 

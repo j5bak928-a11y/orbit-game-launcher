@@ -43,11 +43,12 @@ const settle=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
   await page.locator('#global-search').fill('A Remarkably Long Game Title');
   await page.waitForFunction(()=>document.querySelectorAll('.game-card').length===1);
   const label=page.locator('.game-card .game-name');
-  assert.equal(await label.evaluate(el=>getComputedStyle(el).webkitLineClamp),'2');
-  assert(await label.evaluate(el=>el.getBoundingClientRect().height>16),'long names use a second line');
+  assert.equal(await label.evaluate(el=>getComputedStyle(el).textOverflow),'ellipsis','poster caption truncates without stretching the card');
+  assert.equal(await label.textContent(),'A Remarkably Long Game Title With Several Words And A Final Subtitle','full title stays available for screen readers');
   assert.equal(await page.locator('.game-card .cover-placeholder-title').count(),1);
   assert.equal(await page.locator('.game-card .cover-source,.game-card .cover-placeholder-note').count(),0,'game covers must not display platform/source labels');
-  assert.equal(await page.locator('.game-card .cover-play').evaluate(el=>Math.round(el.getBoundingClientRect().width)),38,'card Play affordance has a clear hit target');
+  assert(await page.locator('.game-card .cover-play').evaluate(el=>el.getBoundingClientRect().width>el.closest('.cover').getBoundingClientRect().width*.7),'poster Play button spans most of the artwork');
+  assert.equal(await page.locator('.game-card .cover-play').textContent(),'Spelen','poster Play label is visible on reveal');
   await page.locator('.game-card').click();
   assert.equal(await page.locator('[role=dialog] .detail-playtime').count(),1);
   assert.equal(await page.locator('[role=dialog].detail-showcase').count(),1,'game details use the cinematic showcase');

@@ -24,6 +24,7 @@
     "test:renderer": "node tests/library-renderer.cjs",
     "test:experience": "node tests/experience-renderer.cjs",
     "test:cinematic": "node tests/cinematic-v2.cjs",
+    "test:cards": "node tests/poster-cards.cjs",
     "test:controller": "node tests/controller-renderer.cjs"
   },
   "engines": {

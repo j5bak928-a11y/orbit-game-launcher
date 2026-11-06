@@ -42,7 +42,7 @@ The editions have **different application IDs and data directories**. On first l
 
 **Direction:** make the fast, local-first Rust/Tauri edition the primary Windows launcher, then develop library organization, a console-quality controller experience, and optional offline intelligence. Keep the existing Electron edition as a fallback during the transition; do not throw away users' libraries or playtime history to accelerate a version bump.
 
-These are **planned milestones, not released features or promised dates**. The Electron package already uses version `0.2.7`; the first entry below refers specifically to the **next Rust preview**.
+These are **planned milestones, not released features or promised dates**. The NextGen development branch also uses version `0.2.7` for its Electron package; the versions below refer specifically to **future Rust releases**.
 
 | Planned Rust version | Theme | Deliverable / exit criteria |
 | --- | --- | --- |

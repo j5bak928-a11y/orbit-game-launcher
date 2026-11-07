@@ -625,13 +625,13 @@ body[data-game-active=true] .home-page .continue-card:hover{transform:none}
   width:calc(100% - 24px);height:44px;
   display:flex;align-items:center;justify-content:center;gap:9px;
   border:0;border-radius:10px;
-  background:#24b8f5;color:#061a27;font-size:13px;font-weight:750;
+  background:var(--accent);color:var(--accent-ink);font-size:13px;font-weight:750;
   box-shadow:0 5px 14px #0007;
   opacity:0;transform:translateY(5px);
   transition:opacity .16s ease,background-color .16s ease,transform .16s ease;
 }
-.game-card.poster-card .cover-play:hover:not(:disabled){background:#51cdff;filter:none}
-#app .game-card.poster-card .cover-play svg{fill:#061a27;stroke-width:1.7}
+.game-card.poster-card .cover-play:hover:not(:disabled){background:color-mix(in srgb,var(--accent) 87%,white);filter:none}
+#app .game-card.poster-card .cover-play svg{fill:var(--accent-ink);stroke-width:1.7}
 .game-card.poster-card:is(:hover,:focus-within,:focus-visible) .favorite-float,
 .game-card.poster-card:is(:hover,:focus-within,:focus-visible) .card-menu-float,
 .game-card.poster-card:is(:hover,:focus-within,:focus-visible) .cover-play,

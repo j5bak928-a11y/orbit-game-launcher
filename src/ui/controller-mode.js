@@ -29,6 +29,7 @@
 		steam: "Steam",
 		epic: "Epic Games",
 		gog: "GOG",
+		xbox: "Xbox / PC Game Pass",
 		ea: "EA app",
 		ubisoft: "Ubisoft Connect",
 		battlenet: "Battle.net",
@@ -56,7 +57,7 @@
 			this.frame = null;
 			this.timer = null;
 			this.renderFrame = null;
-			this.revealRecentAfterResize = false;
+			this.revealFocusAfterResize = false;
 			this.filter = "all";
 			this.page = 0;
 			this.gamesRef = null;
@@ -66,9 +67,11 @@
 			this.lastPadAction = 0;
 			this.detailSignature = "";
 			this.launchInFlight = false;
+			this.launchGameId = null;
 			this.recentMarkup = "";
 			this.libraryMarkup = "";
 			this.statusKind = "none";
+			this.statusOwner = null;
 		}
 		enter() {
 			if (this.session) return this.session.promise;
@@ -143,9 +146,11 @@
 			this.lastPadAction = 0;
 			this.detailSignature = "";
 			this.launchInFlight = false;
+			this.launchGameId = null;
 			this.recentMarkup = "";
 			this.libraryMarkup = "";
-				this.statusKind = "none";
+			this.statusKind = "none";
+			this.statusOwner = null;
 			this.abort = new AbortController();
 			const signal = this.abort.signal;
 			this.inertRecords = ["app", "modal-root"]
@@ -160,6 +165,9 @@
 			this.root.setAttribute("role", "dialog");
 			this.root.setAttribute("aria-modal", "true");
 				this.root.innerHTML = `<div class="tv-stage"><header class="tv-header"><div class="tv-brand"><img class="tv-logo-dark" src="../../assets/branding/orbit-logo-dark.png" alt="Orbit"/><img class="tv-logo-light" src="../../assets/branding/orbit-logo-light.png" alt="Orbit"/><span data-tv-i18n="CONTROLLER MODE">CONTROLLER MODE</span></div><div class="tv-header-actions"><span class="tv-controller-status" role="status">Keyboard ready · connect a controller</span><button class="tv-focus tv-exit" data-tv-key="exit" data-tv-action="exit" data-tv-i18n="Exit controller mode">Exit controller mode <span>Esc</span></button></div></header><main class="tv-main"><div class="tv-recent-slot"></div><section class="tv-library-section" data-tv-aria="Game library" aria-label="Game library"><div class="tv-library-heading"><div><p class="tv-eyebrow" data-tv-i18n="ONE HOME. EVERY GAME.">ONE HOME. EVERY GAME.</p><h1 data-tv-i18n="Your library">Your library <span class="tv-total"></span></h1></div><div class="tv-tabs" role="group" data-tv-aria="Choose collection" aria-label="Choose collection"><button class="tv-focus" data-tv-key="filter:all" data-tv-action="filter" data-tv-filter="all" data-tv-i18n="All games">All games</button><button class="tv-focus" data-tv-key="filter:favorites" data-tv-action="filter" data-tv-filter="favorites" data-tv-i18n="Favorites">Favorites</button></div></div><div class="tv-library-slot"></div><div class="tv-pagination"><span class="tv-page-label"></span><div><button class="tv-focus" data-tv-key="page:previous" data-tv-action="previousPage" data-tv-aria="Previous page" aria-label="Previous page" data-tv-i18n="← Previous">← Previous</button><button class="tv-focus" data-tv-key="page:next" data-tv-action="nextPage" data-tv-aria="Next page" aria-label="Next page" data-tv-i18n="Next →">Next →</button></div></div></section></main><footer class="tv-footer"><div class="tv-selected">Choose something to play.</div><div class="tv-hints"><span><b>↔ ↕</b> <span data-tv-i18n="Move">Move</span></span><span><b>A / ×</b> <span data-tv-i18n="Select">Select</span></span><span><b>B / ○</b> <span data-tv-i18n="Back">Back</span></span><span><b>X / □</b> <span data-tv-i18n="Favorite">Favorite</span></span><span><b>Y / △</b> <span data-tv-i18n="Recent">Recent</span></span><span><b>LB / RB</b> <span data-tv-i18n="Pages">Pages</span></span></div></footer></div><div class="tv-detail-slot"></div><div class="tv-notice" role="status" aria-live="polite"></div>`;
+				const hints = this.root.querySelector(".tv-hints");
+				hints.lastElementChild.querySelector("b").textContent = "LB / LT · RB / RT";
+				hints.insertAdjacentHTML("beforeend", '<span><b>RS ↕</b> <span data-tv-i18n="Scroll">Scroll</span></span>');
 			document.body.appendChild(this.root);
 			this.stage = this.root.querySelector(".tv-stage");
 			this.notice = this.root.querySelector(".tv-notice");
@@ -168,7 +176,7 @@
 				"click",
 				(event) => {
 					const button = event.target.closest("[data-tv-action]");
-					if (!button || button.disabled) return;
+						if (!button || button.disabled || button.getAttribute("aria-disabled") === "true") return;
 					event.preventDefault();
 					this.act(button.dataset.tvAction, button).catch((error) =>
 						this.notify(error.message),
@@ -228,7 +236,7 @@
 					signal,
 				},
 			);
-			window.addEventListener("resize", () => this.update({ revealFocusedRecent: true }), { signal });
+			window.addEventListener("resize", () => this.update({ revealFocusAfterResize: true }), { signal });
 			window.addEventListener("orbit:languagechange", () => this.languageChanged(), { signal });
 			this.render({ initial: true });
 			this.resume();
@@ -255,7 +263,14 @@
 				unsupported: "Controller layout not recognized · use keyboard",
 				unavailable: "Controller unavailable · use keyboard",
 			};
-			if (status) status.textContent = t(messages[this.statusKind] || messages.none);
+			if (!status) return;
+			const label = t(messages[this.statusKind] || messages.none);
+			const owner = this.statusKind === "connected" && this.statusOwner
+					? this.statusOwner.slice(this.statusOwner.indexOf(":") + 1).trim().slice(0, 80)
+				: "";
+			status.textContent = label;
+			status.title = owner;
+			status.setAttribute("aria-label", owner ? `${label} · ${owner}` : label);
 		}
 			languageChanged() {
 			if (!this.active || !this.root) return;
@@ -263,7 +278,7 @@
 			this.libraryMarkup = "";
 			this.detailSignature = "";
 			this.localizeShell();
-			this.render({ passive: true });
+			this.render({ passive: true, revealFocusAfterResize: true });
 		}
 		unmount() {
 			this.pause();
@@ -271,7 +286,7 @@
 			this.abort?.abort();
 			if (this.renderFrame !== null) cancelAnimationFrame(this.renderFrame);
 			this.renderFrame = null;
-			this.revealRecentAfterResize = false;
+			this.revealFocusAfterResize = false;
 			this.detailSignature = "";
 			this.recentMarkup = "";
 			this.libraryMarkup = "";
@@ -325,8 +340,9 @@
 				this.input.reset();
 				result = { actions: [], status: { kind: "unavailable" } };
 			}
-				if (this.statusKind !== result.status.kind) {
+				if (this.statusKind !== result.status.kind || this.statusOwner !== (this.input.owner || null)) {
 					this.statusKind = result.status.kind;
+					this.statusOwner = this.input.owner || null;
 					this.updateControllerStatus();
 				}
 			if (result.actions.length) this.lastPadAction = time;
@@ -389,18 +405,18 @@
 			const running = this.snapshot.runningIds?.includes(game.id);
 				return `<button class="tv-card tv-focus" data-tv-action="open" data-tv-game="${escapeHtml(game.id)}" data-tv-key="${zone}:${escapeHtml(game.id)}" aria-label="${escapeHtml(t("Open {name}", { name: game.name }))}" tabindex="-1">${this.artwork(game)}<span class="tv-card-copy"><strong>${escapeHtml(game.name)}</strong><span>${running ? `● ${escapeHtml(t("Playing now"))}` : escapeHtml(sourceName(game.source))}<i>${game.favorite ? "♥" : running ? escapeHtml(t("In session")) : escapeHtml(played(game.total_play_seconds || 0))}</i></span></span></button>`;
 		}
-		update({ revealFocusedRecent = false } = {}) {
+		update({ revealFocusAfterResize = false } = {}) {
 			if (!this.active) return;
-			if (revealFocusedRecent) this.revealRecentAfterResize = true;
+			if (revealFocusAfterResize) this.revealFocusAfterResize = true;
 			if (this.renderFrame !== null) return;
 			this.renderFrame = requestAnimationFrame(() => {
 				this.renderFrame = null;
-				const revealRecent = this.revealRecentAfterResize;
-				this.revealRecentAfterResize = false;
-				if (this.active) this.render({ passive: true, revealFocusedRecent: revealRecent });
+				const revealFocus = this.revealFocusAfterResize;
+				this.revealFocusAfterResize = false;
+				if (this.active) this.render({ passive: true, revealFocusAfterResize: revealFocus });
 			});
 		}
-		render({ initial = false, focusLibrary = false, focusKey = "", passive = false, revealFocusedRecent = false } = {}) {
+		render({ initial = false, focusLibrary = false, focusKey = "", passive = false, revealFocusAfterResize = false } = {}) {
 			if (!this.root) return;
 			const main = this.root.querySelector(".tv-main");
 			const scrollTop = passive ? main.scrollTop : 0;
@@ -522,7 +538,10 @@
 				// Data updates must not pull the user's wheel/touch scroll position
 				// back to whichever card happens to have keyboard focus.
 				this.focus(target || fallback, { scroll: !passive || !target });
-				if (revealFocusedRecent) this.revealRecentCard(target || fallback);
+				if (revealFocusAfterResize) {
+					this.revealRecentCard(target || fallback);
+					this.revealDetailAction(target || fallback);
+				}
 				this.updateSelectedLabel();
 		}
 		revealRecentCard(button) {
@@ -537,6 +556,18 @@
 			else if (card.left < viewport.left)
 				lane.scrollLeft += card.left - viewport.left;
 		}
+		revealDetailAction(button) {
+			const sheet = button?.closest(".tv-sheet");
+			if (!sheet) return;
+			const viewport = sheet.getBoundingClientRect();
+			const focused = button.getBoundingClientRect();
+			// Only resize and translation layout changes may correct this scroll.
+			// Background library updates must preserve deliberate wheel scrolling.
+			if (focused.bottom > viewport.bottom - 8)
+				sheet.scrollTop += focused.bottom - viewport.bottom + 8;
+			else if (focused.top < viewport.top + 8)
+				sheet.scrollTop += focused.top - viewport.top - 8;
+		}
 		renderDetail() {
 			const slot = this.root.querySelector(".tv-detail-slot"),
 				game = this.byId.get(this.detailId);
@@ -546,7 +577,8 @@
 				this.detailSignature = "";
 				return;
 			}
-			const pending = this.snapshot.pendingLaunches?.has(game.id),
+			const pending = this.snapshot.pendingLaunches?.has(game.id) ||
+				(this.launchInFlight && this.launchGameId === game.id),
 				running = this.snapshot.runningIds?.includes(game.id);
 				const signature = JSON.stringify([window.OrbitI18n?.getLanguage?.(), game.id, game.name, game.source, game.banner,
 				game.cover, game.icon, game.favorite, running ? null : game.total_play_seconds, game.last_played_at,
@@ -556,7 +588,11 @@
 			if (this.detailSignature === signature && slot.firstElementChild) return;
 			this.detailSignature = signature;
 			const background = art(game.banner) || art(game.cover);
-				slot.innerHTML = `<div class="tv-sheet-scrim"><section class="tv-sheet" role="dialog" aria-modal="true" aria-labelledby="tv-game-title"><div class="tv-sheet-backdrop" aria-hidden="true">${background ? `<img src="${background}" alt="" loading="lazy"/>` : ""}</div><div class="tv-sheet-layout"><div class="tv-sheet-art">${this.artwork(game, true)}</div><div class="tv-sheet-copy"><p class="tv-eyebrow">${escapeHtml(t("GAME PROFILE"))} <span aria-hidden="true">/</span> ${escapeHtml(sourceName(game.source, "Your library"))}</p><h2 id="tv-game-title">${escapeHtml(game.name)}</h2><p class="tv-sheet-meta">${escapeHtml(running ? t("Session in progress") : played(game.total_play_seconds || 0))}${game.last_played_at ? ` · ${escapeHtml(t("Last played {date}", { date: formatDate(game.last_played_at) }))}` : ""}</p><div class="tv-sheet-actions"><button class="tv-focus tv-play" data-tv-action="launch" data-tv-key="detail:play" data-tv-game="${escapeHtml(game.id)}" aria-busy="${!!pending}" ${pending || running ? "disabled" : ""}>${escapeHtml(t(pending ? "Starting…" : running ? "Playing now" : "▶ Play game"))}</button><button class="tv-focus" data-tv-action="favorite" data-tv-key="detail:favorite" data-tv-game="${escapeHtml(game.id)}">${escapeHtml(t(game.favorite ? "♥ Remove favorite" : "♡ Add favorite"))}</button><button class="tv-focus" data-tv-action="back" data-tv-key="detail:back">${escapeHtml(t("Back to library"))}</button></div><p class="tv-sheet-hint"><span>B / ○</span> ${escapeHtml(t("Return to the collection"))}</p></div></div></section></div>`;
+				const unavailable = pending || running;
+				// Keep Starting/Playing now focusable and visibly unavailable. Native
+				// disabled would shift focus to Favorite, turning a second A into a
+				// library mutation. Activation is guarded in click/select/act.
+				slot.innerHTML = `<div class="tv-sheet-scrim"><section class="tv-sheet" role="dialog" aria-modal="true" aria-labelledby="tv-game-title"><div class="tv-sheet-backdrop" aria-hidden="true">${background ? `<img src="${background}" alt="" loading="lazy"/>` : ""}</div><div class="tv-sheet-layout"><div class="tv-sheet-art">${this.artwork(game, true)}</div><div class="tv-sheet-copy"><p class="tv-eyebrow">${escapeHtml(t("GAME PROFILE"))} <span aria-hidden="true">/</span> ${escapeHtml(sourceName(game.source, "Your library"))}</p><h2 id="tv-game-title">${escapeHtml(game.name)}</h2><p class="tv-sheet-meta">${escapeHtml(running ? t("Session in progress") : played(game.total_play_seconds || 0))}${game.last_played_at ? ` · ${escapeHtml(t("Last played {date}", { date: formatDate(game.last_played_at) }))}` : ""}</p><div class="tv-sheet-actions"><button class="tv-focus tv-play" data-tv-action="launch" data-tv-key="detail:play" data-tv-game="${escapeHtml(game.id)}" aria-busy="${!!pending}" aria-disabled="${!!unavailable}">${escapeHtml(t(pending ? "Starting…" : running ? "Playing now" : "▶ Play game"))}</button><button class="tv-focus" data-tv-action="favorite" data-tv-key="detail:favorite" data-tv-game="${escapeHtml(game.id)}">${escapeHtml(t(game.favorite ? "♥ Remove favorite" : "♡ Add favorite"))}</button><button class="tv-focus" data-tv-action="back" data-tv-key="detail:back">${escapeHtml(t("Back to library"))}</button></div><p class="tv-sheet-hint"><span>B / ○</span> ${escapeHtml(t("Return to the collection"))}</p></div></div></section></div>`;
 		}
 		controls() {
 			const scope = this.detailId
@@ -590,8 +626,8 @@
 			const game = this.byId.get(button.dataset.tvGame);
 			if (game) {
 				this.refreshSpotlight(game);
-					this.updateSelectedLabel();
 			}
+				this.updateSelectedLabel();
 		}
 			updateSelectedLabel() {
 				const selected = this.root?.querySelector(".tv-selected");
@@ -627,21 +663,34 @@
 		}
 		command(action) {
 			if (!this.active) return;
+			if (action === "scrollUp" || action === "scrollDown") {
+				this.scrollScene(action === "scrollDown" ? 1 : -1);
+				return;
+			}
 			if (["up", "down", "left", "right"].includes(action)) {
 				this.move(action);
 				return;
 			}
 			const button = document.activeElement;
 			if (action === "select") {
-				if (this.controls().includes(button)) button.click();
+					if (this.controls().includes(button) && button.getAttribute("aria-disabled") !== "true") button.click();
 				return;
 			}
 			if (action === "favorite") {
 				const id = button?.dataset.tvGame || this.detailId;
-				if (id) this.options.favorite(id);
+				if (id) this.act("favorite", { dataset: { tvGame: id } })
+					.catch((error) => this.notify(error?.message || t("Could not update the library.")));
 				return;
 			}
 			this.act(action, button).catch((error) => this.notify(error.message));
+		}
+		scrollScene(direction) {
+			const panel = this.detailId
+				? this.root?.querySelector(".tv-sheet")
+				: this.root?.querySelector(".tv-main");
+			if (!panel) return;
+			const distance = Math.round(Math.max(72, Math.min(180, panel.clientHeight / 3)));
+			panel.scrollBy({ top: direction * distance, behavior: "auto" });
 		}
 		async act(action, button) {
 			if (action === "open") {
@@ -662,11 +711,18 @@
 				return;
 			}
 			if (action === "launch") {
+					const id = button?.dataset.tvGame;
+					if (!id || this.launchInFlight || this.snapshot.pendingLaunches?.has(id) ||
+						this.snapshot.runningIds?.includes(id)) return;
 				this.launchInFlight = true;
+					this.launchGameId = id;
+					this.render({ passive: true, focusKey: "detail:play" });
 				try {
-					await this.options.launch(button.dataset.tvGame);
+						await this.options.launch(id);
 				} finally {
 					this.launchInFlight = false;
+						this.launchGameId = null;
+						this.update();
 				}
 				return;
 			}
@@ -675,13 +731,17 @@
 				return;
 			}
 			if (action === "recent") {
+				const hasRecent = this.root.querySelector(".tv-recent .tv-focus");
+				if (!hasRecent) {
+					this.notify(t("No recently played games yet."));
+					return;
+				}
 				if (this.detailId) {
 					this.detailId = null;
 					this.render();
 				}
 				const recent = this.root.querySelector(".tv-recent .tv-focus");
 				if (recent) this.focus(recent);
-					else this.notify(t("No recently played games yet."));
 				return;
 			}
 			if (action === "filter") {
@@ -694,13 +754,15 @@
 				(action === "nextPage" || action === "previousPage") &&
 				!this.detailId
 			) {
-				this.page = Math.max(
+				const nextPage = Math.max(
 					0,
 					Math.min(
 						this.page + (action === "nextPage" ? 1 : -1),
 						this.pageCount - 1,
 					),
 				);
+				if (nextPage === this.page) return;
+				this.page = nextPage;
 				this.render({ focusLibrary: true });
 			}
 		}
@@ -714,7 +776,8 @@
 				ArrowRight: "right",
 			};
 			const action =
-				arrows[event.key] ||
+				(event.shiftKey && event.key === "ArrowUp" ? "scrollUp" :
+					event.shiftKey && event.key === "ArrowDown" ? "scrollDown" : arrows[event.key]) ||
 				{
 					Enter: "select",
 					" ": "select",
@@ -741,7 +804,7 @@
 			if (!action) return;
 			event.preventDefault();
 			event.stopImmediatePropagation();
-			if (event.repeat && !arrows[event.key]) return;
+			if (event.repeat && !arrows[event.key] && action !== "scrollUp" && action !== "scrollDown") return;
 			this.command(action);
 		}
 	}

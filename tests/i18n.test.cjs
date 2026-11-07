@@ -82,6 +82,27 @@ test('all locales translate navigation, preferences, play actions, controller an
   }
 });
 
+test('controller right-stick scroll hint and F11/Menu tooltip translate exactly in every language', () => {
+  const { i18n } = createRuntime();
+  const scrollKey = 'Scroll';
+  const tooltipKey = 'Controller mode (F11 / Menu)';
+  const expected = {
+    en: ['Scroll', 'Controller mode (F11 / Menu)'],
+    nl: ['Scrollen', 'Controllermodus (F11 / Menu)'],
+    de: ['Scrollen', 'Controller-Modus (F11 / Menü)'],
+    fr: ['Faire défiler', 'Mode manette (F11 / Menu)'],
+    es: ['Desplazar', 'Modo mando (F11 / Menú)'],
+  };
+  for (const [code, translated] of Object.entries(expected)) {
+    i18n.setLanguage(code);
+    assert.deepEqual([i18n.t(scrollKey), i18n.t(tooltipKey)], translated, code);
+    for (const value of translated) {
+      assert.deepEqual([...value.matchAll(/\{([A-Za-z][A-Za-z0-9_]*)\}/g)], [],
+        'new controller labels must not introduce interpolation placeholders');
+    }
+  }
+});
+
 test('known Electron and Rust update-status messages are translated without changing unknown backend errors', () => {
   const { i18n } = createRuntime();
   const electron = createUpdateService({ app: { isPackaged: true }, platform: 'win32', env: {} });
@@ -216,6 +237,11 @@ test('translation catalog covers literal keys consumed by both renderers', () =>
       const key = literal[0] === '"' ? JSON.parse(literal) : literal.slice(1, -1).replace(/\\'/g, "'");
       if (!catalog.has(key) && !['Steam', 'Epic Games', 'GOG', 'EA app', 'Ubisoft Connect', 'Battle.net', 'Xbox / PC Game Pass', 'Heroic', 'Legendary'].includes(key))
         missing.push(file + ': ' + key);
+    }
+    if (file === 'controller-mode.js') {
+      for (const match of rendererSource.matchAll(/data-tv-(?:i18n|aria)="([^"]+)"/g)) {
+        if (!catalog.has(match[1])) missing.push(file + ': static controller label ' + match[1]);
+      }
     }
   }
   assert.deepEqual(missing, []);

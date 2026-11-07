@@ -161,15 +161,17 @@ If a cover is missing or incorrect, choose **Settings → Repair library covers*
 
 You can customize how covers fit and align, choose library density, switch between light/dark/system themes, and use reduced-motion settings.
 
-The **poster grid** is artwork-first: covers fill a 2:3 card, with a favorite button at the top left, a compact game actions menu at the top right, and a wide blue **Spelen** button along the bottom on hover, keyboard focus, or touch. Only the cards use this visual treatment; Orbit's sidebar, filters, statistics, details dialog, list view and controller screen remain their own layouts. Cards still use one lazily loaded cover each, with an executable icon or named placeholder when artwork is missing.
+The **poster grid** is artwork-first: covers fill a 2:3 card, with a favorite button at the top left, a compact game actions menu at the top right, and a wide accent-colored **Spelen** button along the bottom on hover, keyboard focus, or touch. Only the cards use this visual treatment; Orbit's sidebar, filters, statistics, details dialog, list view and controller screen remain their own layouts. Cards still use one lazily loaded cover each, with an executable icon or named placeholder when artwork is missing.
 
 ## Controller mode
 
 ![Orbit fullscreen controller mode with sample games](docs/images/orbit-controller-current.png)
 
-Choose the controller button next to Search or press **F11** to enter fullscreen controller mode. Use the D-pad or left stick to navigate, **A / Cross** to select, and **B / Circle** to go back. **LB / RB** switches pages; the on-screen controls remain usable by keyboard and mouse.
+Use the controller button next to Search, **F11**, or a fresh **Menu / Options / Start** press on a connected standard-mapped gamepad to enter fullscreen controller mode. Release held buttons first; Orbit never opens controller mode from the background, while editing a dialog, or while a game is already running.
 
-Orbit uses the browser's standard gamepad mapping. Not every controller or driver has been tested; `npm run test:controller` verifies the browser-level interactions with simulated controller input.
+In controller mode, use the **D-pad / left stick** to move focus, **A / Cross** to select, **B / Circle** or **View / Share** to go back, **X / Square** to favorite, and **Y / Triangle** or **Menu / Options** to jump to recent games. **LB / RB** or **LT / RT** switches library pages; the **right stick** scrolls the current collection or game details. The **Guide / PS** button may exit if exposed by Windows and the browser; pressing Back from the collection or using the on-screen Exit button always remains available. Keyboard and mouse continue to work.
+
+Orbit uses the browser's **standard Gamepad API mapping** (typically Xbox controllers and supported PlayStation DualShock/DualSense connections). Unmapped controllers are not guessed into incompatible button layouts; keyboard and mouse remain available. Browser-level `npm run test:controller` and the related input tests simulate controls; they do not prove every USB/Bluetooth controller or driver works on physical hardware.
 
 The cinematic controller detail view keeps game artwork contained and provides a large focused Play action. The connected controller is polled at a lower idle rate instead of using a continuous high-frequency animation loop when no input is happening.
 

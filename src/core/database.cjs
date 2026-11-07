@@ -9,8 +9,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   theme: 'dark', accent: '#8b7aff', reduceMotion: false,
   autoScan: false, useSteamArtwork: true, scanDownloads: false, libraryFolders: [],
   view: 'grid', sort: 'name', onboardingDone: false,
-  performanceGuard: true, autoUpdates: true, libraryDensity: 'comfortable',
+  performanceGuard: true, autoUpdates: true, libraryDensity: 'comfortable', language: 'system',
 });
+const LANGUAGES = ['system','en','nl','de','fr','es'];
 const SORTS = {name: 'name COLLATE NOCASE ASC', recent: 'last_played_at DESC, name COLLATE NOCASE ASC', added: 'created_at DESC', time: 'total_play_seconds DESC, name COLLATE NOCASE ASC'};
 const COLUMNS = ['id','name','source','source_id','executable','launch_uri','install_path','cover','banner','icon','genre','tags','favorite','total_play_seconds','last_played_at','created_at','updated_at','launch_args','working_dir','cover_fit','cover_position'];
 const STATS_MAX_ROWS=100000,STATS_MAX_SESSION_SECONDS=7*86400;
@@ -198,6 +199,7 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
       if(key==='view'&&!['grid','list'].includes(parsed))continue;
       if(key==='sort'&&!Object.hasOwn(SORTS,parsed))continue;
       if(key==='libraryDensity'&&!['comfortable','compact'].includes(parsed))continue;
+      if(key==='language'&&!LANGUAGES.includes(parsed))continue;
       if(key==='libraryFolders'&&(!Array.isArray(parsed)||parsed.length>60||parsed.some(p=>!assertString(p,4000))))continue;
       if(['reduceMotion','autoScan','useSteamArtwork','scanDownloads','onboardingDone','performanceGuard','autoUpdates'].includes(key)&&typeof parsed!=='boolean')continue;
       settings[key]=parsed;
@@ -206,10 +208,11 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
     return settings;
   }
   saveSettings(input){
-    const allowed=['theme','accent','reduceMotion','autoScan','useSteamArtwork','libraryFolders','view','sort','onboardingDone','performanceGuard','autoUpdates','libraryDensity'];
+    const allowed=['theme','accent','reduceMotion','autoScan','useSteamArtwork','libraryFolders','view','sort','onboardingDone','performanceGuard','autoUpdates','libraryDensity','language'];
     const current=this.getSettings();const next={...current};
     for(const key of allowed)if(Object.hasOwn(input,key))next[key]=input[key];
     if(!['dark','light','system'].includes(next.theme))throw Error('Invalid theme.');
+    if(!LANGUAGES.includes(next.language))throw Error('Invalid language.');
     if(!/^#[0-9a-fA-F]{6}$/.test(next.accent))throw Error('Invalid accent color.');
     if(!['grid','list'].includes(next.view)||!Object.hasOwn(SORTS,next.sort)||!['comfortable','compact'].includes(next.libraryDensity))throw Error('Invalid library preferences.');
     if(!Array.isArray(next.libraryFolders)||next.libraryFolders.length>60||next.libraryFolders.some(x=>!assertString(x,4000)))throw Error('Invalid library folders.');

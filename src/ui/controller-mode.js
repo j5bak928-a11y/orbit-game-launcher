@@ -11,6 +11,16 @@
 					"'": "&#39;",
 				})[char],
 		);
+	const t = (key, params = {}) => {
+		const translated = window.OrbitI18n?.t?.(key, params);
+		return String(translated ?? key).replace(/\{([a-zA-Z]+)\}/g, (match, name) =>
+			Object.hasOwn(params, name) ? String(params[name]) : match,
+		);
+	};
+	const formatNumber = (value) =>
+		window.OrbitI18n?.formatNumber?.(value) ?? String(value);
+	const formatDate = (value) =>
+		window.OrbitI18n?.formatDate?.(value) ?? new Date(value).toLocaleDateString();
 	const art = (token) =>
 		/^[a-f\d-]{36}\.(jpg|jpeg|png|webp)$/.test(token || "")
 			? (window.OrbitArtworkUrl?.(token) || `orbit-art://file/${token}`)
@@ -25,12 +35,16 @@
 		folder: "Local",
 		manual: "Manual",
 	};
+	const sourceName = (source, fallback = "Game") =>
+		["folder", "manual"].includes(source)
+			? t(sources[source])
+			: sources[source] || t(fallback);
 	const played = (seconds) =>
 		seconds >= 3600
-			? `${Math.floor(seconds / 3600)}h played`
+			? t("{count}h played", { count: formatNumber(Math.floor(seconds / 3600)) })
 			: seconds
-				? `${Math.max(1, Math.round(seconds / 60))}m played`
-				: "No playtime recorded";
+				? t("{count}m played", { count: formatNumber(Math.max(1, Math.round(seconds / 60))) })
+				: t("No playtime recorded");
 
 	class ControllerMode {
 		constructor(options) {
@@ -53,6 +67,7 @@
 			this.launchInFlight = false;
 			this.recentMarkup = "";
 			this.libraryMarkup = "";
+			this.statusKind = "none";
 		}
 		enter() {
 			if (this.session) return this.session.promise;
@@ -129,6 +144,7 @@
 			this.launchInFlight = false;
 			this.recentMarkup = "";
 			this.libraryMarkup = "";
+				this.statusKind = "none";
 			this.abort = new AbortController();
 			const signal = this.abort.signal;
 			this.inertRecords = ["app", "modal-root"]
@@ -142,11 +158,11 @@
 			this.root.className = "controller-shell";
 			this.root.setAttribute("role", "dialog");
 			this.root.setAttribute("aria-modal", "true");
-			this.root.setAttribute("aria-label", "Orbit controller mode");
-			this.root.innerHTML = `<div class="tv-stage"><header class="tv-header"><div class="tv-brand"><img class="tv-logo-dark" src="../../assets/branding/orbit-logo-dark.png" alt="Orbit"/><img class="tv-logo-light" src="../../assets/branding/orbit-logo-light.png" alt="Orbit"/><span>CONTROLLER MODE</span></div><div class="tv-header-actions"><span class="tv-controller-status" role="status">Keyboard ready · connect a controller</span><button class="tv-focus tv-exit" data-tv-key="exit" data-tv-action="exit">Exit controller mode <span>Esc</span></button></div></header><main class="tv-main"><div class="tv-recent-slot"></div><section class="tv-library-section" aria-label="Game library"><div class="tv-library-heading"><div><p class="tv-eyebrow">ONE HOME. EVERY GAME.</p><h1>Your library <span class="tv-total"></span></h1></div><div class="tv-tabs" role="group" aria-label="Choose collection"><button class="tv-focus" data-tv-key="filter:all" data-tv-action="filter" data-tv-filter="all">All games</button><button class="tv-focus" data-tv-key="filter:favorites" data-tv-action="filter" data-tv-filter="favorites">Favorites</button></div></div><div class="tv-library-slot"></div><div class="tv-pagination"><span class="tv-page-label"></span><div><button class="tv-focus" data-tv-key="page:previous" data-tv-action="previousPage" aria-label="Previous page">← Previous</button><button class="tv-focus" data-tv-key="page:next" data-tv-action="nextPage" aria-label="Next page">Next →</button></div></div></section></main><footer class="tv-footer"><div class="tv-selected">Choose something to play.</div><div class="tv-hints"><span><b>↔ ↕</b> Move</span><span><b>A / ×</b> Select</span><span><b>B / ○</b> Back</span><span><b>X / □</b> Favorite</span><span><b>Y / △</b> Recent</span><span><b>LB / RB</b> Pages</span></div></footer></div><div class="tv-detail-slot"></div><div class="tv-notice" role="status" aria-live="polite"></div>`;
+				this.root.innerHTML = `<div class="tv-stage"><header class="tv-header"><div class="tv-brand"><img class="tv-logo-dark" src="../../assets/branding/orbit-logo-dark.png" alt="Orbit"/><img class="tv-logo-light" src="../../assets/branding/orbit-logo-light.png" alt="Orbit"/><span data-tv-i18n="CONTROLLER MODE">CONTROLLER MODE</span></div><div class="tv-header-actions"><span class="tv-controller-status" role="status">Keyboard ready · connect a controller</span><button class="tv-focus tv-exit" data-tv-key="exit" data-tv-action="exit" data-tv-i18n="Exit controller mode">Exit controller mode <span>Esc</span></button></div></header><main class="tv-main"><div class="tv-recent-slot"></div><section class="tv-library-section" data-tv-aria="Game library" aria-label="Game library"><div class="tv-library-heading"><div><p class="tv-eyebrow" data-tv-i18n="ONE HOME. EVERY GAME.">ONE HOME. EVERY GAME.</p><h1 data-tv-i18n="Your library">Your library <span class="tv-total"></span></h1></div><div class="tv-tabs" role="group" data-tv-aria="Choose collection" aria-label="Choose collection"><button class="tv-focus" data-tv-key="filter:all" data-tv-action="filter" data-tv-filter="all" data-tv-i18n="All games">All games</button><button class="tv-focus" data-tv-key="filter:favorites" data-tv-action="filter" data-tv-filter="favorites" data-tv-i18n="Favorites">Favorites</button></div></div><div class="tv-library-slot"></div><div class="tv-pagination"><span class="tv-page-label"></span><div><button class="tv-focus" data-tv-key="page:previous" data-tv-action="previousPage" data-tv-aria="Previous page" aria-label="Previous page" data-tv-i18n="← Previous">← Previous</button><button class="tv-focus" data-tv-key="page:next" data-tv-action="nextPage" data-tv-aria="Next page" aria-label="Next page" data-tv-i18n="Next →">Next →</button></div></div></section></main><footer class="tv-footer"><div class="tv-selected">Choose something to play.</div><div class="tv-hints"><span><b>↔ ↕</b> <span data-tv-i18n="Move">Move</span></span><span><b>A / ×</b> <span data-tv-i18n="Select">Select</span></span><span><b>B / ○</b> <span data-tv-i18n="Back">Back</span></span><span><b>X / □</b> <span data-tv-i18n="Favorite">Favorite</span></span><span><b>Y / △</b> <span data-tv-i18n="Recent">Recent</span></span><span><b>LB / RB</b> <span data-tv-i18n="Pages">Pages</span></span></div></footer></div><div class="tv-detail-slot"></div><div class="tv-notice" role="status" aria-live="polite"></div>`;
 			document.body.appendChild(this.root);
 			this.stage = this.root.querySelector(".tv-stage");
 			this.notice = this.root.querySelector(".tv-notice");
+				this.localizeShell();
 			this.root.addEventListener(
 				"click",
 				(event) => {
@@ -212,8 +228,41 @@
 				},
 			);
 			window.addEventListener("resize", () => this.update(), { signal });
+			window.addEventListener("orbit:languagechange", () => this.languageChanged(), { signal });
 			this.render({ initial: true });
 			this.resume();
+		}
+			localizeShell() {
+			if (!this.root) return;
+			this.root.setAttribute("aria-label", t("Orbit controller mode"));
+			for (const element of this.root.querySelectorAll("[data-tv-i18n]")) {
+				const translated = t(element.dataset.tvI18n);
+				// Keep nested controller key badges and the library count intact.
+				if (element.firstChild?.nodeType === 3)
+					element.firstChild.textContent = `${translated}${element.children.length ? " " : ""}`;
+				else element.textContent = translated;
+			}
+			for (const element of this.root.querySelectorAll("[data-tv-aria]"))
+				element.setAttribute("aria-label", t(element.dataset.tvAria));
+			this.updateControllerStatus();
+		}
+			updateControllerStatus() {
+			const status = this.root?.querySelector(".tv-controller-status");
+			const messages = {
+				connected: "Controller connected",
+				none: "Keyboard ready · connect a controller",
+				unsupported: "Controller layout not recognized · use keyboard",
+				unavailable: "Controller unavailable · use keyboard",
+			};
+			if (status) status.textContent = t(messages[this.statusKind] || messages.none);
+		}
+			languageChanged() {
+			if (!this.active || !this.root) return;
+			this.recentMarkup = "";
+			this.libraryMarkup = "";
+			this.detailSignature = "";
+			this.localizeShell();
+			this.render({ passive: true });
 		}
 		unmount() {
 			this.pause();
@@ -274,15 +323,10 @@
 				this.input.reset();
 				result = { actions: [], status: { kind: "unavailable" } };
 			}
-			const messages = {
-				connected: "Controller connected",
-				none: "Keyboard ready · connect a controller",
-				unsupported: "Controller layout not recognized · use keyboard",
-				unavailable: "Controller unavailable · use keyboard",
-			};
-			const status = this.root.querySelector(".tv-controller-status");
-			if (status.textContent !== messages[result.status.kind])
-				status.textContent = messages[result.status.kind];
+				if (this.statusKind !== result.status.kind) {
+					this.statusKind = result.status.kind;
+					this.updateControllerStatus();
+				}
 			if (result.actions.length) this.lastPadAction = time;
 			for (const action of result.actions) this.command(action);
 			if (!this.active) return;
@@ -321,12 +365,12 @@
 		}
 		spotlight(game) {
 			if (!game)
-				return `<section class="tv-spotlight tv-spotlight-empty" aria-label="Featured game"><div class="tv-spotlight-copy"><p class="tv-spotlight-kicker"><span class="tv-signal"></span> YOUR COLLECTION STARTS HERE</p><h2>Every game.<br/>One place.</h2><p class="tv-spotlight-description">Bring your games together on the desktop, then take the library to your controller.</p><div class="tv-spotlight-foot"><span class="tv-spotlight-label">READY WHEN YOU ARE</span></div></div><div class="tv-spotlight-visual" aria-hidden="true"><span class="tv-orbit-ring tv-orbit-ring-one"></span><span class="tv-orbit-ring tv-orbit-ring-two"></span><img class="tv-spotlight-mark tv-logo-dark" src="../../assets/branding/orbit-mark-dark.png" alt=""/><img class="tv-spotlight-mark tv-logo-light" src="../../assets/branding/orbit-mark-light.png" alt=""/></div></section>`;
+					return `<section class="tv-spotlight tv-spotlight-empty" aria-label="${escapeHtml(t("Featured game"))}"><div class="tv-spotlight-copy"><p class="tv-spotlight-kicker"><span class="tv-signal"></span> ${escapeHtml(t("YOUR COLLECTION STARTS HERE"))}</p><h2>${escapeHtml(t("Every game."))}<br/>${escapeHtml(t("One place."))}</h2><p class="tv-spotlight-description">${escapeHtml(t("Bring your games together on the desktop, then take the library to your controller."))}</p><div class="tv-spotlight-foot"><span class="tv-spotlight-label">${escapeHtml(t("READY WHEN YOU ARE"))}</span></div></div><div class="tv-spotlight-visual" aria-hidden="true"><span class="tv-orbit-ring tv-orbit-ring-one"></span><span class="tv-orbit-ring tv-orbit-ring-two"></span><img class="tv-spotlight-mark tv-logo-dark" src="../../assets/branding/orbit-mark-dark.png" alt=""/><img class="tv-spotlight-mark tv-logo-light" src="../../assets/branding/orbit-mark-light.png" alt=""/></div></section>`;
 			const banner = art(game.banner) || art(game.cover);
 			const running = this.snapshot.runningIds?.includes(game.id);
 			const lastPlayed = Number.isFinite(Date.parse(game.last_played_at)) && Date.parse(game.last_played_at) > 0;
-			const tag = this.recent[0]?.id === game.id ? "PICK UP WHERE YOU LEFT OFF" : "IN THE SPOTLIGHT";
-			return `<section class="tv-spotlight" aria-label="Featured game"><div class="tv-spotlight-ambient" aria-hidden="true">${banner ? `<img src="${banner}" alt="" loading="lazy"/>` : ""}</div><div class="tv-spotlight-copy"><p class="tv-spotlight-kicker"><span class="tv-signal"></span> ${tag}</p><h2>${escapeHtml(game.name)}</h2><p class="tv-spotlight-description">${escapeHtml(sources[game.source] || "Your library")} <span aria-hidden="true">·</span> ${escapeHtml(running ? "Playing now" : played(game.total_play_seconds || 0))}</p><div class="tv-spotlight-foot"><span class="tv-spotlight-label">${running ? "SESSION ACTIVE" : lastPlayed ? "CONTINUE YOUR JOURNEY" : "DISCOVER SOMETHING NEW"}</span><span class="tv-spotlight-prompt"><b>A</b><b>↵</b> Open selected game</span></div></div><div class="tv-spotlight-visual" aria-hidden="true"><div class="tv-spotlight-image">${this.artwork(game)}</div></div></section>`;
+				const tag = this.recent[0]?.id === game.id ? "PICK UP WHERE YOU LEFT OFF" : "IN THE SPOTLIGHT";
+				return `<section class="tv-spotlight" aria-label="${escapeHtml(t("Featured game"))}"><div class="tv-spotlight-ambient" aria-hidden="true">${banner ? `<img src="${banner}" alt="" loading="lazy"/>` : ""}</div><div class="tv-spotlight-copy"><p class="tv-spotlight-kicker"><span class="tv-signal"></span> ${escapeHtml(t(tag))}</p><h2>${escapeHtml(game.name)}</h2><p class="tv-spotlight-description">${escapeHtml(sourceName(game.source, "Your library"))} <span aria-hidden="true">·</span> ${escapeHtml(running ? t("Playing now") : played(game.total_play_seconds || 0))}</p><div class="tv-spotlight-foot"><span class="tv-spotlight-label">${escapeHtml(t(running ? "SESSION ACTIVE" : lastPlayed ? "CONTINUE YOUR JOURNEY" : "DISCOVER SOMETHING NEW"))}</span><span class="tv-spotlight-prompt"><b>A</b><b>↵</b> ${escapeHtml(t("Open selected game"))}</span></div></div><div class="tv-spotlight-visual" aria-hidden="true"><div class="tv-spotlight-image">${this.artwork(game)}</div></div></section>`;
 		}
 		refreshSpotlight(game) {
 			if (!game || this.spotlightGameId === game.id) return;
@@ -341,7 +385,7 @@
 		}
 		card(game, zone) {
 			const running = this.snapshot.runningIds?.includes(game.id);
-			return `<button class="tv-card tv-focus" data-tv-action="open" data-tv-game="${escapeHtml(game.id)}" data-tv-key="${zone}:${escapeHtml(game.id)}" aria-label="Open ${escapeHtml(game.name)}" tabindex="-1">${this.artwork(game)}<span class="tv-card-copy"><strong>${escapeHtml(game.name)}</strong><span>${running ? "● Playing now" : escapeHtml(sources[game.source] || "Game")}<i>${game.favorite ? "♥" : running ? "In session" : played(game.total_play_seconds || 0)}</i></span></span></button>`;
+				return `<button class="tv-card tv-focus" data-tv-action="open" data-tv-game="${escapeHtml(game.id)}" data-tv-key="${zone}:${escapeHtml(game.id)}" aria-label="${escapeHtml(t("Open {name}", { name: game.name }))}" tabindex="-1">${this.artwork(game)}<span class="tv-card-copy"><strong>${escapeHtml(game.name)}</strong><span>${running ? `● ${escapeHtml(t("Playing now"))}` : escapeHtml(sourceName(game.source))}<i>${game.favorite ? "♥" : running ? escapeHtml(t("In session")) : escapeHtml(played(game.total_play_seconds || 0))}</i></span></span></button>`;
 		}
 		update() {
 			if (!this.active || this.renderFrame !== null) return;
@@ -391,7 +435,7 @@
 				: "";
 			const spotlightGame = this.byId.get(selectedId) || this.recent[0] || this.all[0];
 			const recentMarkup = this.spotlight(spotlightGame) + (this.recent.length
-				? `<section class="tv-continue" aria-label="Continue playing"><div class="tv-section-heading"><h2>Continue playing</h2><span>${this.recent.length} recently played ${this.recent.length === 1 ? "game" : "games"}</span></div><div class="tv-recent">${this.recent.map((game) => this.card(game, "recent")).join("")}</div></section>`
+					? `<section class="tv-continue" aria-label="${escapeHtml(t("Continue playing"))}"><div class="tv-section-heading"><h2>${escapeHtml(t("Continue playing"))}</h2><span>${escapeHtml(t(this.recent.length === 1 ? "{count} recently played game" : "{count} recently played games", { count: formatNumber(this.recent.length) }))}</span></div><div class="tv-recent">${this.recent.map((game) => this.card(game, "recent")).join("")}</div></section>`
 				: "");
 			if (recentMarkup !== this.recentMarkup) {
 				recent.innerHTML = recentMarkup;
@@ -419,9 +463,7 @@
 			this.root.style.setProperty("--tv-columns", columns);
 			const start = this.page * size,
 				records = list.slice(start, start + size);
-			this.root.querySelector(".tv-total").textContent = String(
-				this.all.length,
-			);
+				this.root.querySelector(".tv-total").textContent = formatNumber(this.all.length);
 			for (const button of this.root.querySelectorAll(
 				'[data-tv-action="filter"]',
 			))
@@ -431,14 +473,20 @@
 				);
 			const libraryMarkup = records.length
 				? `<div class="tv-library">${records.map((game) => this.card(game, "library")).join("")}</div>`
-				: `<div class="tv-empty"><h2>${this.filter === "favorites" ? "No favorites yet" : "Your next game starts here."}</h2><p>${this.filter === "favorites" ? "Favorite a game with X / Square to keep it here." : "Add games from the desktop library, then return to controller mode."}</p>${this.filter === "favorites" ? '<button class="tv-focus" data-tv-action="filter" data-tv-filter="all" data-tv-key="empty:all">Browse all games</button>' : '<button class="tv-focus" data-tv-action="exit" data-tv-key="empty:exit">Back to desktop library</button>'}</div>`;
+					: `<div class="tv-empty"><h2>${escapeHtml(t(this.filter === "favorites" ? "No favorites yet" : "Your next game starts here."))}</h2><p>${escapeHtml(t(this.filter === "favorites" ? "Favorite a game with X / Square to keep it here." : "Add games from the desktop library, then return to controller mode."))}</p>${this.filter === "favorites" ? `<button class="tv-focus" data-tv-action="filter" data-tv-filter="all" data-tv-key="empty:all">${escapeHtml(t("Browse all games"))}</button>` : `<button class="tv-focus" data-tv-action="exit" data-tv-key="empty:exit">${escapeHtml(t("Back to desktop library"))}</button>`}</div>`;
 			if (libraryMarkup !== this.libraryMarkup) {
 				this.root.querySelector(".tv-library-slot").innerHTML = libraryMarkup;
 				this.libraryMarkup = libraryMarkup;
 			}
 			this.root.querySelector(".tv-page-label").textContent = list.length
-				? `${start + 1}–${start + records.length} of ${list.length} · Page ${this.page + 1} of ${this.pageCount}`
-				: "No games in this collection";
+					? t("{first}–{last} of {total} · Page {page} of {pages}", {
+						first: formatNumber(start + 1),
+						last: formatNumber(start + records.length),
+						total: formatNumber(list.length),
+						page: formatNumber(this.page + 1),
+						pages: formatNumber(this.pageCount),
+					})
+					: t("No games in this collection");
 			this.root.querySelector('[data-tv-action="previousPage"]').disabled =
 				this.page === 0;
 			this.root.querySelector('[data-tv-action="nextPage"]').disabled =
@@ -468,6 +516,7 @@
 				// Data updates must not pull the user's wheel/touch scroll position
 				// back to whichever card happens to have keyboard focus.
 				this.focus(target || fallback, { scroll: !passive || !target });
+				this.updateSelectedLabel();
 		}
 		renderDetail() {
 			const slot = this.root.querySelector(".tv-detail-slot"),
@@ -480,7 +529,7 @@
 			}
 			const pending = this.snapshot.pendingLaunches?.has(game.id),
 				running = this.snapshot.runningIds?.includes(game.id);
-			const signature = JSON.stringify([game.id, game.name, game.source, game.banner,
+				const signature = JSON.stringify([window.OrbitI18n?.getLanguage?.(), game.id, game.name, game.source, game.banner,
 				game.cover, game.icon, game.favorite, running ? null : game.total_play_seconds, game.last_played_at,
 				!!pending, !!running]);
 			// Prevent an unrelated library refresh from replacing the focused
@@ -488,7 +537,7 @@
 			if (this.detailSignature === signature && slot.firstElementChild) return;
 			this.detailSignature = signature;
 			const background = art(game.banner) || art(game.cover);
-			slot.innerHTML = `<div class="tv-sheet-scrim"><section class="tv-sheet" role="dialog" aria-modal="true" aria-labelledby="tv-game-title"><div class="tv-sheet-backdrop" aria-hidden="true">${background ? `<img src="${background}" alt="" loading="lazy"/>` : ""}</div><div class="tv-sheet-layout"><div class="tv-sheet-art">${this.artwork(game, true)}</div><div class="tv-sheet-copy"><p class="tv-eyebrow">GAME PROFILE <span aria-hidden="true">/</span> ${escapeHtml(sources[game.source] || "Your library")}</p><h2 id="tv-game-title">${escapeHtml(game.name)}</h2><p class="tv-sheet-meta">${escapeHtml(running ? "Session in progress" : played(game.total_play_seconds || 0))}${game.last_played_at ? ` · Last played ${escapeHtml(new Date(game.last_played_at).toLocaleDateString())}` : ""}</p><div class="tv-sheet-actions"><button class="tv-focus tv-play" data-tv-action="launch" data-tv-key="detail:play" data-tv-game="${escapeHtml(game.id)}" aria-busy="${!!pending}" ${pending || running ? "disabled" : ""}>${pending ? "Starting…" : running ? "Playing now" : "▶ Play game"}</button><button class="tv-focus" data-tv-action="favorite" data-tv-key="detail:favorite" data-tv-game="${escapeHtml(game.id)}">${game.favorite ? "♥ Remove favorite" : "♡ Add favorite"}</button><button class="tv-focus" data-tv-action="back" data-tv-key="detail:back">Back to library</button></div><p class="tv-sheet-hint"><span>B / ○</span> Return to the collection</p></div></div></section></div>`;
+				slot.innerHTML = `<div class="tv-sheet-scrim"><section class="tv-sheet" role="dialog" aria-modal="true" aria-labelledby="tv-game-title"><div class="tv-sheet-backdrop" aria-hidden="true">${background ? `<img src="${background}" alt="" loading="lazy"/>` : ""}</div><div class="tv-sheet-layout"><div class="tv-sheet-art">${this.artwork(game, true)}</div><div class="tv-sheet-copy"><p class="tv-eyebrow">${escapeHtml(t("GAME PROFILE"))} <span aria-hidden="true">/</span> ${escapeHtml(sourceName(game.source, "Your library"))}</p><h2 id="tv-game-title">${escapeHtml(game.name)}</h2><p class="tv-sheet-meta">${escapeHtml(running ? t("Session in progress") : played(game.total_play_seconds || 0))}${game.last_played_at ? ` · ${escapeHtml(t("Last played {date}", { date: formatDate(game.last_played_at) }))}` : ""}</p><div class="tv-sheet-actions"><button class="tv-focus tv-play" data-tv-action="launch" data-tv-key="detail:play" data-tv-game="${escapeHtml(game.id)}" aria-busy="${!!pending}" ${pending || running ? "disabled" : ""}>${escapeHtml(t(pending ? "Starting…" : running ? "Playing now" : "▶ Play game"))}</button><button class="tv-focus" data-tv-action="favorite" data-tv-key="detail:favorite" data-tv-game="${escapeHtml(game.id)}">${escapeHtml(t(game.favorite ? "♥ Remove favorite" : "♡ Add favorite"))}</button><button class="tv-focus" data-tv-action="back" data-tv-key="detail:back">${escapeHtml(t("Back to library"))}</button></div><p class="tv-sheet-hint"><span>B / ○</span> ${escapeHtml(t("Return to the collection"))}</p></div></div></section></div>`;
 		}
 		controls() {
 			const scope = this.detailId
@@ -522,10 +571,17 @@
 			const game = this.byId.get(button.dataset.tvGame);
 			if (game) {
 				this.refreshSpotlight(game);
-				this.root.querySelector(".tv-selected").textContent =
-					`${game.name} · ${sources[game.source] || "Game"}`;
+					this.updateSelectedLabel();
 			}
 		}
+			updateSelectedLabel() {
+				const selected = this.root?.querySelector(".tv-selected");
+				if (!selected) return;
+				const game = this.byId.get(document.activeElement?.dataset.tvGame);
+				selected.textContent = game
+					? `${game.name} · ${sourceName(game.source)}`
+					: t("Choose something to play.");
+			}
 		move(direction) {
 			const current = document.activeElement,
 				controls = this.controls();
@@ -606,7 +662,7 @@
 				}
 				const recent = this.root.querySelector(".tv-recent .tv-focus");
 				if (recent) this.focus(recent);
-				else this.notify("No recently played games yet.");
+					else this.notify(t("No recently played games yet."));
 				return;
 			}
 			if (action === "filter") {

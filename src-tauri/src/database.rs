@@ -23,7 +23,7 @@ const GAME_FIELDS: [&str; 9] = [
     "genre",
     "working_dir",
 ];
-const SETTING_KEYS: [&str; 12] = [
+const SETTING_KEYS: [&str; 13] = [
     "theme",
     "accent",
     "reduceMotion",
@@ -36,6 +36,7 @@ const SETTING_KEYS: [&str; 12] = [
     "performanceGuard",
     "autoUpdates",
     "libraryDensity",
+    "language",
 ];
 const SOURCES: [&str; 9] = [
     "manual",
@@ -429,7 +430,7 @@ fn default_settings() -> Value {
         "autoScan": false, "useSteamArtwork": true, "scanDownloads": false,
         "libraryFolders": [], "view": "grid", "sort": "name",
         "onboardingDone": false, "performanceGuard": true,
-        "autoUpdates": true, "libraryDensity": "comfortable"
+        "autoUpdates": true, "libraryDensity": "comfortable", "language": "system"
     })
 }
 
@@ -948,6 +949,9 @@ impl LibraryDatabase {
         if !["dark", "light", "system"].contains(&next["theme"].as_str().unwrap_or("")) {
             return Err("Invalid theme.".into());
         }
+        if !valid_language(&next["language"]) {
+            return Err("Invalid language.".into());
+        }
         if !valid_accent(&next["accent"]) {
             return Err("Invalid accent color.".into());
         }
@@ -1095,6 +1099,10 @@ fn valid_accent(value: &Value) -> bool {
     })
 }
 
+fn valid_language(value: &Value) -> bool {
+    ["system", "en", "nl", "de", "fr", "es"].contains(&value.as_str().unwrap_or(""))
+}
+
 fn valid_folders(value: &Value) -> bool {
     value.as_array().is_some_and(|items| {
         items.len() <= 60
@@ -1113,6 +1121,7 @@ fn valid_preferences(v: &Value) -> bool {
 fn valid_setting(key: &str, value: &Value) -> bool {
     match key {
         "theme" => ["dark", "light", "system"].contains(&value.as_str().unwrap_or("")),
+        "language" => valid_language(value),
         "accent" => valid_accent(value),
         "view" => ["grid", "list"].contains(&value.as_str().unwrap_or("")),
         "sort" => ["name", "recent", "added", "time"].contains(&value.as_str().unwrap_or("")),
@@ -2294,11 +2303,30 @@ mod tests {
     fn settings_are_validated_and_malformed_saved_values_fall_back() {
         with_database(|db, _| {
             assert_eq!(db.get_settings().unwrap()["scanDownloads"], false);
+            assert_eq!(db.get_settings().unwrap()["language"], "system");
             let settings = db.save_settings(&json!({
-                "theme":"light", "accent":"#66AABB", "autoScan":true, "libraryFolders":["D:\\Games"]
+                "theme":"light", "accent":"#66AABB", "autoScan":true, "libraryFolders":["D:\\Games"], "language":"nl"
             })).unwrap();
             assert_eq!(settings["theme"], "light");
+            assert_eq!(settings["language"], "nl");
             assert_eq!(settings["autoScan"], true);
+            for language in ["system", "en", "nl", "de", "fr", "es"] {
+                assert_eq!(
+                    db.save_settings(&json!({"language":language})).unwrap()["language"],
+                    language
+                );
+            }
+            for invalid in [
+                json!("it"),
+                json!("EN"),
+                json!(""),
+                json!(null),
+                json!(2),
+                json!({}),
+            ] {
+                assert!(db.save_settings(&json!({"language":invalid})).is_err());
+                assert_eq!(db.get_settings().unwrap()["language"], "es");
+            }
             assert!(db.save_settings(&json!({"theme":"neon"})).is_err());
             assert!(db.save_settings(&json!({"sort":"__proto__"})).is_err());
             assert!(db.save_settings(&json!({"libraryFolders":[5]})).is_err());
@@ -2311,10 +2339,17 @@ mod tests {
                     [],
                 )
                 .unwrap();
+            db.conn
+                .execute(
+                    "UPDATE settings SET value='\"bogus\"' WHERE key='language'",
+                    [],
+                )
+                .unwrap();
             let recovered = db.get_settings().unwrap();
             assert_eq!(recovered["theme"], "dark");
             assert_eq!(recovered["accent"], "#8b7aff");
             assert_eq!(recovered["autoScan"], true);
+            assert_eq!(recovered["language"], "system");
             assert_eq!(recovered["libraryFolders"], json!(["D:\\Games"]));
         });
     }
@@ -2429,7 +2464,7 @@ mod tests {
             });
             let payload = json!({
                 "format":"orbit.library.v1", "games":[raw.clone()],
-                "settings":{"theme":"light","accent":"#567abc"}
+                "settings":{"theme":"light","accent":"#567abc","language":"de"}
             });
             let result = db.restore_json(&payload).unwrap();
             assert_eq!(result["imported"], 1);
@@ -2444,6 +2479,7 @@ mod tests {
             assert_eq!(exported["format"], "orbit.library.v1");
             assert_eq!(exported["games"][0]["tags"], json!(["RPG"]));
             assert_eq!(exported["settings"]["theme"], "light");
+            assert_eq!(exported["settings"]["language"], "de");
             assert_eq!(db.restore_json(&payload).unwrap()["skipped"], 1);
             assert_eq!(db.list("name").unwrap()[0]["total_play_seconds"], 12500);
             assert_eq!(db.restore_game(&json!({"name":"Invalid Clock","total_play_seconds":-42,"last_played_at":"invalid"})).unwrap()["game"]["total_play_seconds"], 0);
@@ -2824,6 +2860,7 @@ mod tests {
                 .unwrap();
             assert_eq!(result["imported"], 0);
             assert_eq!(result["settingsRestored"], true);
+            assert_eq!(db.get_settings().unwrap()["language"], "system");
             assert!(result.get("sessionsImported").is_none());
             assert_eq!(db.count().unwrap(), 0);
         });

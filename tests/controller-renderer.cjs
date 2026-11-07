@@ -20,7 +20,9 @@ const padButton=async(page,button,held=90,slot=0)=>{
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
  const browser=await chromium.launch(process.env.ORBIT_BROWSER_EXECUTABLE?{headless:true,executablePath:process.env.ORBIT_BROWSER_EXECUTABLE,args:['--no-sandbox','--disable-dev-shm-usage']}:{headless:true,channel:process.env.ORBIT_BROWSER_CHANNEL||'chrome'});
  try{
-  const page=await browser.newPage({viewport:{width:1440,height:900}}),errors=[];
+  // The production UI defaults to the OS language. Keep historical English
+  // label assertions deterministic regardless of the Windows test PC locale.
+  const page=await browser.newPage({viewport:{width:1440,height:900},locale:'en-US'}),errors=[];
   page.on('pageerror',error=>errors.push(error.message));
   await page.addInitScript(installFixture,{count:5000});
   await page.addInitScript(()=>{
@@ -227,7 +229,7 @@ const padButton=async(page,button,held=90,slot=0)=>{
   await page.evaluate(()=>window.fixture.nativeFullscreen(true));await entry.click();await mode.waitFor();
   await page.keyboard.press('Escape');await mode.waitFor({state:'detached'});
   assert.equal(await page.evaluate(async()=>(await window.orbit.getWindowState()).fullscreen),true,'exit preserves an already-fullscreen desktop');
-  const empty=await browser.newPage({viewport:{width:910,height:610}});
+  const empty=await browser.newPage({viewport:{width:910,height:610},locale:'en-US'});
   await empty.addInitScript(installFixture,{count:0});await empty.goto(page.url());await empty.bringToFront();
   await empty.getByRole('button',{name:'Enter controller mode',exact:true}).click();
   await empty.getByRole('heading',{name:'Your next game starts here.'}).waitFor();
@@ -236,14 +238,14 @@ const padButton=async(page,button,held=90,slot=0)=>{
   if(process.env.ORBIT_QA_OUTPUT)await empty.screenshot({path:path.join(process.env.ORBIT_QA_OUTPUT,'controller-empty.png')});
   for(let index=0;index<8;index++){await empty.keyboard.press('Tab');assert(await empty.locator('#controller-root').evaluate(node=>node.contains(document.activeElement)));}
   await empty.keyboard.press('Escape');assert.equal(await empty.locator('#app').evaluate(node=>node.inert),false);await empty.close();
-  const single=await browser.newPage({viewport:{width:910,height:610}});
+  const single=await browser.newPage({viewport:{width:910,height:610},locale:'en-US'});
   await single.addInitScript(installFixture,{count:2});
   await single.addInitScript(()=>window.fixture.patch(window.fixture.id(2),{last_played_at:'2026-10-25T12:00:00Z'}));
   await single.goto(page.url());await single.bringToFront();await single.getByRole('button',{name:'Enter controller mode',exact:true}).click();
   assert.equal(await single.locator('.tv-recent [data-tv-game]').count(),1,'one recent game must have exactly one carousel card');
   assert.equal(await single.locator('.tv-spotlight h2').textContent(),await single.locator('.tv-recent strong').textContent());
   await single.keyboard.press('Escape');await single.close();
-  const pair=await browser.newPage({viewport:{width:910,height:610}});
+  const pair=await browser.newPage({viewport:{width:910,height:610},locale:'en-US'});
   await pair.addInitScript(installFixture,{count:2});
   await pair.addInitScript(()=>{for(let i=1;i<=2;i++)window.fixture.patch(window.fixture.id(i),{last_played_at:`2026-10-2${i}T12:00:00Z`});});
   await pair.goto(page.url());await pair.bringToFront();await pair.getByRole('button',{name:'Enter controller mode',exact:true}).click();
@@ -252,7 +254,7 @@ const padButton=async(page,button,held=90,slot=0)=>{
   await pair.keyboard.press('ArrowRight');
   assert.equal(await pair.locator('.tv-spotlight h2').textContent(),await pair.locator('.tv-recent strong').nth(1).textContent(),'two recent games update the featured panel by focus');
   await pair.keyboard.press('Escape');await pair.close();
-  const ownerPage=await browser.newPage({viewport:{width:1440,height:900}});
+  const ownerPage=await browser.newPage({viewport:{width:1440,height:900},locale:'en-US'});
   await ownerPage.addInitScript(installFixture,{count:6});
   await ownerPage.addInitScript(()=>{
    const controller=index=>({id:'Controller '+index,index,connected:true,mapping:'standard',axes:[0,0],buttons:Array.from({length:17},()=>({pressed:false,value:0,touched:false}))});

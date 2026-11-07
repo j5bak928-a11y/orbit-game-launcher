@@ -56,6 +56,7 @@
 			this.frame = null;
 			this.timer = null;
 			this.renderFrame = null;
+			this.revealRecentAfterResize = false;
 			this.filter = "all";
 			this.page = 0;
 			this.gamesRef = null;
@@ -227,7 +228,7 @@
 					signal,
 				},
 			);
-			window.addEventListener("resize", () => this.update(), { signal });
+			window.addEventListener("resize", () => this.update({ revealFocusedRecent: true }), { signal });
 			window.addEventListener("orbit:languagechange", () => this.languageChanged(), { signal });
 			this.render({ initial: true });
 			this.resume();
@@ -270,6 +271,7 @@
 			this.abort?.abort();
 			if (this.renderFrame !== null) cancelAnimationFrame(this.renderFrame);
 			this.renderFrame = null;
+			this.revealRecentAfterResize = false;
 			this.detailSignature = "";
 			this.recentMarkup = "";
 			this.libraryMarkup = "";
@@ -387,14 +389,18 @@
 			const running = this.snapshot.runningIds?.includes(game.id);
 				return `<button class="tv-card tv-focus" data-tv-action="open" data-tv-game="${escapeHtml(game.id)}" data-tv-key="${zone}:${escapeHtml(game.id)}" aria-label="${escapeHtml(t("Open {name}", { name: game.name }))}" tabindex="-1">${this.artwork(game)}<span class="tv-card-copy"><strong>${escapeHtml(game.name)}</strong><span>${running ? `● ${escapeHtml(t("Playing now"))}` : escapeHtml(sourceName(game.source))}<i>${game.favorite ? "♥" : running ? escapeHtml(t("In session")) : escapeHtml(played(game.total_play_seconds || 0))}</i></span></span></button>`;
 		}
-		update() {
-			if (!this.active || this.renderFrame !== null) return;
+		update({ revealFocusedRecent = false } = {}) {
+			if (!this.active) return;
+			if (revealFocusedRecent) this.revealRecentAfterResize = true;
+			if (this.renderFrame !== null) return;
 			this.renderFrame = requestAnimationFrame(() => {
 				this.renderFrame = null;
-				if (this.active) this.render({ passive: true });
+				const revealRecent = this.revealRecentAfterResize;
+				this.revealRecentAfterResize = false;
+				if (this.active) this.render({ passive: true, revealFocusedRecent: revealRecent });
 			});
 		}
-		render({ initial = false, focusLibrary = false, focusKey = "", passive = false } = {}) {
+		render({ initial = false, focusLibrary = false, focusKey = "", passive = false, revealFocusedRecent = false } = {}) {
 			if (!this.root) return;
 			const main = this.root.querySelector(".tv-main");
 			const scrollTop = passive ? main.scrollTop : 0;
@@ -516,7 +522,20 @@
 				// Data updates must not pull the user's wheel/touch scroll position
 				// back to whichever card happens to have keyboard focus.
 				this.focus(target || fallback, { scroll: !passive || !target });
+				if (revealFocusedRecent) this.revealRecentCard(target || fallback);
 				this.updateSelectedLabel();
+		}
+		revealRecentCard(button) {
+			const lane = button?.closest(".tv-recent");
+			if (!lane) return;
+			const viewport = lane.getBoundingClientRect();
+			const card = button.getBoundingClientRect();
+			// Resize changes the visible width of this horizontal lane. Reveal only
+			// the focused card; leave vertical scrolling and other lanes untouched.
+			if (card.right > viewport.right)
+				lane.scrollLeft += card.right - viewport.right;
+			else if (card.left < viewport.left)
+				lane.scrollLeft += card.left - viewport.left;
 		}
 		renderDetail() {
 			const slot = this.root.querySelector(".tv-detail-slot"),

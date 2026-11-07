@@ -205,6 +205,7 @@ npm test
 npm run lint
 npm run test:controller
 npm run test:languages
+npm run test:visual
 npm run test:renderer
 npm run test:experience
 npm run test:cinematic
@@ -212,7 +213,7 @@ npm run test:cards
 npm run bench
 ```
 
-Renderer and experience tests use Playwright and an installed Chromium-compatible browser. They exercise simulated library data and mocked native calls; they do not prove that real games launch successfully.
+Renderer and experience tests use Playwright and an installed Chromium-compatible browser. `npm run test:visual` checks responsive layouts, translated labels, keyboard focus and touch actions across five languages, both themes and five viewport sizes using synthetic data. These checks do not prove that real games launch successfully or that packaged Windows WebView2/Electron rendering is identical.
 
 Package the Electron edition on the matching operating system with `npm run dist:win`, `npm run dist:mac`, or `npm run dist:linux`. On Windows, packaged Electron builds also need the native process-inventory helper; GitHub's [Windows build workflow](https://github.com/j5bak928-a11y/orbit-game-launcher/actions/workflows/windows-build.yml) compiles it automatically. Review builds do **not** publish a release; publishing requires the explicit manual workflow option.
 

@@ -10,6 +10,10 @@ const server=http.createServer((request,response)=>{
  try{response.setHeader('Content-Type',({'.html':'text/html','.js':'text/javascript','.css':'text/css','.png':'image/png'})[path.extname(file)]||'application/octet-stream');response.end(fs.readFileSync(file));}catch{response.writeHead(404).end();}
 });
 const pause=page=>page.waitForTimeout(80);
+const assertTouchHeight=async(locator,label)=>{
+ const height=await locator.evaluate(node=>node.getBoundingClientRect().height);
+ assert(height>=44,`${label} touch target should be at least 44px (got ${height})`);
+};
 const padButton=async(page,button,held=90,slot=0)=>{
  await page.evaluate(({index,slot})=>{window.mockPads[slot].buttons[index]={pressed:true,value:1,touched:true};},{index:button,slot});
  await page.waitForTimeout(held);
@@ -88,6 +92,70 @@ const padButton=async(page,button,held=90,slot=0)=>{
   assert.equal(await mode.locator('.tv-fallback-dark:visible').count(),0);
   await page.evaluate(()=>window.orbit.saveSettings({theme:'dark'}));
   if(process.env.ORBIT_QA_OUTPUT){fs.mkdirSync(process.env.ORBIT_QA_OUTPUT,{recursive:true});await page.screenshot({path:path.join(process.env.ORBIT_QA_OUTPUT,'controller-mode.png')});}
+  if(process.env.ORBIT_QA_OUTPUT){
+   await page.evaluate(()=>window.orbit.saveSettings({theme:'light'}));await pause(page);
+   await page.screenshot({path:path.join(process.env.ORBIT_QA_OUTPUT,'controller-mode-light-1440.png')});
+   await page.evaluate(()=>window.orbit.saveSettings({theme:'dark'}));
+   await page.setViewportSize({width:390,height:700});await pause(page);
+   await page.screenshot({path:path.join(process.env.ORBIT_QA_OUTPUT,'controller-mode-390x700.png')});
+   await page.evaluate(()=>window.OrbitI18n.setLanguage('de'));await pause(page);
+   await page.screenshot({path:path.join(process.env.ORBIT_QA_OUTPUT,'controller-mode-de-390x700.png')});
+   await page.evaluate(()=>window.OrbitI18n.setLanguage('fr'));await pause(page);
+   await page.screenshot({path:path.join(process.env.ORBIT_QA_OUTPUT,'controller-mode-fr-390x700.png')});
+   await page.evaluate(()=>window.OrbitI18n.setLanguage('en'));
+   await page.waitForTimeout(420);
+   await page.screenshot({path:path.join(process.env.ORBIT_QA_OUTPUT,'controller-mode-390x700-settled.png')});
+   await page.setViewportSize({width:1440,height:900});await pause(page);
+  }
+  await page.setViewportSize({width:390,height:700});await pause(page);
+  await page.waitForTimeout(450);
+  const recentFocusBounds=await page.evaluate(()=>{
+   const row=document.querySelector('.tv-recent'),selected=document.activeElement;
+   const viewport=row.getBoundingClientRect(),card=selected.getBoundingClientRect();
+   return {key:selected.dataset.tvKey,visible:card.left>=viewport.left-2&&card.right<=viewport.right+2,
+    cardLeft:Math.round(card.left),cardRight:Math.round(card.right),
+    viewportLeft:Math.round(viewport.left),viewportRight:Math.round(viewport.right)};
+  });
+  assert(recentFocusBounds.visible,`focused recent game must be fully in view after compact resize: ${JSON.stringify(recentFocusBounds)}`);
+  await assertTouchHeight(mode.locator('.tv-exit'),'narrow controller Exit');
+  await assertTouchHeight(mode.locator('[data-tv-key="filter:all"]'),'narrow All games filter');
+  await assertTouchHeight(mode.locator('[data-tv-key="filter:favorites"]'),'narrow Favorites filter');
+  assert(await mode.locator('.tv-hints > span').first().evaluate(node=>parseFloat(getComputedStyle(node).fontSize)>=10),'small controller hint labels must remain legible');
+  const headerFit=await mode.evaluate(root=>{
+   const brand=root.querySelector('.tv-brand').getBoundingClientRect();
+   const exit=root.querySelector('.tv-exit').getBoundingClientRect();
+   return brand.right+4<=exit.left && exit.right<=root.clientWidth+1;
+  });
+  assert(headerFit,'narrow logo and Exit button must not collide');
+  for(const language of ['de','fr']){
+   await page.evaluate(code=>window.OrbitI18n.setLanguage(code),language);await pause(page);
+   assert(await page.locator('#controller-root').evaluate(root=>{
+    const brand=root.querySelector('.tv-brand').getBoundingClientRect();
+    const exit=root.querySelector('.tv-exit').getBoundingClientRect();
+    return brand.right+4<=exit.left && exit.right<=root.clientWidth+1;
+   }),`translated ${language} Exit must not overlap the logo at 390px`);
+  }
+  await page.evaluate(()=>window.OrbitI18n.setLanguage('en'));
+  await page.setViewportSize({width:320,height:700});await pause(page);
+  for(const language of ['de','en','fr']){
+   await page.evaluate(code=>window.OrbitI18n.setLanguage(code),language);await pause(page);
+   for(const theme of ['dark','light']){
+    await page.evaluate(value=>window.orbit.saveSettings({theme:value}),theme);await pause(page);
+    const bounds=await page.locator('#controller-root').evaluate(root=>{
+     const brand=root.querySelector('.tv-brand').getBoundingClientRect();
+     const exit=root.querySelector('.tv-exit').getBoundingClientRect();
+     const header=root.querySelector('.tv-header').getBoundingClientRect();
+     return {brandRight:brand.right,exitLeft:exit.left,exitRight:exit.right,
+      headerRight:header.right,viewportWidth:innerWidth,exitHeight:exit.height};
+    });
+    assert(bounds.brandRight+4<=bounds.exitLeft && bounds.exitRight<=bounds.headerRight+1 &&
+     bounds.exitRight<=bounds.viewportWidth+1,`header must fit at 320px in ${language}/${theme}: ${JSON.stringify(bounds)}`);
+    assert(bounds.exitHeight>=44,`Exit touch target must be at least 44px at 320px in ${language}/${theme}`);
+   }
+  }
+  await page.evaluate(()=>window.orbit.saveSettings({theme:'dark'}));
+  await page.evaluate(()=>window.OrbitI18n.setLanguage('en'));
+  await page.setViewportSize({width:1440,height:900});await pause(page);
   await page.setViewportSize({width:910,height:610});await pause(page);
   assert(await spotlight.isVisible(),'the featured panel remains visible at 910x610');
   assert(!await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),'compact controller hero must not overflow horizontally');
@@ -129,11 +197,20 @@ const padButton=async(page,button,held=90,slot=0)=>{
   await page.setViewportSize({width:390,height:730});await pause(page);
   assert(!await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),'mobile detail must not create horizontal overflow');
   assert(await sheet.locator('.tv-sheet-art').isVisible(),'mobile detail includes visible game art');
+  await assertTouchHeight(sheet.locator('[data-tv-key="detail:favorite"]'),'mobile favorite action');
+  await assertTouchHeight(sheet.locator('[data-tv-key="detail:back"]'),'mobile Back action');
   await mode.locator('[data-tv-key="detail:back"]').focus();
   assert.equal(await focused(),'detail:back','small-screen detail supports keyboard focus on Back');
   await page.keyboard.press('ArrowUp');
   assert(await focused().then(key=>key.startsWith('detail:')),'small-screen directional navigation stays inside the detail');
   if(process.env.ORBIT_QA_OUTPUT)await page.screenshot({path:path.join(process.env.ORBIT_QA_OUTPUT,'controller-detail-mobile.png')});
+  if(process.env.ORBIT_QA_OUTPUT){
+   await page.setViewportSize({width:390,height:700});await pause(page);
+   await page.screenshot({path:path.join(process.env.ORBIT_QA_OUTPUT,'controller-detail-390x700.png')});
+   await page.evaluate(()=>window.orbit.saveSettings({theme:'light'}));await pause(page);
+   await page.screenshot({path:path.join(process.env.ORBIT_QA_OUTPUT,'controller-detail-light-390x700.png')});
+   await page.evaluate(()=>window.orbit.saveSettings({theme:'dark'}));
+  }
   await page.setViewportSize({width:1440,height:900});await pause(page);
   await page.keyboard.press('Escape');
   assert.equal(await focused(),'recent:00000000-0000-4000-8000-000000000003');
@@ -171,6 +248,7 @@ const padButton=async(page,button,held=90,slot=0)=>{
   await page.getByRole('button',{name:'Favorites',exact:true}).click();
   await mode.locator('[data-tv-key="library:00000000-0000-4000-8000-000000000001"]').focus();
   await padButton(page,2);await page.getByText('No favorites yet',{exact:true}).waitFor();
+  assert(await mode.locator('.tv-pagination').isHidden(),'an empty Favorites collection has no usable pagination');
   assert(await mode.evaluate(node=>node.contains(document.activeElement)));
   await page.getByRole('button',{name:'All games',exact:true}).click();
   await page.getByRole('button',{name:'Next page',exact:true}).click();
@@ -235,7 +313,19 @@ const padButton=async(page,button,held=90,slot=0)=>{
   await empty.getByRole('heading',{name:'Your next game starts here.'}).waitFor();
   assert.equal(await empty.locator('.tv-spotlight').count(),1,'empty libraries still have a finished welcome hero');
   assert.equal(await empty.locator('.tv-recent').count(),0);
+  assert(await empty.locator('.tv-pagination').isHidden(),'empty library hides disabled pagination controls');
   if(process.env.ORBIT_QA_OUTPUT)await empty.screenshot({path:path.join(process.env.ORBIT_QA_OUTPUT,'controller-empty.png')});
+  if(process.env.ORBIT_QA_OUTPUT){
+   await empty.setViewportSize({width:390,height:700});await pause(empty);
+   await empty.screenshot({path:path.join(process.env.ORBIT_QA_OUTPUT,'controller-empty-390x700.png')});
+   await empty.evaluate(()=>window.orbit.saveSettings({theme:'light'}));await pause(empty);
+   await empty.screenshot({path:path.join(process.env.ORBIT_QA_OUTPUT,'controller-empty-light-390x700.png')});
+  }
+  await empty.setViewportSize({width:390,height:700});
+  await empty.evaluate(()=>window.orbit.saveSettings({theme:'light'}));await pause(empty);
+  assert(await empty.locator('.tv-spotlight-empty .tv-logo-light').isHidden(),'dark spotlight must not display the white-tile artwork variant in light mode');
+  assert(await empty.locator('.tv-spotlight-empty .tv-logo-dark').isVisible(),'light mode spotlight must retain a visible Orbit mark');
+  assert(await empty.locator('.tv-pagination').isHidden(),'empty mobile library leaves no disabled pagination sticking out above the footer');
   for(let index=0;index<8;index++){await empty.keyboard.press('Tab');assert(await empty.locator('#controller-root').evaluate(node=>node.contains(document.activeElement)));}
   await empty.keyboard.press('Escape');assert.equal(await empty.locator('#app').evaluate(node=>node.inert),false);await empty.close();
   const single=await browser.newPage({viewport:{width:910,height:610},locale:'en-US'});

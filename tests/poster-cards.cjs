@@ -60,6 +60,9 @@ test('poster cards keep the existing Orbit shell and expose working artwork acti
  assert.equal(initial.caption,'0','metadata is quiet until card selection');
  await card.hover();
  await page.waitForFunction(()=>getComputedStyle(document.querySelector('.poster-card .cover-play')).opacity==='1');
+ await page.waitForFunction(()=>getComputedStyle(document.querySelector('.poster-card .game-label')).opacity==='1');
+ assert.equal(await card.locator('.game-name').textContent(),'Game 00000',
+  'poster reveals the game title when actions become visible');
  const buttons=await card.evaluate(node=>{
   const rect=el=>{const b=el.getBoundingClientRect();return {x:b.x,y:b.y,width:b.width,height:b.height,right:b.right,bottom:b.bottom};};
   return {cover:rect(node.querySelector('.cover')),heart:rect(node.querySelector('.favorite-float')),
@@ -103,7 +106,12 @@ test('poster cards keep the existing Orbit shell and expose working artwork acti
  });
  assert(narrow.heartRight<narrow.menuLeft,'corner buttons do not overlap on narrow screens');
  assert(narrow.playWidth>narrow.coverWidth*.7,'narrow Play button remains wide');
- assert(narrow.buttonHeight>=34,'touch-sized Play action on narrow layout');
+ assert(narrow.buttonHeight>=38,'Play action stays consistent with other primary controls on narrow layouts');
+ assert(await page.locator('.poster-card').first().evaluate(node=>{
+  const favorite=node.querySelector('.favorite-float').getBoundingClientRect();
+  const menu=node.querySelector('.card-menu-float').getBoundingClientRect();
+  return favorite.width>=36&&favorite.height>=36&&menu.width>=36&&menu.height>=36;
+ }), 'compact poster corner actions have comfortable touch targets');
  if(screenshotDir)await page.screenshot({path:path.join(screenshotDir,'orbit-posters-narrow.png')});
  await page.evaluate(()=>window.orbit.saveSettings({reduceMotion:true}));
  assert.equal(await page.locator('.poster-card .cover').first().evaluate(node=>getComputedStyle(node).transitionDuration),'0s','reduced-motion disables card animation');

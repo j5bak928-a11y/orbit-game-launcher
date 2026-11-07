@@ -6,6 +6,8 @@ Orbit is a local-first desktop game launcher for finding, organizing, and playin
 
 The main desktop application uses **Electron**. A separate, **experimental Rust + Tauri 2 preview** is available for Windows. Both use Orbit's familiar interface; the Rust preview is not yet a production replacement.
 
+**[Download the latest Windows release](https://github.com/j5bak928-a11y/orbit-game-launcher/releases/latest)** — the main Electron edition is distributed as an installer and a portable executable. Rust builds, when provided, are distinctly labeled **experimental previews**; they do not replace the Electron edition or share its application data.
+
 ![Orbit library with game covers, filters, and search](docs/images/orbit-library-current.png)
 
 > Screenshots use a sample library, public artwork, and simulated playtime. They are UI previews, not measurements of a real gaming session.
@@ -14,10 +16,11 @@ The main desktop application uses **Electron**. A separate, **experimental Rust 
 
 - **One game library:** discover supported Steam, Epic, GOG, Battle.net, Xbox PC and standalone installations, add executables, and organize entries with favorites, tags, categories, and filters.
 - **Find games quickly:** search with `Ctrl/Cmd + K`, sort the library, and switch between grid and list views.
+- **Ultra fast cold startup: 1s** — observed in a cold-start test performed by the user on their own Windows setup. This is an individual measurement, **not an independently reproduced benchmark or a guaranteed startup time**; results depend on hardware, storage, installed games and the runtime environment.
 - **Launch through the right client:** use a game's storefront URI or a validated executable, without moving or modifying game installations.
 - **Track playtime:** record supported direct-launch sessions and detect certain externally launched games on Windows. Tracking accuracy depends on how a game starts and which processes can be identified.
 - **Show game artwork:** look for validated portrait artwork in bounded neighboring folders, use cached covers and icons offline, optionally look up online artwork, or select your own cover, banner, and icon.
-- **Play with a controller:** use a fullscreen, gamepad-friendly library with keyboard and mouse fallback.
+- **Play with a controller:** navigate the fullscreen library and game details with a standard-mapped Xbox or PlayStation controller, including page triggers, right-stick scrolling, reconnect handling and a Menu / Options entry shortcut; keyboard and mouse remain available.
 - **Choose your language:** use Orbit in English, Nederlands, Deutsch, Français or Español; follow the system language automatically or select one in Settings. Both desktop editions save this preference locally.
 - **Review gaming statistics:** recorded-session totals for recent days and weeks, a daily activity chart, recent games and a period-best day. Overlapping records for a single game are deduplicated in reports without rewriting play history.
 - **Keep your data local:** store games, settings, and play history in SQLite; export and restore library backups.
@@ -31,7 +34,7 @@ The main desktop application uses **Electron**. A separate, **experimental Rust 
 | | Electron desktop | Rust / Tauri preview |
 | --- | --- | --- |
 | Version in this repository | **0.2.7** | **0.2.7** |
-| Status | Main desktop implementation | Rust reliability update under development (not yet published) |
+| Status | Main Windows release edition | Experimental preview; installed native acceptance not complete |
 | UI | Orbit HTML/CSS/JavaScript | The same interface, hosted in WebView2 |
 | Backend | Node.js/Electron, with a native Windows process helper | Rust for library, discovery, tracking, artwork, and backups |
 | Windows packaging | NSIS setup and portable EXE | NSIS setup, MSI, and portable EXE |
@@ -43,7 +46,7 @@ The editions have **different application IDs and data directories**. On first l
 
 **Direction:** make the fast, local-first Rust/Tauri edition the primary Windows launcher, then develop library organization, a console-quality controller experience, and optional offline intelligence. Keep the existing Electron edition as a fallback during the transition; do not throw away users' libraries or playtime history to accelerate a version bump.
 
-These are **planned milestones, not released features or promised dates**. Electron also uses version `0.2.7`; Rust `0.2.7` is the current reliability development milestone, not an automatically published release.
+These are **engineering milestones, not promises of public binary availability or dates**. Electron and Rust currently use version `0.2.7` in source; Rust `0.2.7` remains a preview reliability milestone even if a separately labeled download is provided with an Electron release.
 
 | Planned Rust version | Theme | Deliverable / exit criteria |
 | --- | --- | --- |
@@ -65,6 +68,8 @@ These are **planned milestones, not released features or promised dates**. Elect
 
 ### Memory usage (maintainer observations)
 
+**Cold startup:** **Ultra fast cold startup: 1s** is the user's measurement on one Windows configuration. We have not independently repeated it with packaged builds or established a multi-run p50/p95; it should not be read as a universal launch-time guarantee or as a comparative benchmark against other launchers. Startup here means starting Orbit with its UI, not loading a game.
+
 | Edition / state | Reported RAM |
 | --- | ---: |
 | Earlier Electron edition, with its UI open | **~300 MB** |
@@ -84,7 +89,7 @@ This is a **comparison framework, not a claim that Orbit outperforms another lau
 | Launcher | Main UI technology / scope | Controlled idle RAM | Controlled idle CPU |
 | --- | --- | --- | --- |
 | **Orbit Electron 0.2.7** | Electron; unified local library and tracking | Not measured in common test | Not measured |
-| **Orbit Rust Preview 0.2.6** | Tauri 2, Rust, WebView2; native tracking | Not measured in common test | Not measured |
+| **Orbit Rust Preview 0.2.7 (source)** | Tauri 2, Rust, WebView2; native tracking; experimental | Not measured in common test | Not measured |
 | [Steam](https://store.steampowered.com/about/) | Full storefront and social client with `steamwebhelper` processes | Not measured | Not measured |
 | [Epic Games Launcher](https://store.epicgames.com/download) | Storefront, social features and library | Not measured | Not measured |
 | [Playnite](https://github.com/JosefNemec/Playnite) | .NET / WPF; unified desktop library and controller mode | Not measured | Not measured |
@@ -219,7 +224,7 @@ Renderer and experience tests use Playwright and an installed Chromium-compatibl
 
 Package the Electron edition on the matching operating system with `npm run dist:win`, `npm run dist:mac`, or `npm run dist:linux`. On Windows, packaged Electron builds also need the native process-inventory helper; GitHub's [Windows build workflow](https://github.com/j5bak928-a11y/orbit-game-launcher/actions/workflows/windows-build.yml) compiles it automatically. Review builds do **not** publish a release; publishing requires the explicit manual workflow option.
 
-Windows installers are currently unsigned. Automatic update installation is disabled until trusted signing and update verification are ready. Do not treat a successful CI build as proof of real-world storefront, tracking, or controller compatibility.
+Windows installers are currently unsigned and may trigger Windows SmartScreen warnings. Automatic update installation is disabled until trusted signing and update verification are ready. Published binaries should be checked against the accompanying SHA-256 manifest. Do not treat a successful CI build as proof of real-world storefront, tracking, or controller compatibility.
 
 For detailed validation and limits, see [controller-mode verification](docs/VERIFICATION-controller-mode.md), [Tauri migration](docs/TAURI-MIGRATION.md), and [Windows tray lifecycle tests](docs/VERIFICATION-TAURI-TRAY-WEBVIEW.md).
 

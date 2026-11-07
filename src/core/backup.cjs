@@ -14,6 +14,53 @@ const MAX_ARTWORK_TOTAL = 100 * 1024 * 1024;
 const MAX_IMAGE = 15 * 1024 * 1024;
 const ART_NAME = /^[a-f\d-]{36}\.(png|jpg|jpeg|webp)$/i;
 const FORMAT = 'orbit.portable.v1';
+const MAX_SESSIONS = 100000;
+const MAX_SESSION_SECONDS = 7 * 86400;
+const validHistoryId = value => typeof value === 'string' && value.length > 0 &&
+  Buffer.byteLength(value,'utf8') <= 128 && value.trim() === value && !/\p{Cc}/u.test(value);
+function historyTimestamp(value) {
+  if (typeof value !== 'string' || value.length > 50) return NaN;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|([+-])(\d{2}):(\d{2}))$/.exec(value);
+  if (!match) return NaN;
+  const [year,month,day,hour,minute,second] = match.slice(1,7).map(Number);
+  const calendar = new Date(0);
+  calendar.setUTCFullYear(year,month-1,day);
+  if (calendar.getUTCFullYear() !== year || calendar.getUTCMonth() !== month-1 || calendar.getUTCDate() !== day ||
+      hour > 23 || minute > 59 || second > 59 || Number(match[8] || 0) > 23 || Number(match[9] || 0) > 59) return NaN;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? time : NaN;
+}
+// A v1 library may have no sessions field. When present, history must be
+// complete, attributable to exactly one exported game, and safe to import.
+function validateSessionHistory(library) {
+  if (library?.format !== 'orbit.library.v1') throw Error('Unrecognized Orbit library format.');
+  if (!Array.isArray(library.games) || library.games.length > MAX_SESSIONS ||
+      library.games.some(game=>!game || typeof game !== 'object' || Array.isArray(game)))
+    throw Error('Invalid Orbit library games.');
+  if (!Object.hasOwn(library, 'sessions')) return [];
+  const sessions = library.sessions;
+  if (!Array.isArray(sessions) || sessions.length > MAX_SESSIONS) throw Error('Invalid backup session history or history limit exceeded.');
+  const gameIds = new Set();
+  for (const game of library.games) {
+    if (!validHistoryId(game.id) || gameIds.has(game.id))
+      throw Error('Backup session history has missing or duplicate game IDs.');
+    gameIds.add(game.id);
+  }
+  const ids = new Set();
+  for (const session of sessions) {
+    if (!session || typeof session !== 'object' || Array.isArray(session) ||
+        Object.keys(session).length !== 5 ||
+        !['id','game_id','started_at','finished_at','seconds'].every(key=>Object.hasOwn(session,key)) ||
+        !validHistoryId(session.id) || ids.has(session.id) ||
+        typeof session.game_id !== 'string' || !gameIds.has(session.game_id) ||
+        !Number.isSafeInteger(session.seconds) || session.seconds < 0 || session.seconds > MAX_SESSION_SECONDS ||
+        !Number.isFinite(historyTimestamp(session.started_at)) || !Number.isFinite(historyTimestamp(session.finished_at)) ||
+        historyTimestamp(session.finished_at) < historyTimestamp(session.started_at))
+      throw Error('Backup contains invalid or unfinished session history.');
+    ids.add(session.id);
+  }
+  return sessions;
+}
 function imageValid(name, bytes) {
   if (!ART_NAME.test(name) || bytes.length === 0 || bytes.length > MAX_IMAGE) return false;
   const ext = path.extname(name).toLowerCase();
@@ -26,6 +73,7 @@ function assetNames(games) {
 }
 async function createPortableBackup(payload, folder) {
   if (!payload || !Array.isArray(payload.games)) throw Error('Invalid library for backup.');
+  validateSessionHistory(payload);
   const artwork = Object.create(null);
   const missing = [];
   let total = 0;
@@ -58,6 +106,7 @@ function decodePortableBackup(bytes) {
   catch {throw Error('Portable backup is corrupt or exceeds the safe size limit.');}
   if (decoded?.format !== FORMAT || !decoded.library || !Array.isArray(decoded.library.games) ||
       !decoded.artwork || typeof decoded.artwork !== 'object' || Array.isArray(decoded.artwork)) throw Error('Unrecognized portable backup format.');
+  validateSessionHistory(decoded.library);
   // Only accept assets referenced by game records, to avoid writing unrelated files.
   const expected = new Set(assetNames(decoded.library.games));
   const assets = new Map();
@@ -103,4 +152,4 @@ async function writeAtomic(file, bytes) {
   try {await fsp.writeFile(temporary, bytes, {flag:'wx'});await fsp.rename(temporary, file);}
   finally {await fsp.rm(temporary, {force:true}).catch(() => {});}
 }
-module.exports = {createPortableBackup, decodePortableBackup, installBackupArtwork, writeAtomic, MAX_ARCHIVE, MAX_UNCOMPRESSED};
+module.exports = {createPortableBackup, decodePortableBackup, installBackupArtwork, writeAtomic, validateSessionHistory, MAX_ARCHIVE, MAX_UNCOMPRESSED};

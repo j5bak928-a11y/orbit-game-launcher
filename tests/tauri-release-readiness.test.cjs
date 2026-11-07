@@ -87,7 +87,9 @@ test('source integration contract keeps signed-update gate closed', () => {
 test('Tauri first-run migration must snapshot read-only legacy SQLite to a different profile', () => {
   const src = read('src-tauri/src/lib.rs');
   const migrate = src.slice(src.indexOf('fn import_legacy_library('), src.indexOf('fn valid_art_name('));
-  assert.match(migrate, /if target_db\.exists\(\)\s*\{\s*return Ok\(\(\)\)/);
+  assert.match(migrate, /if target_db\.exists\(\)\s*\{/);
+  assert.match(migrate, /metadata\.len\(\) == 0/);
+  assert.match(migrate, /return Ok\(\(\)\);/);
   assert.match(migrate, /SQLITE_OPEN_READ_ONLY/);
   assert.match(migrate, /VACUUM INTO \?1/);
   assert.match(migrate, /temp_db/);
@@ -110,7 +112,7 @@ test('export/restore dialog cancellation occurs before any file or database muta
   }
   assert.ok(restoreFlow.indexOf('choose_file(app, &["orbit", "json"])') >= 0);
   assert.ok(restoreFlow.indexOf(cancel) > restoreFlow.indexOf('choose_file('));
-  for (const operation of ['backup::import_backup(', 'db.restore_game(']) {
+  for (const operation of ['backup::import_backup_checked(', 'db.restore_json(']) {
     assert.ok(restoreFlow.indexOf(cancel) < restoreFlow.indexOf(operation));
   }
   assert.match(src.slice(src.indexOf('fn write_json_backup('), src.indexOf('fn argument(', src.indexOf('fn write_json_backup(')) > 0 ? src.indexOf('fn argument(', src.indexOf('fn write_json_backup(')) : src.length), /create_new\(true\)/);

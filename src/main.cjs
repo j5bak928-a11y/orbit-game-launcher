@@ -5,7 +5,7 @@ const fs=require('node:fs');
 const fsp=fs.promises;
 const crypto=require('node:crypto');
 const {pathToFileURL}=require('node:url');
-const {LibraryDatabase,reconcileDiscoveredGames}=require('./core/database.cjs');
+const {LibraryDatabase,cleanGame,reconcileDiscoveredGames}=require('./core/database.cjs');
 const {discoverAll,steamRoots}=require('./core/discovery.cjs');
 const {launchGame:executeGame,deferredExit}=require('./core/launch.cjs');
 const {findSteamCover,findSteamBanner,localSteamIcon}=require('./core/steam-cover.cjs');
@@ -22,7 +22,7 @@ const {sessionClock}=require('./core/session-clock.cjs');
 const {pendingFinishes}=require('./core/pending-finishes.cjs');
 const {createUpdateService}=require('./core/updates.cjs');
 const {catalogMatch,identifyGame}=require('./core/game-identity.cjs');
-const {createPortableBackup,decodePortableBackup,installBackupArtwork,writeAtomic,MAX_ARCHIVE}=require('./core/backup.cjs');
+const {createPortableBackup,decodePortableBackup,installBackupArtwork,writeAtomic,validateSessionHistory,MAX_ARCHIVE}=require('./core/backup.cjs');
 
 protocol.registerSchemesAsPrivileged([{scheme:'orbit-art',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true}}]);
 if(!app.requestSingleInstanceLock())app.quit();
@@ -447,9 +447,11 @@ function handlers(){
   bind('exportLibrary',async()=>{
     const result=await dialog.showSaveDialog(win,{title:'Export Orbit library',defaultPath:`Orbit-Library-${new Date().toISOString().slice(0,10)}.orbit`,filters:[{name:'Portable Orbit backup (includes artwork)',extensions:['orbit']},{name:'Metadata only (JSON)',extensions:['json']} ]});
     if(result.canceled||!result.filePath)return null;
-    const payload={format:'orbit.library.v1',exported_at:new Date().toISOString(),settings:db.getSettings(),games:db.list()};
+    const payload=db.exportBackup();
     if(path.extname(result.filePath).toLowerCase()==='.json'){
-      await writeAtomic(result.filePath,JSON.stringify(payload,null,2));
+      const encoded=JSON.stringify(payload,null,2);
+      if(Buffer.byteLength(encoded,'utf8')>MAX_ARCHIVE)throw Error('JSON backup exceeds the 128 MB restore limit; no incomplete export was saved.');
+      await writeAtomic(result.filePath,encoded);
       return {path:result.filePath,count:payload.games.length,portable:false};
     }
     const archive=await createPortableBackup(payload,artworkDir());
@@ -470,8 +472,12 @@ function handlers(){
       try{data=JSON.parse(await fsp.readFile(file,'utf8'))}catch{throw Error('Backup is not valid JSON.');}
     }
     if(data?.format!=='orbit.library.v1'||!Array.isArray(data.games)||data.games.length>100000)throw Error('Unrecognized Orbit backup format.');
+    const withSessions=Object.hasOwn(data,'sessions');
+    validateSessionHistory(data);
+    if(withSessions)for(const game of data.games)cleanGame(game);
     const artworkMap=await installBackupArtwork(portableArtwork,artworkDir());
     let imported=0,skipped=0;const errors=[];
+    const preparedGames=[];
     for(let i=0;i<data.games.length;i++){
       const g=data.games[i];
       try{
@@ -480,16 +486,22 @@ function handlers(){
           return typeof name==='string'&&/^[a-f0-9-]{36}\.(png|jpg|jpeg|webp)$/.test(name)&&await fsp.stat(path.join(artworkDir(),name)).catch(()=>null)?name:'';
         };
         const clean={...g,cover:await artworkName(g?.cover),banner:await artworkName(g?.banner),icon:await artworkName(g?.icon)};
-        const res=db.restoreGame(clean);if(res.added)imported++;else skipped++;
-      }catch(e){errors.push(`${String(g?.name||'Entry').slice(0,80)}: ${e.message}`)}
+        if(withSessions)preparedGames.push(clean);
+        else{const res=db.restoreGame(clean);if(res.added)imported++;else skipped++;}
+      }catch(e){if(withSessions)throw e;errors.push(`${String(g?.name||'Entry').slice(0,80)}: ${e.message}`)}
       if(i%50===49)await new Promise(resolve=>setImmediate(resolve));
+    }
+    let sessionsImported=0,sessionsSkipped=0;
+    if(withSessions){
+      const result=db.restoreBackupGames({...data,games:preparedGames});
+      ({imported,skipped,sessionsImported,sessionsSkipped}=result);
     }
     let settingsRestored=false;
     if(data.settings&&typeof data.settings==='object'&&!Array.isArray(data.settings)){
       try{const settings=db.saveSettings(data.settings);nativeTheme.themeSource=settings.theme;settingsRestored=true;broadcast({type:'settingsChanged',settings});}
       catch(e){errors.push(`Settings: ${e.message}`)}
     }
-    gamesChanged({reset:true,reason:'restore'});return {imported,skipped,errors,settingsRestored};
+    gamesChanged({reset:true,reason:'restore'});return {imported,skipped,errors,settingsRestored,sessionsImported,sessionsSkipped};
   });
   bind('getAppInfo',()=>({platform:process.platform,version:displayVersion(),dataPath:app.getPath('userData')}));
 }

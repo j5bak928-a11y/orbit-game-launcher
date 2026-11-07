@@ -310,6 +310,10 @@ body[data-theme=light] .tv-fallback-light{display:block;mix-blend-mode:darken;fi
 	font-size: 12px;
 	border-radius: 9px;
 }
+.tv-library-section:has(.tv-empty) .tv-pagination {
+	/* Empty collections have only disabled page controls. */
+	display: none;
+}
 .tv-footer {
 	display: flex;
 	align-items: center;
@@ -597,8 +601,9 @@ body[data-theme="light"] .tv-sheet .tv-fallback-dark {
 		display: none;
 	}
 	.tv-exit {
-		font-size: 11px;
-		padding: 11px;
+		font-size: 12px;
+		min-height: 44px;
+		padding: 11px 13px;
 	}
 	.tv-exit span {
 		display: none;
@@ -622,6 +627,7 @@ body[data-theme="light"] .tv-sheet .tv-fallback-dark {
 	}
 	.tv-tabs button {
 		flex: 1;
+		min-height: 44px;
 	}
 	.tv-library .tv-card-art {
 		aspect-ratio: 16 / 7;
@@ -639,7 +645,7 @@ body[data-theme="light"] .tv-sheet .tv-fallback-dark {
 	}
 	.tv-hints > span,
 	.tv-hints b {
-		font-size: 9px;
+		font-size: 10px;
 	}
 	.tv-sheet-scrim {
 		padding: 14px;
@@ -679,6 +685,7 @@ body[data-theme="light"] .tv-sheet .tv-fallback-dark {
 		gap: 9px;
 	}
 	.tv-sheet-actions > button {
+		min-height: 44px;
 		padding: 12px 8px;
 		font-size: 12px;
 	}
@@ -691,6 +698,31 @@ body[data-theme="light"] .tv-sheet .tv-fallback-dark {
 	}
 	.tv-notice {
 		bottom: 100px;
+	}
+}
+@media (max-width: 340px) {
+	.tv-header {
+		padding-inline: 12px;
+		gap: 8px;
+	}
+	.tv-brand {
+		flex-shrink: 0;
+	}
+	.tv-brand img {
+		width: 88px;
+	}
+	.tv-header-actions {
+		min-width: 0;
+	}
+	.tv-exit {
+		min-width: 0;
+		min-height: 44px;
+		padding: 9px 10px;
+		font-size: 11px;
+		line-height: 1.25;
+		white-space: normal;
+		text-align: center;
+		overflow-wrap: anywhere;
 	}
 }
 
@@ -918,11 +950,12 @@ body[data-theme="light"] .tv-spotlight {
 	box-shadow: 0 14px 36px #2c194c1c;
 }
 body[data-theme="light"] .tv-spotlight-empty .tv-logo-dark {
-	display: none;
+	/* The hero stays dark in the light theme. Use the dark-surface logo,
+	   as the light logo has a solid pale tile around the Orbit mark. */
+	display: block;
 }
 body[data-theme="light"] .tv-spotlight-empty .tv-logo-light {
-	display: block;
-	mix-blend-mode: screen;
+	display: none;
 }
 body[data-theme="light"] .tv-card {
 	border-color: #332b4626;

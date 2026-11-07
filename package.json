@@ -26,7 +26,8 @@
     "test:cinematic": "node tests/cinematic-v2.cjs",
     "test:cards": "node tests/poster-cards.cjs",
     "test:controller": "node tests/controller-renderer.cjs",
-    "test:languages": "node tests/multilingual-renderer.cjs"
+    "test:languages": "node tests/multilingual-renderer.cjs",
+    "test:visual": "node tests/visual-consistency.cjs"
   },
   "engines": {
     "node": ">=22.13.0"

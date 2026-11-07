@@ -137,6 +137,11 @@ body[data-theme=light]{--muted:#565e67;--soft:#626b75}
 .home-page .page-heading,.library-page .page-heading{margin-bottom:20px}
 .hero p:empty{display:none}
 .settings-layout{grid-template-columns:minmax(0,1fr);max-width:1000px}
+/* Grid items must be allowed to shrink below long translated label widths. */
+.settings-layout,.settings-stack,.settings-card{min-width:0}
+.settings-card .setting-row>div:first-child{min-width:0;overflow-wrap:anywhere}
+.settings-card .setting-row>.setting-control{min-width:0;max-width:100%}
+.settings-card .setting-control[style*="display:flex"]{flex-wrap:wrap}
 /* A quieter, more legible family of controls with consistent interaction states. */
 .primary-btn.primary-btn,.secondary-btn.secondary-btn,.danger-btn.danger-btn{min-height:38px;padding:9px 15px;border-radius:9px;font-size:12px;font-weight:700;letter-spacing:-.01em;line-height:1.2;transition:background-color .15s,border-color .15s,color .15s,transform .15s}
 .primary-btn.primary-btn{background:var(--accent);border-color:transparent;color:var(--accent-ink)}
@@ -510,6 +515,8 @@ body[data-game-active=true] .games-grid .game-card .cover:before{display:none}
 .statistics-panel-title{margin:5px 0 4px;font-size:21px;letter-spacing:-.045em;font-weight:780}
 .statistics-panel-subtitle{margin:0;color:var(--muted);font-size:11px}
 .statistics-kicker{display:block;font-size:9px;letter-spacing:.17em;color:var(--accent);font-weight:800}
+/* In light mode, tiny chart section labels need a darker accent for contrast. */
+body[data-theme=light] .statistics-kicker{color:color-mix(in srgb,var(--accent) 60%,#13101b)}
 .statistics-legend{font-size:10px;color:var(--muted);display:flex;align-items:center;gap:8px;white-space:nowrap}
 .statistics-legend i{display:inline-block;width:9px;height:9px;background:var(--accent);border-radius:3px}
 .statistics-graph{min-height:180px}
@@ -546,6 +553,29 @@ body[data-game-active=true] .games-grid .game-card .cover:before{display:none}
   .home-page .hero h2{font-size:clamp(28px,4.2vw,38px)}
   .home-page .hero-portrait{width:127px;right:1%;opacity:.66}
   .statistics-panel{padding:20px}
+}
+/* Reserve actual poster space before the mobile breakpoint. A long game title
+   must wrap beside the artwork, not continue underneath it at tablet widths. */
+@media(min-width:651px) and (max-width:900px){
+  .home-page .hero-content{width:calc(100% - 190px);max-width:none}
+}
+@media(max-width:900px){
+  /* A very long game title must not turn the featured card into a full-screen
+     wall of text and push its Play action off the visible hero. */
+  .home-page .hero h2{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:5;overflow:hidden}
+}
+@media(min-width:501px) and (max-width:650px){
+  .home-page .hero-content{width:100%;max-width:none}
+  .home-page .hero-portrait{display:none}
+}
+@media(max-width:650px){
+  /* Locale-dependent page titles and scan actions need independent lines. */
+  .library-page .page-heading{flex-wrap:wrap;align-items:flex-start;gap:11px}
+  .library-page .page-heading>div{flex:1 1 100%;min-width:0}
+  .library-page .page-heading>.secondary-btn{max-width:100%;white-space:normal;overflow-wrap:anywhere}
+  .statistics-page .page-heading{flex-wrap:wrap;align-items:flex-start;gap:11px}
+  .statistics-page .page-heading>div{flex:1 1 100%;min-width:0}
+  .statistics-page .page-heading>.secondary-btn{flex:0 1 auto;max-width:100%;white-space:normal;overflow-wrap:anywhere}
 }
 @media(max-width:500px){
   .home-page .hero{min-height:330px;border-radius:13px}
@@ -638,6 +668,9 @@ body[data-game-active=true] .home-page .continue-card:hover{transform:none}
 .game-card.poster-card .favorite-float.active,
 .game-card.poster-card .card-menu-float[aria-expanded=true],
 .game-card.poster-card .cover-play[aria-busy=true]{opacity:1;transform:none}
+/* Poster artwork is not always recognizable: show the game name and playtime
+   alongside the actions on hover, keyboard focus and touch devices. */
+.game-card.poster-card:is(:hover,:focus-within,:focus-visible) .game-label{opacity:1}
 /* Keep title/metadata available in the card DOM and accessible name without
    printing a second label over artwork that already contains the game title. */
 #app .game-card.poster-card:focus-visible .cover{border-color:var(--accent)}
@@ -649,15 +682,24 @@ body[data-game-active=true] .home-page .continue-card:hover{transform:none}
 @media(hover:none),(pointer:coarse){
   .game-card.poster-card .favorite-float,.game-card.poster-card .card-menu-float,
   .game-card.poster-card .cover-play{opacity:1;transform:none}
-  .game-card.poster-card .game-label{display:none}
+  .game-card.poster-card .game-label{display:flex;opacity:1}
 }
 @media(max-width:500px){
-  .game-card.poster-card .favorite-float,.game-card.poster-card .card-menu-float{width:30px;height:30px;top:7px;border-radius:8px}
+  .game-card.poster-card .favorite-float,.game-card.poster-card .card-menu-float{width:36px;height:36px;top:7px;border-radius:8px}
   .game-card.poster-card .favorite-float{left:7px}
   .game-card.poster-card .card-menu-float{right:7px}
-  .game-card.poster-card .cover-play{left:7px;right:7px;bottom:7px;width:calc(100% - 14px);height:34px;gap:5px;font-size:11px;border-radius:8px}
+  .game-card.poster-card .cover-play{left:7px;right:7px;bottom:7px;width:calc(100% - 14px);height:38px;gap:5px;font-size:11px;border-radius:8px}
   .game-card.poster-card .cover-play svg{width:14px;height:14px}
   .game-card.poster-card .game-label{bottom:46px;padding:20px 8px 3px}
+}
+@media(max-width:500px){
+  /* Keep search and all three topbar actions within a 320px launcher window. */
+  .topbar .topbar-right{min-width:0}
+  .topbar .searchbox{width:0;min-width:0;flex:1 1 0}
+  .topbar .top-icon,.topbar .topbar-right>.primary-btn{flex:none}
+  /* The stronger shared secondary-button typography must not make the mobile
+     icon-only shuffle action display its full translated text again. */
+  .home-page .page-heading .shuffle-btn.shuffle-btn{font-size:0;gap:0;padding:8px}
 }
 @media(prefers-reduced-motion:reduce){
   .game-card.poster-card .cover,.game-card.poster-card:hover .cover{transform:none}

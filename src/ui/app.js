@@ -144,6 +144,7 @@ function statisticsContent(){
  if(stats.status!=='ready'||!stats.data)return `<div class="statistics-state" role="status"><p class="statistics-state-description">${tr('Open statistics to load your recorded sessions.')}</p></div>`;
  const result=stats.data,totals=result.totals||{},meta=result.meta||{};
  const daily=Array.isArray(result.daily)?result.daily.filter(day=>typeof day?.date==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(day.date)).slice(-30):[];
+ const hasDailyTime=daily.some(day=>nonnegativeSeconds(day.seconds)>0);
  const peak=Math.max(1,...daily.map(day=>nonnegativeSeconds(day.seconds)));
  const today=daily.length?daily[daily.length-1].seconds:0;
  const from=daily.length?statisticsDate(daily[0].date):t('Unknown');
@@ -161,7 +162,7 @@ function statisticsContent(){
  return `<div class="statistics-loaded"><div class="statistics-metrics">${summary.map(([label,value,caption],index)=>`<article class="statistics-metric ${index===1?'featured':''}"><span class="statistics-metric-label">${tr(label)}</span><strong class="statistics-metric-value">${esc(statisticsTime(value))}</strong><small class="statistics-metric-caption">${tr(caption)}</small></article>`).join('')}</div>
   <div class="statistics-insights"><div class="statistics-insight"><span class="statistics-insight-icon">${ic('trophy',19)}</span> <div class="statistics-insight-body"><span class="statistics-insight-label">${tr('Best day · last 30 days')}</span><strong class="statistics-insight-value">${best&&nonnegativeSeconds(best.seconds)?esc(statisticsTime(best.seconds)):tr('No recorded playtime')} </strong><small class="statistics-insight-caption">${best&&nonnegativeSeconds(best.seconds)?esc(statisticsDate(best.date)):tr('No daily record yet')}</small></div></div><div class="statistics-insight"><span class="statistics-insight-icon">${ic('chart',19)}</span> <div class="statistics-insight-body"><span class="statistics-insight-label">${tr('7-day trend')}</span><strong class="statistics-insight-value">${esc(statisticsTime(lastSeven))} ${tr('this week')}</strong><small class="statistics-insight-caption">${esc(trend)}</small></div></div></div>
   <section class="statistics-panel" aria-labelledby="statistics-chart-title"><div class="statistics-panel-head"><div><span class="statistics-kicker">${tr('PLAYTIME HISTORY')}</span><h2 class="statistics-panel-title" id="statistics-chart-title">${tr('Your last 30 days')}</h2><p class="statistics-panel-subtitle">${esc(from)} – ${esc(to)} · ${tr('local calendar dates')}</p></div><span class="statistics-legend"><i></i> ${tr('Recorded play time')}</span></div>
-   ${daily.length?`<div class="statistics-graph" role="img" aria-label="${tr('Recorded daily playtime from {from} to {to}',{from,to})}"><div class="statistics-bars">${daily.map(day=>`<span class="statistics-bar-slot" title="${esc(statisticsDate(day.date))}: ${esc(statisticsTime(day.seconds))}"><span class="statistics-bar ${nonnegativeSeconds(day.seconds)?'has-time':''}" style="height:${Math.max(3,Math.round(nonnegativeSeconds(day.seconds)/peak*100))}%"></span></span>`).join('')}</div><div class="statistics-axis"><span>${esc(from)}</span><span>${esc(to)}</span></div></div><ul class="statistics-visually-hidden" aria-label="${tr('Daily recorded playtime')}">${daily.map(day=>`<li>${esc(day.date)}: ${esc(statisticsTime(day.seconds))}</li>`).join('')}</ul>`:`<p class="statistics-empty">${tr('No dated sessions are available for this period.')}</p>`}
+   ${hasDailyTime?`<div class="statistics-graph" role="img" aria-label="${tr('Recorded daily playtime from {from} to {to}',{from,to})}"><div class="statistics-bars">${daily.map(day=>`<span class="statistics-bar-slot" title="${esc(statisticsDate(day.date))}: ${esc(statisticsTime(day.seconds))}"><span class="statistics-bar ${nonnegativeSeconds(day.seconds)?'has-time':''}" style="height:${Math.max(3,Math.round(nonnegativeSeconds(day.seconds)/peak*100))}%"></span></span>`).join('')}</div><div class="statistics-axis"><span>${esc(from)}</span><span>${esc(to)}</span></div></div><ul class="statistics-visually-hidden" aria-label="${tr('Daily recorded playtime')}">${daily.map(day=>`<li>${esc(day.date)}: ${esc(statisticsTime(day.seconds))}</li>`).join('')}</ul>`:`<p class="statistics-empty">${tr(daily.length?'No recorded playtime':'No dated sessions are available for this period.')}</p>`}
   </section>
   <section class="statistics-panel" aria-labelledby="statistics-recent-title"><div class="statistics-panel-head"><div><span class="statistics-kicker">${tr('SESSION RECORDS')}</span><h2 class="statistics-panel-title" id="statistics-recent-title">${tr('Recently played games')}</h2><p class="statistics-panel-subtitle">${tr('Latest games with completed sessions')}</p></div></div>
    ${rows.length?`<div class="statistics-recent-list">${rows.map(game=>{const art=artwork(game.cover)||artwork(game.icon);return `<div class="statistics-recent-row">${art?`<img src="${art}" loading="lazy" decoding="async" alt="" />`:`<div class="statistics-recent-placeholder" aria-hidden="true">${ic('gamepad',18)}</div>`}<div class="statistics-recent-name"><strong class="statistics-recent-title">${esc(game.name||t('Unknown game'))}</strong><span class="statistics-recent-source">${tr(sourceNames[game.source]||'Recorded game')} · ${esc(formatDate(game.lastPlayedAt))}</span></div><span class="statistics-recent-duration">${esc(statisticsTime(game.seconds))}</span></div>`}).join('')}</div>`:`<p class="statistics-empty">${tr('No completed game sessions have been recorded yet.')}</p>`}
@@ -204,7 +205,7 @@ function libraryView(){const subtitle={library:'',favorites:'',recent:''};const 
  <div class="select-wrap"><select id="tag-filter" aria-label="${tr('Filter by tag')}"><option value="all" ${state.tag==='all'?'selected':''}>${tr('All tags')}</option>${tags.map(tag=>`<option value="${esc(tag)}" ${state.tag===tag?'selected':''}>${esc(tag)}</option>`).join('')}</select></div></div>
  <div class="control-right"><div class="select-wrap"><select id="sort-by" aria-label="${tr('Sort games')}"><option value="name" ${state.sort==='name'?'selected':''}>${tr('Name A–Z')}</option><option value="recent" ${state.sort==='recent'?'selected':''}>${tr('Recently played')}</option><option value="added" ${state.sort==='added'?'selected':''}>${tr('Recently added')}</option><option value="time" ${state.sort==='time'?'selected':''}>${tr('Play time')}</option></select></div>
  <div class="view-switch" aria-label="${tr('Library display')}"><button data-action="view" data-view="grid" class="${state.view==='grid'?'selected':''}" aria-label="${tr('Grid view')}" aria-pressed="${state.view==='grid'}">${ic('grid',16)}</button><button data-action="view" data-view="list" class="${state.view==='list'?'selected':''}" aria-label="${tr('List view')}" aria-pressed="${state.view==='list'}">${ic('list',16)}</button></div></div></div>
- <div id="active-filters" class="active-filters" aria-live="polite">${activeFilterSummary()}</div><div id="library-area" class="virtual-area">${state.games.length?'<div id="virtual-games"></div>':emptyState(t('No games yet'),t('Scan your installed launchers or add a game manually.'))}</div></section>`;
+ <div id="active-filters" class="active-filters" aria-live="polite">${activeFilterSummary()}</div><div id="library-area" class="virtual-area">${state.games.length?'<div id="virtual-games"></div>':emptyState(t(state.route==='favorites'?'No favorites yet':state.route==='recent'?'No games played yet':'No games yet'),t(state.route==='favorites'?'Mark games with the heart icon to see them here.':state.route==='recent'?'Launch a game and it will appear here.':'Scan your installed launchers or add a game manually.'))}</div></section>`;
 }
 let virtualRangeKey=null,virtualGamesRef=null,virtualRunningRef=null,virtualItems=new Map();
 function captureGameFocus(host){
@@ -374,7 +375,7 @@ function captureLocaleFocus(){
  const active=document.activeElement;
  if(!active||active===document.body||active===document.documentElement)return null;
  if(!['side-slot','top-slot','page-slot','modal-root'].some(id=>el(id)?.contains(active)))return null;
- const focus={id:active.id,action:active.dataset?.action,route:active.dataset?.route,gameId:active.dataset?.id,key:active.dataset?.key};
+ const focus={id:active.id,action:active.dataset?.action,route:active.dataset?.route,gameId:active.dataset?.id,key:active.dataset?.key,page:active.dataset?.page,importIndex:active.dataset?.importIndex};
  if(active instanceof HTMLInputElement||active instanceof HTMLTextAreaElement){
   try{focus.selection=[active.selectionStart,active.selectionEnd,active.selectionDirection]}catch{/* Non-text inputs have no selection range. */}
  }
@@ -383,9 +384,12 @@ function captureLocaleFocus(){
 function restoreLocaleFocus(focus){
  if(!focus)return;
  let target=focus.id?el(focus.id):null;
+ if(!target&&focus.importIndex!==undefined){
+  target=[...el('modal-root')?.querySelectorAll('[data-import-index]')||[]].find(node=>node.dataset.importIndex===focus.importIndex);
+ }
  if(!target&&focus.action){
   target=[...document.querySelectorAll('[data-action]')].find(node=>node.dataset.action===focus.action
-   &&node.dataset.route===focus.route&&node.dataset.id===focus.gameId&&node.dataset.key===focus.key);
+   &&node.dataset.route===focus.route&&node.dataset.id===focus.gameId&&node.dataset.key===focus.key&&node.dataset.page===focus.page);
  }
  if(!target?.isConnected||target.disabled)return;
  target.focus({preventScroll:true});
@@ -644,7 +648,18 @@ async function handleAction(button){const action=button.dataset.action,id=button
   case 'repair-artwork':{button.disabled=true;try{const result=await window.orbit.repairSteamArtwork();const note=result.onlineEnabled===false?t(' Online artwork is off in Settings.'):result.paused?t(' Online artwork was paused by Performance Guard during repair.'):'';toast(t('Updated {covers} portrait covers and {icons} game icons across {games} games.{note}',{covers:formatNumber(result.found),icons:formatNumber(result.icons||0),games:formatNumber(result.attempted),note}))}catch(e){toast(e.message||t('Cover repair failed.'),true)}finally{button.disabled=false}break;}
   case 'import':await performImport();break;
   case 'toggle-all-import':{const allowed=state.imports.flatMap((g,i)=>g.alreadyAdded?[]:[i]).slice(0,MAX_IMPORT_SELECTION);state.selectedImports=state.selectedImports.size?new Set():new Set(allowed);renderModal();break;}
-  case 'import-page':{const direction=button.dataset.page;state.importPage=Math.max(0,Math.min(Math.ceil(state.imports.length/IMPORT_PAGE_SIZE)-1,state.importPage+(direction==='next'?1:-1)));renderModal();el('modal-root').querySelector(`[data-page="${direction}"]:not([disabled])`)?.focus();break;}
+  case 'import-page':{
+   const direction=button.dataset.page;
+   state.importPage=Math.max(0,Math.min(Math.ceil(state.imports.length/IMPORT_PAGE_SIZE)-1,state.importPage+(direction==='next'?1:-1)));
+   renderModal();
+   const root=el('modal-root');
+   const target=root.querySelector(`[data-action="import-page"][data-page="${direction}"]:not([disabled])`)
+    ||root.querySelector('[data-action="import-page"]:not([disabled])')
+    ||root.querySelector('[data-import-index]:not([disabled])')
+    ||root.querySelector('.dialog [data-action="close-modal"]');
+   target?.focus({preventScroll:true});
+   break;
+  }
   case 'choose-exe':{try{const file=await window.orbit.chooseExecutable();if(file){el('game-executable').value=file;await detectGameFile(file);}}catch(e){toast(e.message,true)}break;}
   case 'find-art':{const file=el('game-executable')?.value?.trim();if(!file){toast(t('Choose a game executable first.'),true);break;}await detectGameFile(file);break;}
   case 'find-online-art':{

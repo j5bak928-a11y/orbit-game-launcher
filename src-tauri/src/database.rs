@@ -50,7 +50,90 @@ const SOURCES: [&str; 9] = [
 ];
 const MAX_SESSION_SECONDS: i64 = 7 * 86_400;
 const STATS_MAX_ROWS: i64 = 100_000;
+const BACKUP_MAX_SESSIONS: usize = 100_000;
 type DbResult<T> = Result<T, String>;
+
+#[derive(Clone, Debug)]
+struct BackupSession {
+    id: String,
+    game_id: String,
+    started_at: String,
+    finished_at: String,
+    seconds: i64,
+}
+
+fn valid_backup_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.trim() == value
+        && value.len() <= 128
+        && !value.chars().any(char::is_control)
+}
+
+fn backup_timestamp(value: &Value, field: &str) -> DbResult<(String, DateTime<Utc>)> {
+    let timestamp = value
+        .as_str()
+        .filter(|text| !text.is_empty() && string_length(text) <= 50)
+        .ok_or_else(|| format!("Invalid backup session {field}."))?;
+    let parsed = DateTime::parse_from_rfc3339(timestamp)
+        .map_err(|_| format!("Invalid backup session {field}."))?;
+    Ok((timestamp.to_owned(), parsed.with_timezone(&Utc)))
+}
+
+fn validate_backup_sessions(payload: &Value) -> DbResult<Option<Vec<BackupSession>>> {
+    let Some(sessions) = payload.get("sessions") else {
+        return Ok(None); // Older orbit.library.v1 exports did not contain sessions.
+    };
+    let sessions = sessions
+        .as_array()
+        .ok_or("Backup sessions must be an array.")?;
+    if sessions.len() > BACKUP_MAX_SESSIONS {
+        return Err("Backup exceeds the 100000-session safety limit.".into());
+    }
+    let mut seen = HashSet::with_capacity(sessions.len());
+    let mut validated = Vec::with_capacity(sessions.len());
+    for (index, raw) in sessions.iter().enumerate() {
+        let id = raw
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| valid_backup_id(id))
+            .ok_or_else(|| format!("Invalid backup session ID at index {index}."))?;
+        let game_id = raw
+            .get("game_id")
+            .and_then(Value::as_str)
+            .filter(|id| valid_backup_id(id))
+            .ok_or_else(|| format!("Invalid backup session game ID at index {index}."))?;
+        if !seen.insert(id) {
+            return Err(format!("Duplicate backup session ID: {id}."));
+        }
+        let (started_at, start) = backup_timestamp(&raw["started_at"], "started_at")?;
+        let (finished_at, finish) = backup_timestamp(&raw["finished_at"], "finished_at")?;
+        // A completed zero-second play session can have identical start and
+        // finish timestamps. Preserve it during archival even if statistics
+        // later exclude the zero-duration interval from playtime charts.
+        if finish < start {
+            return Err(format!("Backup session {id} has an invalid time interval."));
+        }
+        let seconds = raw
+            .get("seconds")
+            .and_then(Value::as_f64)
+            .filter(|value| {
+                value.is_finite()
+                    && value.fract() == 0.0
+                    && *value >= 0.0
+                    && *value <= MAX_SESSION_SECONDS as f64
+            })
+            .ok_or_else(|| format!("Backup session {id} has invalid playtime."))?
+            as i64;
+        validated.push(BackupSession {
+            id: id.to_owned(),
+            game_id: game_id.to_owned(),
+            started_at,
+            finished_at,
+            seconds,
+        });
+    }
+    Ok(Some(validated))
+}
 
 #[derive(Clone)]
 struct StatisticsRow {
@@ -1138,8 +1221,15 @@ fn find_duplicate_on(
     find_uri_duplicate_for(conn, field(game, "launch_uri"), except, alias_only)
 }
 
-fn insert_on(conn: &Connection, game: &Value, key: &str) -> DbResult<Value> {
-    let id = Uuid::new_v4().to_string();
+fn insert_on(
+    conn: &Connection,
+    game: &Value,
+    key: &str,
+    backup_id: Option<&str>,
+) -> DbResult<Value> {
+    let id = backup_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     let date = stamp();
     let tags = game["tags"].to_string();
     let args = game["launch_args"].to_string();
@@ -1278,7 +1368,7 @@ fn upsert_on(conn: &Connection, raw: &Value, update_existing: bool) -> DbResult<
         };
         return Ok(json!({"game": existing, "added": false}));
     }
-    Ok(json!({"game": insert_on(conn, &game, &key)?, "added": true}))
+    Ok(json!({"game": insert_on(conn, &game, &key, None)?, "added": true}))
 }
 
 fn iso_date(value: &Value) -> Option<String> {
@@ -1307,6 +1397,44 @@ fn iso_date(value: &Value) -> Option<String> {
             .map(|d| d.and_utc().to_rfc3339_opts(SecondsFormat::Millis, true));
     }
     None
+}
+
+fn restored_play_seconds(raw: &Value) -> i64 {
+    // Number.isSafeInteger in the old JavaScript importer accepts 12500.0.
+    raw.get("total_play_seconds")
+        .and_then(Value::as_f64)
+        .filter(|n| n.is_finite() && *n >= 0.0 && *n <= 9_007_199_254_740_991.0 && n.fract() == 0.0)
+        .map(|n| n.min((100_i64 * 365 * 24 * 3600) as f64) as i64)
+        .unwrap_or(0)
+}
+
+fn restore_metadata_on(conn: &Connection, raw: &Value, id: &str) -> DbResult<()> {
+    let created = iso_date(&raw["created_at"]);
+    let last_played = iso_date(&raw["last_played_at"]);
+    let existing = LibraryDatabase::get_on(conn, id)?;
+    let created = created.unwrap_or_else(|| field(&existing, "created_at").to_owned());
+    conn.execute(
+        "UPDATE games SET total_play_seconds=?1,last_played_at=?2,created_at=?3 WHERE id=?4",
+        params![restored_play_seconds(raw), last_played, created, id],
+    )
+    .map_err(error)?;
+    Ok(())
+}
+
+fn same_backup_game(existing: &Value, incoming: &Value) -> bool {
+    let existing_store = has_store_identity(existing);
+    let incoming_store = has_store_identity(incoming);
+    if existing_store && incoming_store {
+        return field(existing, "source").eq_ignore_ascii_case(field(incoming, "source"))
+            && field(existing, "source_id").eq_ignore_ascii_case(field(incoming, "source_id"));
+    }
+    let old_key = duplicate_key(existing);
+    let incoming_key = duplicate_key(incoming);
+    if !old_key.is_empty() && !incoming_key.is_empty() {
+        return old_key == incoming_key;
+    }
+    field(existing, "source") == field(incoming, "source")
+        && field(existing, "name") == field(incoming, "name")
 }
 
 impl LibraryDatabase {
@@ -1568,15 +1696,236 @@ impl LibraryDatabase {
         Ok(true)
     }
 
-    /// Metadata-only JSON export. The .orbit gzip archive and safe artwork
-    /// installation are handled by the separate backup/packaging layer.
+    /// Metadata and complete historical sessions. The .orbit gzip archive and
+    /// safe artwork installation are handled by the backup/packaging layer.
+    /// Unfinished or invalid sessions make a full-history export impossible;
+    /// report that explicitly instead of silently producing a partial backup.
     pub fn export_json(&self) -> DbResult<Value> {
-        Ok(json!({
+        let tx = self.conn.unchecked_transaction().map_err(error)?;
+        let unfinished: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE finished_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(error)?;
+        if unfinished > 0 {
+            return Err(format!(
+                "Cannot export full session history while {unfinished} session(s) remain unfinished. Finish or recover them first."
+            ));
+        }
+        let games = self.list("name")?;
+        let game_ids: HashSet<&str> = games
+            .as_array()
+            .ok_or("Invalid library for backup.")?
+            .iter()
+            .filter_map(|game| game.get("id").and_then(Value::as_str))
+            .collect();
+        let sessions = {
+            let mut statement = tx
+                .prepare(
+                    "SELECT id,game_id,started_at,finished_at,seconds FROM sessions ORDER BY started_at,id LIMIT ?1",
+                )
+                .map_err(error)?;
+            let rows = statement
+                .query_map([BACKUP_MAX_SESSIONS as i64 + 1], |row| {
+                    Ok(json!({
+                        "id":row.get::<_, String>(0)?,
+                        "game_id":row.get::<_, String>(1)?,
+                        "started_at":row.get::<_, String>(2)?,
+                        "finished_at":row.get::<_, Option<String>>(3)?,
+                        "seconds":row.get::<_, i64>(4)?
+                    }))
+                })
+                .map_err(error)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(error)?;
+            rows
+        };
+        let validated = validate_backup_sessions(&json!({"sessions":sessions}))?
+            .expect("sessions array is present");
+        if validated
+            .iter()
+            .any(|session| !game_ids.contains(session.game_id.as_str()))
+        {
+            return Err("Session history contains a missing game reference.".into());
+        }
+        let result = json!({
             "format": "orbit.library.v1",
             "exported_at": stamp(),
             "settings": self.get_settings()?,
-            "games": self.list("name")?
+            "games": games,
+            "sessions": sessions
+        });
+        tx.commit().map_err(error)?;
+        Ok(result)
+    }
+
+    fn restore_with_sessions(
+        &mut self,
+        games: &[Value],
+        sessions: &[BackupSession],
+        settings: Option<&Value>,
+        dry_run: bool,
+    ) -> DbResult<Value> {
+        // Validate all source IDs, game records and references before taking a
+        // writer lock. A broken history must never import only some games.
+        let mut source_ids = HashSet::with_capacity(games.len());
+        let mut cleaned = Vec::with_capacity(games.len());
+        for game in games {
+            let source_id = game
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| valid_backup_id(id))
+                .ok_or("A game in a session-history backup has no valid ID.")?;
+            if !source_ids.insert(source_id.to_owned()) {
+                return Err(format!(
+                    "Duplicate game ID in session-history backup: {source_id}."
+                ));
+            }
+            cleaned.push(clean_game(game, None)?);
+        }
+        for session in sessions {
+            if !source_ids.contains(&session.game_id) {
+                return Err(format!(
+                    "Backup session {} references a game absent from the backup.",
+                    session.id
+                ));
+            }
+        }
+
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(error)?;
+        let mut id_map = HashMap::with_capacity(games.len());
+        let mut target_ids = HashSet::with_capacity(games.len());
+        let (mut imported, mut skipped) = (0_usize, 0_usize);
+        for (raw, parsed) in games.iter().zip(cleaned.iter()) {
+            let source_id = field(raw, "id");
+            let key = duplicate_key(parsed);
+            let by_id = Self::get_on(&tx, source_id)?;
+            let destination = if !by_id.is_null() {
+                // A matching ID with a different source/product is a collision.
+                // Never attach the incoming history to that unrelated record.
+                if !same_backup_game(&by_id, parsed)
+                    || find_duplicate_on(&tx, parsed, &key, source_id)?.is_some()
+                {
+                    return Err(format!(
+                        "Backup game ID {source_id} conflicts with an existing game."
+                    ));
+                }
+                skipped += 1;
+                source_id.to_owned()
+            } else if let Some(existing_id) = find_duplicate_on(&tx, parsed, &key, "")? {
+                skipped += 1;
+                existing_id
+            } else {
+                let inserted = insert_on(&tx, parsed, &key, Some(source_id))?;
+                let id = field(&inserted, "id").to_owned();
+                restore_metadata_on(&tx, raw, &id)?;
+                imported += 1;
+                id
+            };
+            // Two different source games may use one executable. History must
+            // never collapse into one destination game as a side effect of
+            // duplicate detection or restore ordering.
+            if !target_ids.insert(destination.clone()) {
+                return Err(format!(
+                    "Multiple backup games resolve to the same destination game: {destination}."
+                ));
+            }
+            id_map.insert(source_id.to_owned(), destination);
+        }
+
+        let (mut sessions_imported, mut sessions_skipped) = (0_usize, 0_usize);
+        for session in sessions {
+            let destination = id_map
+                .get(&session.game_id)
+                .ok_or("Session game mapping is incomplete.")?;
+            let existing: Option<(String, String, Option<String>, i64)> = tx
+                .query_row(
+                    "SELECT game_id,started_at,finished_at,seconds FROM sessions WHERE id=?1",
+                    [&session.id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .optional()
+                .map_err(error)?;
+            if let Some((game_id, started_at, finished_at, seconds)) = existing {
+                let same_start = DateTime::parse_from_rfc3339(&started_at).ok()
+                    == DateTime::parse_from_rfc3339(&session.started_at).ok();
+                let same_finish = finished_at
+                    .as_deref()
+                    .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                    == DateTime::parse_from_rfc3339(&session.finished_at).ok();
+                if game_id != *destination
+                    || !same_start
+                    || !same_finish
+                    || seconds != session.seconds
+                {
+                    return Err(format!(
+                        "Backup session ID {} conflicts with existing history.",
+                        session.id
+                    ));
+                }
+                sessions_skipped += 1;
+            } else {
+                tx.execute(
+                    "INSERT INTO sessions(id,game_id,started_at,finished_at,seconds) VALUES (?1,?2,?3,?4,?5)",
+                    params![session.id, destination, session.started_at, session.finished_at, session.seconds],
+                )
+                .map_err(error)?;
+                // Backed-up games already contain aggregate playtime. Existing
+                // destination games keep their own aggregate. No credit here.
+                sessions_imported += 1;
+            }
+        }
+        if dry_run {
+            // Exercise the exact same game-ID remapping and session collision
+            // checks as a real restore, but roll back every temporary write.
+            // The portable decoder calls this BEFORE installing any artwork.
+            tx.rollback().map_err(error)?;
+            return Ok(Value::Null);
+        }
+        tx.commit().map_err(error)?;
+
+        let mut errors = Vec::new();
+        let mut settings_restored = false;
+        if let Some(value) = settings.filter(|value| value.is_object()) {
+            match self.save_settings(value) {
+                Ok(_) => settings_restored = true,
+                Err(message) => errors.push(format!("Settings: {message}")),
+            }
+        }
+        Ok(json!({
+            "imported":imported, "skipped":skipped, "errors":errors,
+            "settingsRestored":settings_restored,
+            "sessionsImported":sessions_imported,
+            "sessionsSkipped":sessions_skipped
         }))
+    }
+
+    /// Preflight an untrusted portable restore under a real rollback-only SQL
+    /// transaction. This catches mapping and session-ID collisions *before*
+    /// the portable decoder installs a single new artwork file.
+    pub fn preflight_restore_json(&mut self, payload: &Value) -> DbResult<()> {
+        if payload.get("format").and_then(Value::as_str) != Some("orbit.library.v1") {
+            return Err("Unrecognized Orbit backup format.".into());
+        }
+        let games = payload
+            .get("games")
+            .and_then(Value::as_array)
+            .ok_or("Unrecognized Orbit backup format.")?;
+        if games.len() > 100_000 {
+            return Err("Backup game count exceeds the safe limit.".into());
+        }
+        for game in games {
+            clean_game(game, None)?;
+        }
+        if let Some(sessions) = validate_backup_sessions(payload)? {
+            self.restore_with_sessions(games, &sessions, None, true)?;
+        }
+        Ok(())
     }
 
     /// Accepts the exact JSON shape exported by Electron's exportLibrary.
@@ -1592,6 +1941,10 @@ impl LibraryDatabase {
             .ok_or_else(|| "Unrecognized Orbit backup format.".to_string())?;
         if games.len() > 100_000 {
             return Err("Unrecognized Orbit backup format.".into());
+        }
+        let sessions = validate_backup_sessions(payload)?;
+        if let Some(sessions) = sessions {
+            return self.restore_with_sessions(games, &sessions, payload.get("settings"), false);
         }
         let games = games.clone();
         let settings = payload.get("settings").cloned();
@@ -2061,6 +2414,365 @@ mod tests {
             assert!(db
                 .restore_json(&json!({"format":"unknown","games":[]}))
                 .is_err());
+        });
+    }
+
+    #[test]
+    fn completed_history_restores_multiple_games_same_executable_and_is_idempotent() {
+        with_database(|destination, path| {
+            let mut source = LibraryDatabase::open(path.with_file_name("source.sqlite")).unwrap();
+            let executable = r"C:\Orbit\Shared\Game.exe";
+            let first = source
+                .upsert(&json!({
+                    "name":"Shared edition A","source":"epic","source_id":"A",
+                    "executable":executable
+                }))
+                .unwrap()["game"]
+                .clone();
+            let second = source
+                .upsert(&json!({
+                    "name":"Shared edition B","source":"epic","source_id":"B",
+                    "executable":executable
+                }))
+                .unwrap()["game"]
+                .clone();
+            let first_id = field(&first, "id");
+            let second_id = field(&second, "id");
+            assert_ne!(first_id, second_id);
+            for (session_id, game_id, start, end, seconds) in [
+                (
+                    "hist-1",
+                    first_id,
+                    "2025-01-02T10:00:00Z",
+                    "2025-01-02T10:01:00Z",
+                    60_i64,
+                ),
+                (
+                    "hist-2",
+                    second_id,
+                    "2025-01-03T10:00:00Z",
+                    "2025-01-03T10:02:00Z",
+                    120_i64,
+                ),
+            ] {
+                source.conn.execute(
+                    "INSERT INTO sessions(id,game_id,started_at,finished_at,seconds) VALUES (?1,?2,?3,?4,?5)",
+                    params![session_id, game_id, start, end, seconds],
+                ).unwrap();
+                source
+                    .conn
+                    .execute(
+                        "UPDATE games SET total_play_seconds=?1,last_played_at=?2 WHERE id=?3",
+                        params![seconds, end, game_id],
+                    )
+                    .unwrap();
+            }
+            let backup = source.export_json().unwrap();
+            assert_eq!(backup["format"], "orbit.library.v1");
+            assert_eq!(backup["sessions"].as_array().unwrap().len(), 2);
+            assert_eq!(backup["sessions"][0]["id"], "hist-1");
+            let first_report = destination.restore_json(&backup).unwrap();
+            assert_eq!(first_report["imported"], 2);
+            assert_eq!(first_report["sessionsImported"], 2);
+            assert_eq!(first_report["sessionsSkipped"], 0);
+            assert_eq!(destination.count().unwrap(), 2);
+            assert_eq!(destination.get(first_id).unwrap()["total_play_seconds"], 60);
+            assert_eq!(
+                destination.get(second_id).unwrap()["total_play_seconds"],
+                120
+            );
+            assert_eq!(
+                destination.export_json().unwrap()["sessions"],
+                backup["sessions"]
+            );
+
+            let repeat = destination.restore_json(&backup).unwrap();
+            assert_eq!(repeat["imported"], 0);
+            assert_eq!(repeat["skipped"], 2);
+            assert_eq!(repeat["sessionsImported"], 0);
+            assert_eq!(repeat["sessionsSkipped"], 2);
+            assert_eq!(destination.count().unwrap(), 2);
+            assert_eq!(destination.get(first_id).unwrap()["total_play_seconds"], 60);
+            assert_eq!(
+                destination.get(second_id).unwrap()["total_play_seconds"],
+                120
+            );
+
+            let current = destination.start_session(first_id).unwrap();
+            destination
+                .checkpoint_sessions(&[json!({"id":current,"seconds":35})])
+                .unwrap();
+            assert!(destination.finish_session(&current, 35).unwrap());
+            assert!(!destination.finish_session(&current, 35).unwrap());
+            assert_eq!(destination.get(first_id).unwrap()["total_play_seconds"], 95);
+            assert_eq!(
+                destination.restore_json(&backup).unwrap()["sessionsSkipped"],
+                2
+            );
+            assert_eq!(destination.get(first_id).unwrap()["total_play_seconds"], 95);
+        });
+    }
+
+    #[test]
+    fn history_merges_into_existing_store_identity_without_crediting_it_again() {
+        with_database(|destination, _| {
+            let existing = destination
+                .upsert(&json!({
+                    "name":"Existing Steam title","source":"steam","source_id":"S-10"
+                }))
+                .unwrap()["game"]
+                .clone();
+            let target_id = field(&existing, "id");
+            let backup = json!({
+                "format":"orbit.library.v1",
+                "games":[{"id":"previous-machine-id","name":"Steam title",
+                    "source":"steam","source_id":"s-10","total_play_seconds":999}],
+                "sessions":[{"id":"previous-session","game_id":"previous-machine-id",
+                    "started_at":"2025-01-02T11:00:00+01:00",
+                    "finished_at":"2025-01-02T11:01:00+01:00","seconds":60}]
+            });
+            let result = destination.restore_json(&backup).unwrap();
+            assert_eq!(result["skipped"], 1);
+            assert_eq!(result["sessionsImported"], 1);
+            assert_eq!(destination.count().unwrap(), 1);
+            assert_eq!(destination.get(target_id).unwrap()["total_play_seconds"], 0);
+            let mapped: String = destination
+                .conn
+                .query_row(
+                    "SELECT game_id FROM sessions WHERE id='previous-session'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(mapped, target_id);
+            assert_eq!(
+                destination.restore_json(&backup).unwrap()["sessionsSkipped"],
+                1
+            );
+            assert_eq!(destination.get(target_id).unwrap()["total_play_seconds"], 0);
+        });
+    }
+
+    #[test]
+    fn malformed_or_unmappable_history_rolls_back_entire_restore() {
+        with_database(|db, _| {
+            let base = json!({
+                "format":"orbit.library.v1",
+                "games":[{"id":"backup-game","name":"Backup game","source":"gog",
+                          "source_id":"backup-game-id","total_play_seconds":80}],
+                "settings":{"theme":"light"},
+                "sessions":[{"id":"session-1","game_id":"backup-game",
+                    "started_at":"2025-01-02T10:00:00Z",
+                    "finished_at":"2025-01-02T10:01:00Z","seconds":60}]
+            });
+            let mut bad_cases = Vec::new();
+            let mut open = base.clone();
+            open["sessions"][0]["finished_at"] = Value::Null;
+            bad_cases.push(open);
+            let mut negative = base.clone();
+            negative["sessions"][0]["seconds"] = json!(-1);
+            bad_cases.push(negative);
+            let mut reversed = base.clone();
+            reversed["sessions"][0]["finished_at"] = json!("2025-01-02T09:00:00Z");
+            bad_cases.push(reversed);
+            let mut unknown = base.clone();
+            unknown["sessions"][0]["game_id"] = json!("missing-game");
+            bad_cases.push(unknown);
+            let mut duplicated = base.clone();
+            duplicated["sessions"]
+                .as_array_mut()
+                .unwrap()
+                .push(base["sessions"][0].clone());
+            bad_cases.push(duplicated);
+            let mut bad_id = base.clone();
+            bad_id["games"][0]["id"] = json!(" ");
+            bad_cases.push(bad_id);
+            let mut not_array = base.clone();
+            not_array["sessions"] = json!({});
+            bad_cases.push(not_array);
+            for case in bad_cases {
+                assert!(db.restore_json(&case).is_err());
+                assert_eq!(db.count().unwrap(), 0);
+                assert_eq!(db.get_settings().unwrap()["theme"], "dark");
+            }
+
+            // The session conflict happens after the new game was inserted.
+            // The enclosing transaction must roll back that game as well.
+            let other = db.upsert(&json!({"name":"Unrelated live game"})).unwrap();
+            let other_id = field(&other["game"], "id");
+            db.conn.execute(
+                "INSERT INTO sessions(id,game_id,started_at,finished_at,seconds) VALUES ('session-1',?1,'2025-01-02T10:00:00Z','2025-01-02T10:02:00Z',120)",
+                [other_id]
+            ).unwrap();
+            assert!(db.restore_json(&base).unwrap_err().contains("conflicts"));
+            assert_eq!(db.count().unwrap(), 1);
+            assert!(db.get("backup-game").unwrap().is_null());
+            assert_eq!(db.get_settings().unwrap()["theme"], "dark");
+            let seconds: i64 = db
+                .conn
+                .query_row(
+                    "SELECT seconds FROM sessions WHERE id='session-1'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(seconds, 120);
+        });
+    }
+
+    #[test]
+    fn conflicting_game_ids_do_not_steal_history_or_overwrite_existing_records() {
+        with_database(|db, _| {
+            let existing = db
+                .upsert(&json!({
+                    "name":"Real Steam game","source":"steam","source_id":"real"
+                }))
+                .unwrap()["game"]
+                .clone();
+            let existing_id = field(&existing, "id");
+            let incoming = json!({
+                "format":"orbit.library.v1",
+                "games":[{"id":existing_id,"name":"Imposter","source":"steam","source_id":"other"}],
+                "sessions":[{"id":"stolen-history","game_id":existing_id,
+                    "started_at":"2025-01-02T10:00:00Z",
+                    "finished_at":"2025-01-02T10:01:00Z","seconds":60}]
+            });
+            assert!(db
+                .restore_json(&incoming)
+                .unwrap_err()
+                .contains("conflicts"));
+            assert_eq!(db.count().unwrap(), 1);
+            assert_eq!(db.get(existing_id).unwrap()["name"], "Real Steam game");
+            let count: i64 = db
+                .conn
+                .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 0);
+        });
+    }
+
+    #[test]
+    fn portable_restore_preflight_rolls_back_every_temporary_write() {
+        with_database(|db, _| {
+            let archived = json!({
+                "format":"orbit.library.v1",
+                "games":[{"id":"archive-game","name":"Archived game","source":"manual"}],
+                "sessions":[{"id":"archive-session","game_id":"archive-game",
+                    "started_at":"2025-01-02T10:00:00Z",
+                    "finished_at":"2025-01-02T10:01:00Z","seconds":60}]
+            });
+            db.preflight_restore_json(&archived).unwrap();
+            assert_eq!(db.count().unwrap(), 0, "preflight must not add a game");
+            let rows: i64 = db
+                .conn
+                .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(rows, 0, "preflight must not add a session");
+
+            assert_eq!(db.restore_json(&archived).unwrap()["sessionsImported"], 1);
+            db.preflight_restore_json(&archived).unwrap();
+            assert_eq!(db.count().unwrap(), 1);
+
+            let mut conflicting = archived.clone();
+            conflicting["sessions"][0]["seconds"] = json!(42);
+            assert!(db.preflight_restore_json(&conflicting).is_err());
+            let elapsed: i64 = db
+                .conn
+                .query_row(
+                    "SELECT seconds FROM sessions WHERE id='archive-session'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(elapsed, 60, "rejected archive cannot change a session");
+        });
+    }
+
+    #[test]
+    fn export_rejects_open_invalid_and_excessive_session_history() {
+        with_database(|db, _| {
+            let game = db.upsert(&json!({"name":"Export guards"})).unwrap()["game"].clone();
+            let id = field(&game, "id");
+            let running = db.start_session(id).unwrap();
+            assert!(db.export_json().unwrap_err().contains("unfinished"));
+            assert!(db.finish_session(&running, 0).unwrap());
+            // A corrupt persisted row must not silently disappear from a backup.
+            db.conn
+                .execute(
+                    "UPDATE sessions SET finished_at='bad timestamp' WHERE id=?1",
+                    [&running],
+                )
+                .unwrap();
+            assert!(db.export_json().is_err());
+            db.conn.execute(
+                "UPDATE sessions SET finished_at='2025-01-02T10:01:00Z',started_at='2025-01-02T10:00:00Z' WHERE id=?1",
+                [&running]
+            ).unwrap();
+            assert!(db.export_json().is_ok());
+            db.conn.execute(
+                "WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n < 100001)
+                 INSERT INTO sessions(id,game_id,started_at,finished_at,seconds)
+                 SELECT 'bulk-' || n,?1,'2025-01-02T10:00:00Z','2025-01-02T10:01:00Z',60 FROM seq",
+                [id]
+            ).unwrap();
+            assert!(db.export_json().unwrap_err().contains("100000"));
+        });
+    }
+
+    #[test]
+    fn legacy_empty_backup_stays_compatible_without_session_array() {
+        with_database(|db, _| {
+            let result = db
+                .restore_json(&json!({
+                    "format":"orbit.library.v1","games":[],"settings":{"theme":"light"}
+                }))
+                .unwrap();
+            assert_eq!(result["imported"], 0);
+            assert_eq!(result["settingsRestored"], true);
+            assert!(result.get("sessionsImported").is_none());
+            assert_eq!(db.count().unwrap(), 0);
+        });
+    }
+
+    #[test]
+    fn zero_second_completed_session_with_equal_timestamps_is_archived() {
+        with_database(|destination, path| {
+            let mut source =
+                LibraryDatabase::open(path.with_file_name("source-zero.sqlite")).unwrap();
+            let game = source
+                .upsert(&json!({
+                    "name":"Zero-second historic session","source":"steam","source_id":"zero"
+                }))
+                .unwrap()["game"]
+                .clone();
+            let id = field(&game, "id");
+            source
+                .conn
+                .execute(
+                    "INSERT INTO sessions(id,game_id,started_at,finished_at,seconds)
+                 VALUES ('zero-session',?1,'2025-03-01T12:00:00Z','2025-03-01T12:00:00Z',0)",
+                    [id],
+                )
+                .unwrap();
+            let backup = source.export_json().unwrap();
+            assert_eq!(backup["sessions"][0]["seconds"], 0);
+            assert_eq!(
+                backup["sessions"][0]["started_at"],
+                backup["sessions"][0]["finished_at"]
+            );
+            assert_eq!(
+                destination.restore_json(&backup).unwrap()["sessionsImported"],
+                1
+            );
+            assert_eq!(
+                destination.restore_json(&backup).unwrap()["sessionsSkipped"],
+                1
+            );
+            assert_eq!(
+                destination.export_json().unwrap()["sessions"],
+                backup["sessions"]
+            );
+            assert_eq!(destination.get(id).unwrap()["total_play_seconds"], 0);
         });
     }
 

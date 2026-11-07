@@ -29,8 +29,8 @@ The main desktop application uses **Electron**. A separate, **experimental Rust 
 
 | | Electron desktop | Rust / Tauri preview |
 | --- | --- | --- |
-| Version in this repository | **0.2.7** | **0.2.6** |
-| Status | Main desktop implementation | Experimental Windows preview |
+| Version in this repository | **0.2.7** | **0.2.7** |
+| Status | Main desktop implementation | Rust reliability update under development (not yet published) |
 | UI | Orbit HTML/CSS/JavaScript | The same interface, hosted in WebView2 |
 | Backend | Node.js/Electron, with a native Windows process helper | Rust for library, discovery, tracking, artwork, and backups |
 | Windows packaging | NSIS setup and portable EXE | NSIS setup, MSI, and portable EXE |
@@ -42,7 +42,7 @@ The editions have **different application IDs and data directories**. On first l
 
 **Direction:** make the fast, local-first Rust/Tauri edition the primary Windows launcher, then develop library organization, a console-quality controller experience, and optional offline intelligence. Keep the existing Electron edition as a fallback during the transition; do not throw away users' libraries or playtime history to accelerate a version bump.
 
-These are **planned milestones, not released features or promised dates**. The NextGen development branch also uses version `0.2.7` for its Electron package; the versions below refer specifically to **future Rust releases**.
+These are **planned milestones, not released features or promised dates**. Electron also uses version `0.2.7`; Rust `0.2.7` is the current reliability development milestone, not an automatically published release.
 
 | Planned Rust version | Theme | Deliverable / exit criteria |
 | --- | --- | --- |
@@ -180,11 +180,11 @@ Open **Statistics** in the sidebar to view the last 7 and 30 local calendar days
 
 Orbit stores its library, play history, preferences, and cached artwork locally. Use **Settings → Open folder** to find the current edition's data directory.
 
-- **Portable `.orbit` backup:** includes library metadata, settings, and cached artwork.
-- **JSON export:** library metadata without embedded artwork.
-- **Restore:** imports supported entries without deleting installed games; game paths may need adjustment on a different computer.
+- **Portable `.orbit` backup:** includes library metadata, settings, completed play-session history, and cached artwork (within size limits).
+- **JSON export:** includes game records, settings, and completed play-session history; artwork bytes are **not embedded**.
+- **Restore:** imports supported entries and historical sessions without deleting installed games or inventing playtime; game paths may need adjustment on another computer. Repeating a restore does not re-credit the same session ID.
 
-**Rust migration limit:** a Rust `.orbit` or JSON backup currently saves aggregate game playtime but **not the individual completed-session rows** used by the daily/weekly/monthly statistics. Do not treat it as a full history backup. A first-run migration into an empty Rust profile copies the Electron SQLite library read-only, including sessions, but an existing Rust profile does not automatically re-import later Electron changes. Keep independent raw SQLite backups and the Electron fallback until migration and full session-history restore have been verified.
+**Rust 0.2.7 reliability behavior:** The new backup contract saves individual **completed** session records, retaining original session identities and timestamps. Export refuses to claim a complete history while an unfinished session remains; finish any running games before exporting. Older `orbit.library.v1` / `orbit.portable.v1` backups lacking a `sessions` array still import, but **missing historical sessions cannot be reconstructed from aggregate game counters**. First-run migration into an empty Rust profile copies the Electron SQLite library read-only (including sessions). Before the first Rust 0.2.7 database open, an existing Rust library receives a one-time `library.before-rust-0.2.7.sqlite` snapshot alongside it. **Neither edition automatically syncs subsequent changes.** Keep the Electron fallback and independent raw SQLite backups until installed Windows upgrade, restore, and live-session tests are complete.
 
 Orbit does not require an Orbit account or upload game executables. Online artwork requests are optional. Store clients and individual games can still have their own online requirements.
 

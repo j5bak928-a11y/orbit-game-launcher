@@ -4,6 +4,9 @@ mod database;
 mod native;
 mod tray;
 
+#[cfg(test)]
+mod migration_reliability_tests;
+
 use database::LibraryDatabase;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -45,13 +48,23 @@ fn legacy_library_dir() -> Option<PathBuf> {
 // The first Tauri launch snapshots the old Electron database with SQLite's own
 // VACUUM INTO. Existing Electron data remains untouched and usable.
 fn import_legacy_library(destination: &Path) -> Result<(), String> {
-    let target_db = destination.join("library.sqlite");
-    if target_db.exists() {
-        return Ok(());
-    }
     let Some(old) = legacy_library_dir() else {
         return Ok(());
     };
+    import_legacy_library_from(&old, destination)
+}
+
+/// Separate source/destination arguments let us prove first-run migration on
+/// disposable SQLite/WAL fixtures, never on an installed Electron profile.
+fn import_legacy_library_from(old: &Path, destination: &Path) -> Result<(), String> {
+    let target_db = destination.join("library.sqlite");
+    if target_db.exists() {
+        let metadata = std::fs::symlink_metadata(&target_db).map_err(|e| e.to_string())?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() == 0 {
+            return Err("Existing Rust library.sqlite is empty or not a safe regular file. Refusing to replace it or silently ignore the legacy Electron library; inspect or restore your backup manually.".into());
+        }
+        return Ok(());
+    }
     std::fs::create_dir_all(destination).map_err(|e| e.to_string())?;
     let src = rusqlite::Connection::open_with_flags(
         old.join("library.sqlite"),
@@ -66,36 +79,142 @@ fn import_legacy_library(destination: &Path) -> Result<(), String> {
             "Cannot copy existing Orbit library safely: {error}"
         ));
     }
-    let from = old.join("artwork");
-    let to = destination.join("artwork");
-    if from.is_dir() {
-        std::fs::create_dir_all(&to).map_err(|e| e.to_string())?;
-        for entry in std::fs::read_dir(from).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if !valid_art_name(&name) {
-                continue;
+    let result = (|| -> Result<(), String> {
+        let from = old.join("artwork");
+        let to = destination.join("artwork");
+        if from.is_dir() {
+            if std::fs::symlink_metadata(&from)
+                .map_err(|e| e.to_string())?
+                .file_type()
+                .is_symlink()
+            {
+                return Err(
+                    "Legacy artwork directory is a symlink; migration will not follow it.".into(),
+                );
             }
-            if !entry.file_type().map_err(|e| e.to_string())?.is_file() {
-                continue;
+            std::fs::create_dir_all(&to).map_err(|e| e.to_string())?;
+            let destination_metadata = std::fs::symlink_metadata(&to).map_err(|e| e.to_string())?;
+            if !destination_metadata.is_dir() || destination_metadata.file_type().is_symlink() {
+                return Err("Destination artwork directory is not a safe local directory.".into());
             }
-            let metadata = entry.metadata().map_err(|e| e.to_string())?;
-            if metadata.len() <= 15 * 1024 * 1024 {
-                let target = to.join(name.as_ref());
-                if !target.exists() {
-                    std::fs::copy(entry.path(), target).map_err(|e| e.to_string())?;
+            for entry in std::fs::read_dir(from).map_err(|e| e.to_string())? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if !valid_art_name(&name) {
+                    continue;
                 }
+                if !entry.file_type().map_err(|e| e.to_string())?.is_file() {
+                    continue;
+                }
+                let metadata = entry.metadata().map_err(|e| e.to_string())?;
+                if metadata.len() > 15 * 1024 * 1024 {
+                    return Err(format!("Legacy artwork {name} exceeds the safe 15 MB limit; migration was not completed."));
+                }
+                let bytes = std::fs::read(entry.path()).map_err(|e| e.to_string())?;
+                if bytes.len() > 15 * 1024 * 1024 {
+                    return Err(format!("Legacy artwork {name} changed while migrating; retry without running another Orbit edition."));
+                }
+                let target = to.join(name.as_ref());
+                if let Ok(existing) = std::fs::symlink_metadata(&target) {
+                    if existing.file_type().is_symlink()
+                        || !existing.is_file()
+                        || existing.len() > 15 * 1024 * 1024
+                        || std::fs::read(&target).map_err(|e| e.to_string())? != bytes
+                    {
+                        return Err(format!(
+                            "Conflicting existing artwork {name}; migration will not overwrite it."
+                        ));
+                    }
+                    continue;
+                }
+                // Reserve the final file with a hard link to a complete
+                // temporary copy; a failed copy cannot leave a truncated
+                // image under its final UUID filename.
+                let temporary_artwork =
+                    to.join(format!(".orbit-art-import-{}.tmp", uuid::Uuid::new_v4()));
+                let installed = (|| -> Result<(), String> {
+                    std::fs::write(&temporary_artwork, bytes).map_err(|e| e.to_string())?;
+                    std::fs::hard_link(&temporary_artwork, &target).map_err(|e| e.to_string())
+                })();
+                let _ = std::fs::remove_file(&temporary_artwork);
+                installed?;
             }
         }
-    }
-    // Commit the snapshot only when all required artwork is copied. A failed
-    // import leaves Electron's database intact and is retried on next launch.
-    std::fs::rename(&temp_db, &target_db).map_err(|e| {
+        // Commit only after artwork has been copied. No live Electron rows
+        // or WAL files are modified by the read-only SQLite source handle.
+        std::fs::rename(&temp_db, &target_db)
+            .map_err(|e| format!("Cannot finalize Orbit library migration: {e}"))
+    })();
+    if result.is_err() {
         let _ = std::fs::remove_file(&temp_db);
-        format!("Cannot finalize Orbit library migration: {e}")
-    })?;
-    Ok(())
+    }
+    result
+}
+
+/// One-time, consistent backup *before* opening/migrating an existing Rust
+/// preview library. Unlike copying library.sqlite directly, SQLite VACUUM
+/// INTO includes committed WAL transactions. Never overwrite a prior backup.
+fn snapshot_rust_library_before_upgrade(destination: &Path) -> Result<bool, String> {
+    let current = destination.join("library.sqlite");
+    let backup = destination.join("library.before-rust-0.2.7.sqlite");
+    if !current.exists() {
+        return Ok(false);
+    }
+    if backup.exists() {
+        let metadata = std::fs::symlink_metadata(&backup).map_err(|e| e.to_string())?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() < 100 {
+            return Err("Existing Orbit pre-upgrade backup is not a usable SQLite file; refusing to treat it as recovery protection.".into());
+        }
+        // Validate the cheap SQLite header on every subsequent launch. A full
+        // integrity scan belongs in explicit recovery QA, not the cold path.
+        use std::io::Read as _;
+        let mut header = [0u8; 16];
+        std::fs::File::open(&backup)
+            .and_then(|mut file| file.read_exact(&mut header))
+            .map_err(|e| format!("Cannot verify pre-upgrade backup: {e}"))?;
+        if &header != b"SQLite format 3\0" {
+            return Err("Existing Orbit pre-upgrade backup has an invalid SQLite header.".into());
+        }
+        // A random SQLite file is not a valid Orbit recovery point. Verify
+        // the three persistent tables via a cheap read-only schema query;
+        // avoid a full integrity scan on every cold startup.
+        let verified = rusqlite::Connection::open_with_flags(
+            &backup,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .and_then(|connection| {
+            connection.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('games','sessions','settings')",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+        })
+        .map_err(|e| format!("Cannot verify Orbit pre-upgrade backup schema: {e}"))?;
+        if verified != 3 {
+            return Err("Existing pre-upgrade SQLite file does not contain the Orbit library, sessions and settings tables.".into());
+        }
+        return Ok(false);
+    }
+    let metadata = std::fs::symlink_metadata(&current).map_err(|e| e.to_string())?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() == 0 {
+        return Err("Existing Orbit library is not a regular SQLite file.".into());
+    }
+    let source =
+        rusqlite::Connection::open_with_flags(&current, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| format!("Cannot read existing Rust preview library: {e}"))?;
+    let temporary = destination.join(format!(".orbit-upgrade-{}.sqlite", uuid::Uuid::new_v4()));
+    let result = (|| -> Result<(), String> {
+        source
+            .execute("VACUUM INTO ?1", [temporary.to_string_lossy().as_ref()])
+            .map_err(|e| format!("Cannot create safe pre-upgrade snapshot: {e}"))?;
+        std::fs::rename(&temporary, &backup)
+            .map_err(|e| format!("Cannot finalize safe pre-upgrade snapshot: {e}"))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(temporary);
+    }
+    result.map(|()| true)
 }
 
 fn valid_art_name(name: &str) -> bool {
@@ -601,6 +720,12 @@ fn write_json_backup(path: &Path, payload: &Value) -> Result<(), String> {
             .open(&temporary)
             .map_err(|e| e.to_string())?;
         serde_json::to_writer_pretty(&mut output, payload).map_err(|e| e.to_string())?;
+        if output.metadata().map_err(|e| e.to_string())?.len() > 128 * 1024 * 1024 {
+            return Err(
+                "JSON backup exceeds the 128 MB restore limit; no incomplete export was saved."
+                    .into(),
+            );
+        }
         output.flush().map_err(|e| e.to_string())?;
         output.sync_all().map_err(|e| e.to_string())?;
         drop(output);
@@ -948,11 +1073,10 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             else {
                 return Ok(Value::Null);
             };
-            let db = state.db.lock().unwrap();
-            let games = db.list("name")?;
-            let count = games.as_array().map(|x| x.len()).unwrap_or(0);
-            let payload = json!({"format":"orbit.library.v1","exported_at":chrono::Utc::now().to_rfc3339(),"settings":db.get_settings()?,"games":games});
-            drop(db);
+            // Export is one SQLite snapshot of games, settings and completed
+            // sessions. Incomplete live sessions must not be silently omitted.
+            let payload = state.db.lock().unwrap().export_json()?;
+            let count = payload["games"].as_array().map_or(0, Vec::len);
             if path
                 .extension()
                 .and_then(|s| s.to_str())
@@ -973,8 +1097,16 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             if metadata.len() > 128 * 1024 * 1024 {
                 return Err("Backup exceeds 128MB".into());
             }
+            // Retain DB ownership through portable archive preflight, artwork
+            // installation and the eventual session transaction, so no other
+            // window command can invalidate the identity mapping between the
+            // validation and commit. Native playtime tracking continues after
+            // this explicit, bounded user-requested restore operation.
+            let mut db = state.db.lock().unwrap();
             let payload = if path.extension().and_then(|s| s.to_str()) == Some("orbit") {
-                backup::import_backup(&path, &state.artwork_dir)?
+                backup::import_backup_checked(&path, &state.artwork_dir, |library| {
+                    db.preflight_restore_json(library)
+                })?
             } else {
                 serde_json::from_slice::<Value>(&std::fs::read(&path).map_err(|e| e.to_string())?)
                     .map_err(|e| e.to_string())?
@@ -986,43 +1118,30 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             if games.len() > 100_000 {
                 return Err("Too many games in backup".into());
             }
-            let mut imported = 0;
-            let mut skipped = 0;
-            let mut errors = Vec::new();
-            let mut db = state.db.lock().unwrap();
-            for g in games {
-                let mut clean = g.clone();
+            let mut clean_payload = payload.clone();
+            let clean_games = clean_payload["games"]
+                .as_array_mut()
+                .ok_or("Invalid game list")?;
+            // Artwork tokens have already been extracted/validated by backup;
+            // a JSON backup may only refer to safe, existing local files.
+            for (clean, original) in clean_games.iter_mut().zip(games.iter()) {
                 if let Some(game) = clean.as_object_mut() {
                     for field in ["cover", "banner", "icon"] {
                         game.insert(
                             field.into(),
-                            json!(restored_artwork_token(&g[field], &state.artwork_dir)),
+                            json!(restored_artwork_token(&original[field], &state.artwork_dir)),
                         );
                     }
                 }
-                match db.restore_game(&clean) {
-                    Ok(out) => {
-                        if out["added"].as_bool() == Some(true) {
-                            imported += 1;
-                        } else {
-                            skipped += 1;
-                        }
-                    }
-                    Err(err) => errors.push(err),
-                }
             }
-            let settings_restored = if payload.get("settings").and_then(Value::as_object).is_some()
-            {
-                db.save_settings(&payload["settings"]).is_ok()
-            } else {
-                false
-            };
+            // The database layer validates session IDs/references before
+            // writing, maps old game IDs to their imported/deduplicated IDs,
+            // and imports history without adding playtime twice.
+            let result = db.restore_json(&clean_payload)?;
             drop(db);
             changed(app, &state, vec![], vec![], "restore", true);
             queue_artwork_scan(app);
-            Ok(
-                json!({"imported":imported,"skipped":skipped,"errors":errors,"settingsRestored":settings_restored}),
-            )
+            Ok(result)
         }
         _ => Err(format!("Orbit command '{method}' is unavailable")),
     }
@@ -1459,6 +1578,7 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             import_legacy_library(&data_dir).map_err(std::io::Error::other)?;
             std::fs::create_dir_all(&data_dir)?;
+            snapshot_rust_library_before_upgrade(&data_dir).map_err(std::io::Error::other)?;
             let artwork_dir = data_dir.join("artwork");
             std::fs::create_dir_all(&artwork_dir)?;
             *scheme_dir.lock().unwrap() = Some(artwork_dir.clone());

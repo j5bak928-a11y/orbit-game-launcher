@@ -3,6 +3,7 @@ const { DatabaseSync } = require('node:sqlite');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const {validateSessionHistory} = require('./backup.cjs');
 
 const DEFAULT_SETTINGS = Object.freeze({
   theme: 'dark', accent: '#8b7aff', reduceMotion: false,
@@ -134,6 +135,13 @@ function duplicateKey(game){
   return '';
 }
 const hasStoreIdentity=game=>!!(game?.source_id&&game?.source&&!['manual','folder'].includes(game.source));
+function sameBackupGame(existing,incoming){
+  if(hasStoreIdentity(existing)&&hasStoreIdentity(incoming))
+    return existing.source.toLowerCase()===incoming.source.toLowerCase()&&existing.source_id.toLowerCase()===incoming.source_id.toLowerCase();
+  const oldKey=duplicateKey(existing),incomingKey=duplicateKey(incoming);
+  if(oldKey&&incomingKey)return oldKey===incomingKey;
+  return existing.source===incoming.source&&existing.name===incoming.name;
+}
 function reconcileDiscoveredGames(library,candidates,platform=process.platform){
   const knownSources=new Set(library.filter(hasStoreIdentity).map(duplicateKey));
   const knownFiles=new Set(library.filter(g=>g.executable).map(g=>normalizedPath(g.executable,platform)));
@@ -228,6 +236,21 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
   }
   get(id){return deserialize(this.db.prepare(`SELECT ${COLUMNS.join(',')} FROM games WHERE id=?`).get(id));}
   count(){return this.db.prepare('SELECT COUNT(*) as count FROM games').get().count;}
+  exportBackup(){
+    // Read one consistent SQLite snapshot; an unfinished session would make
+    // the exported playtime/history incomplete, so reject the entire export.
+    this.db.exec('BEGIN');
+    try{
+      if(this.db.prepare('SELECT 1 FROM sessions WHERE finished_at IS NULL LIMIT 1').get())
+        throw Error('Cannot export while an unfinished playtime session exists. Finish or recover the session first.');
+      const sessions=this.db.prepare('SELECT id,game_id,started_at,finished_at,seconds FROM sessions ORDER BY id LIMIT ?').all(STATS_MAX_ROWS+1);
+      if(sessions.length>STATS_MAX_ROWS)throw Error('Session history exceeds the safe 100000-session backup limit.');
+      const payload={format:'orbit.library.v1',exported_at:now(),settings:this.getSettings(),games:this.list(),sessions};
+      validateSessionHistory(payload);
+      this.db.exec('COMMIT');
+      return payload;
+    }catch(error){this.db.exec('ROLLBACK');throw error;}
+  }
   findExecutableDuplicate(executable,exceptId='',incoming=null){
     if(!executable)return undefined;
     const comparison=process.platform==='win32'?'executable=? COLLATE NOCASE':'executable=?';
@@ -242,12 +265,12 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
     const aliasOnly=hasStoreIdentity(incoming)?" AND (source IN ('manual','folder') OR source_id = '')":'';
     return this.db.prepare(`SELECT id FROM games WHERE launch_uri != '' AND launch_uri=? COLLATE NOCASE AND id != ?${aliasOnly} ORDER BY rowid LIMIT 1`).get(uri,exceptId);
   }
-  upsert(raw, updateExisting=false){
+  upsert(raw, updateExisting=false, requestedId=null){
     const parsed=cleanGame(raw);
     const key=duplicateKey(parsed);
     const exists=(key?this.db.prepare('SELECT id FROM games WHERE duplicate_key=?').get(key):undefined)||this.findExecutableDuplicate(parsed.executable,'',parsed)||this.findUriDuplicate(parsed.launch_uri,'',parsed);
     if(exists){if(!updateExisting)return {game:this.get(exists.id),added:false};return {game:this.update(exists.id,raw),added:false};}
-    const id=crypto.randomUUID(), date=now();
+    const id=requestedId??crypto.randomUUID(), date=now();
     const row={id,...parsed,tags:encode(parsed.tags),launch_args:encode(parsed.launch_args),favorite:Number(parsed.favorite),total_play_seconds:0,last_played_at:null,created_at:date,updated_at:date,duplicate_key:key};
     const fields=Object.keys(row);
     const stmt=this.db.prepare(`INSERT INTO games (${fields.join(',')}) VALUES (${fields.map(()=>'?').join(',')})`);
@@ -271,22 +294,72 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
     return {imported,skipped,errors,addedGames};
   }
   restoreGame(raw){
+    this.db.exec('BEGIN');
+    try{
+      const result=this.restoreGameRow(raw);
+      this.db.exec('COMMIT');return result;
+    }catch(e){this.db.exec('ROLLBACK');throw e}
+  }
+  restoreGameRow(raw,preserveId=false){
     const seconds=Number.isSafeInteger(raw?.total_play_seconds)&&raw.total_play_seconds>=0?Math.min(raw.total_play_seconds,100*365*24*3600):0;
     const isoDate=value=>{
       if(typeof value!=='string'||value.length>50)return null;
       const time=Date.parse(value);
       return Number.isFinite(time)?new Date(time).toISOString():null;
     };
-    this.db.exec('BEGIN');
+    const result=this.upsert(raw,false,preserveId?raw.id:null);
+    if(result.added){
+      this.db.prepare('UPDATE games SET total_play_seconds=?,last_played_at=?,created_at=? WHERE id=?')
+        .run(seconds,isoDate(raw?.last_played_at),isoDate(raw?.created_at)||result.game.created_at,result.game.id);
+      result.game=this.get(result.game.id);
+    }
+    return result;
+  }
+  restoreBackupGames(payload){
+    // Validate the entire history and every game before modifying SQLite.
+    const sessions=validateSessionHistory(payload);
+    if(!Object.hasOwn(payload,'sessions'))throw Error('Session history is missing from this backup.');
+    for(const game of payload.games)cleanGame(game);
+    const mapping=new Map();
+    const targetIds=new Set();
+    let imported=0,skipped=0,sessionsImported=0,sessionsSkipped=0;
+    this.db.exec('BEGIN IMMEDIATE');
     try{
-      const result=this.upsert(raw);
-      if(result.added){
-        this.db.prepare('UPDATE games SET total_play_seconds=?,last_played_at=?,created_at=? WHERE id=?')
-          .run(seconds,isoDate(raw?.last_played_at),isoDate(raw?.created_at)||result.game.created_at,result.game.id);
-        result.game=this.get(result.game.id);
+      for(const game of payload.games){
+        const current=this.get(game.id);
+        if(current){
+          const parsed=cleanGame(game),key=duplicateKey(parsed);
+          const collision=(key?this.db.prepare('SELECT id FROM games WHERE duplicate_key=? AND id!=?').get(key,game.id):null)||
+            this.findExecutableDuplicate(parsed.executable,game.id,parsed)||this.findUriDuplicate(parsed.launch_uri,game.id,parsed);
+          if(!sameBackupGame(current,parsed)||collision)
+            throw Error(`Backup game ID ${game.id} conflicts with an existing game.`);
+        }
+        const result=current?{game:current,added:false}:this.restoreGameRow(game,true);
+        if(result.added)imported++;else skipped++;
+        if(targetIds.has(result.game.id))throw Error(`Multiple backup games resolve to the same destination game: ${result.game.id}`);
+        targetIds.add(result.game.id);
+        mapping.set(game.id,result.game.id);
       }
-      this.db.exec('COMMIT');return result;
-    }catch(e){this.db.exec('ROLLBACK');throw e}
+      const lookup=this.db.prepare('SELECT game_id,started_at,finished_at,seconds FROM sessions WHERE id=?');
+      const insert=this.db.prepare('INSERT INTO sessions (id,game_id,started_at,finished_at,seconds) VALUES (?,?,?,?,?)');
+      for(const session of sessions){
+        const destinationId=mapping.get(session.game_id);
+        if(!destinationId)throw Error('Backup session history refers to a game that could not be restored.');
+        const old=lookup.get(session.id);
+        if(old){
+          if(old.game_id!==destinationId||old.started_at!==session.started_at||old.finished_at!==session.finished_at||old.seconds!==session.seconds)
+            throw Error(`Conflicting existing backup session: ${session.id}`);
+          sessionsSkipped++;
+        }else{
+          insert.run(session.id,destinationId,session.started_at,session.finished_at,session.seconds);
+          sessionsImported++;
+        }
+      }
+      // Game totals from the backup are already restored on newly added games.
+      // Existing games retain their aggregate to avoid crediting playtime twice.
+      this.db.exec('COMMIT');
+      return {imported,skipped,errors:[],sessionsImported,sessionsSkipped};
+    }catch(error){this.db.exec('ROLLBACK');throw error;}
   }
   update(id,patch){const old=this.get(id);if(!old)throw Error('Game not found.');const parsed=cleanGame(patch,old);if(this.findExecutableDuplicate(parsed.executable,id,parsed))throw Error('This executable is already in your library.');if(this.findUriDuplicate(parsed.launch_uri,id,parsed))throw Error('This launcher link is already in your library.');const key=duplicateKey(parsed),date=now();const row={...parsed,tags:encode(parsed.tags),launch_args:encode(parsed.launch_args),favorite:Number(parsed.favorite),duplicate_key:key,updated_at:date};
     const fields=Object.keys(row);try{this.db.prepare(`UPDATE games SET ${fields.map(k=>`${k}=?`).join(',')} WHERE id=?`).run(...fields.map(k=>row[k]),id)}catch(e){if(String(e).includes('UNIQUE'))throw Error('This game is already in your library.');throw e}

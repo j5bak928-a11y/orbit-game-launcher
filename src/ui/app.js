@@ -583,8 +583,8 @@ async function handleAction(button){const action=button.dataset.action,id=button
   case 'setting-toggle':{const key=button.dataset.key;await saveSettings({[key]:!state.settings[key]});break;}
   case 'add-folder':{try{const dir=await window.orbit.chooseFolder();if(dir){const folders=[...new Set([...state.settings.libraryFolders,dir])];await saveSettings({libraryFolders:folders});toast('Scan location added.')}}catch(e){toast(e.message,true)}break;}
   case 'remove-folder':{const folders=state.settings.libraryFolders.filter((_,i)=>i!==Number(button.dataset.index));await saveSettings({libraryFolders:folders});break;}
-  case 'export':try{const res=await window.orbit.exportLibrary();if(res?.path){toast(res.portable?'Portable library backup exported.':'Metadata-only JSON backup exported.');if(res.missingArtwork)toast(`${res.missingArtwork} missing or invalid artwork file(s) were not included.`,true)}}catch(e){toast(e.message,true)}break;
-  case 'restore':try{const res=await window.orbit.restoreLibrary();if(res){toast(`Restored ${res.imported} games; skipped ${res.skipped}.`);if(res.errors?.length)toast(res.errors.slice(0,2).join(' · '),true)}}catch(e){toast(e.message,true)}break;
+  case 'export':try{const res=await window.orbit.exportLibrary();if(res?.path){toast(res.portable?'Portable library, artwork and completed play history exported.':'Library and completed play history exported as JSON (artwork not embedded).');if(res.missingArtwork)toast(`${res.missingArtwork} missing or invalid artwork file(s) were not included.`,true)}}catch(e){toast(e.message,true)}break;
+  case 'restore':try{const res=await window.orbit.restoreLibrary();if(res){const history=Number.isInteger(res.sessionsImported)?` ${res.sessionsImported} play sessions added${res.sessionsSkipped?`; ${res.sessionsSkipped} existing sessions skipped`:''}.`:'';toast(`Restored ${res.imported} games; skipped ${res.skipped}.${history}`);if(res.errors?.length)toast(res.errors.slice(0,2).join(' · '),true)}}catch(e){toast(e.message,true)}break;
  }
 }
 document.addEventListener('click',event=>{const button=event.target.closest('[data-action]');

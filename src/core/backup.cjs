@@ -17,7 +17,8 @@ const FORMAT = 'orbit.portable.v1';
 const MAX_SESSIONS = 100000;
 const MAX_SESSION_SECONDS = 7 * 86400;
 const validHistoryId = value => typeof value === 'string' && value.length > 0 &&
-  Buffer.byteLength(value,'utf8') <= 128 && value.trim() === value && !/\p{Cc}/u.test(value);
+  value.isWellFormed() && Buffer.byteLength(value,'utf8') <= 128 &&
+  value.trim() === value && !/\p{Cc}/u.test(value);
 function historyTimestamp(value) {
   if (typeof value !== 'string' || value.length > 50) return NaN;
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|([+-])(\d{2}):(\d{2}))$/.exec(value);
@@ -122,7 +123,7 @@ function decodePortableBackup(bytes) {
   }
   return {library:decoded.library, assets};
 }
-async function installBackupArtwork(assets, folder) {
+async function installBackupArtwork(assets, folder, {created = new Map()} = {}) {
   const names = new Map();
   await fsp.mkdir(folder, {recursive:true});
   for (const [name, data] of assets) {
@@ -132,24 +133,61 @@ async function installBackupArtwork(assets, folder) {
     const hash = crypto.createHash('sha256').update(data).digest('hex');
     const ext = path.extname(name).toLowerCase();
     let installed = `${hash.slice(0,8)}-${hash.slice(8,12)}-${hash.slice(12,16)}-${hash.slice(16,20)}-${hash.slice(20,32)}${ext}`;
-    try {await fsp.writeFile(path.join(folder, installed), data, {flag:'wx'});}
-    catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      // A different existing file must never be overwritten, even if it has
-      // the same truncated digest (or a user manually created that filename).
-      const existing = await fsp.readFile(path.join(folder, installed));
-      if (!existing.equals(data)) {
-        installed = `${crypto.randomUUID()}${ext}`;
-        await fsp.writeFile(path.join(folder, installed), data, {flag:'wx'});
+    // Write and sync a complete temporary file first. A failed or partial
+    // write must never leave a truncated final artwork filename behind.
+    const temporary = path.join(folder, `.orbit-art-import-${crypto.randomUUID()}.tmp`);
+    let handle;
+    try {
+      handle = await fsp.open(temporary, 'wx');
+      await handle.writeFile(data);
+      await handle.sync();
+      await handle.close();
+      handle = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const destination = path.join(folder, installed);
+        try {
+          // Same-directory hard links atomically publish complete bytes. The
+          // 'already exists' case never overwrites user-owned artwork.
+          await fsp.link(temporary, destination);
+          created.set(installed, data);
+          break;
+        } catch (error) {
+          if (error.code !== 'EEXIST') throw error;
+          const info = await fsp.lstat(destination);
+          if (info.isFile() && !info.isSymbolicLink() && info.size === data.length &&
+              (await fsp.readFile(destination)).equals(data)) break;
+          if (attempt === 2) throw Error('Could not allocate a unique artwork filename.');
+          installed = `${crypto.randomUUID()}${ext}`;
+        }
       }
+    } finally {
+      if (handle) await handle.close();
+      await fsp.rm(temporary, {force:true});
     }
     names.set(name, installed);
   }
   return names;
+}
+// Only files created by this restore are eligible for cleanup. If a game
+// actually references one of them, or another writer changed its contents,
+// leave it alone. This also handles legacy restores with skipped games.
+async function cleanupUnusedBackupArtwork(created, folder, games) {
+  if (!created.size) return;
+  const referenced = new Set(assetNames(games));
+  for (const [name, original] of created) {
+    if (referenced.has(name)) continue;
+    const target = path.join(folder, name);
+    let info;
+    try {info = await fsp.lstat(target);}
+    catch (error) {if (error.code === 'ENOENT') continue;throw error;}
+    if (!info.isFile() || info.isSymbolicLink() || info.size !== original.length) continue;
+    const current = await fsp.readFile(target);
+    if (current.equals(original)) await fsp.unlink(target).catch(error=>{if(error.code!=='ENOENT')throw error;});
+  }
 }
 async function writeAtomic(file, bytes) {
   const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${crypto.randomUUID()}.tmp`);
   try {await fsp.writeFile(temporary, bytes, {flag:'wx'});await fsp.rename(temporary, file);}
   finally {await fsp.rm(temporary, {force:true}).catch(() => {});}
 }
-module.exports = {createPortableBackup, decodePortableBackup, installBackupArtwork, writeAtomic, validateSessionHistory, MAX_ARCHIVE, MAX_UNCOMPRESSED};
+module.exports = {createPortableBackup, decodePortableBackup, installBackupArtwork, cleanupUnusedBackupArtwork, writeAtomic, validateSessionHistory, validHistoryId, MAX_ARCHIVE, MAX_UNCOMPRESSED};

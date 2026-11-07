@@ -84,6 +84,10 @@ or launch Orbit. Paid GitHub Actions and signing are not required.
 
 ## Still required before retiring Electron
 
+- Run MSI installer and upgrade tests in a disposable **Windows VM or separate
+  test PC**, not merely another account on the daily-use machine: the unsigned
+  0.2.7 MSI declares `ALLUSERS=1` (machine-wide installation). Never replace an
+  existing system installation during acceptance testing.
 - Real Windows 0.2.6 → 0.2.7 installer upgrade/uninstall in a disposable user
   profile, checking that the existing library and artwork are preserved.
 - Native dialog cancellation and repeated `.orbit`/JSON export+restore against

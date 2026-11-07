@@ -22,11 +22,11 @@ const {sessionClock}=require('./core/session-clock.cjs');
 const {pendingFinishes}=require('./core/pending-finishes.cjs');
 const {createUpdateService}=require('./core/updates.cjs');
 const {catalogMatch,identifyGame}=require('./core/game-identity.cjs');
-const {createPortableBackup,decodePortableBackup,installBackupArtwork,writeAtomic,validateSessionHistory,MAX_ARCHIVE}=require('./core/backup.cjs');
+const {createPortableBackup,decodePortableBackup,installBackupArtwork,cleanupUnusedBackupArtwork,writeAtomic,validateSessionHistory,validHistoryId,MAX_ARCHIVE}=require('./core/backup.cjs');
 
 protocol.registerSchemesAsPrivileged([{scheme:'orbit-art',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true}}]);
 if(!app.requestSingleInstanceLock())app.quit();
-let win,db,scanning=false,activityTracker=null,libraryRevision=0,tray=null,initialized=false,updateService=null;
+let win,db,scanning=false,activityTracker=null,libraryRevision=0,tray=null,initialized=false,updateService=null,restoringLibrary=false;
 const background=backgroundWindow({close:()=>win?.destroy(),show:()=>{if(!win||win.isDestroyed())createWindow();else {if(win.isMinimized())win.restore();win.show();win.focus();}}});
 const fullscreenController=new FullscreenController(()=>win);
 const sessions=new Map(),sessionClocks=new Map();
@@ -93,7 +93,7 @@ function gamesChanged({games=[],removedIds=[],reason='',reset=false}={}){
   if(!reset){event.games=games.filter(Boolean);event.removedIds=removedIds;}
   broadcast(event);
 }
-const okId=id=>typeof id==='string'&&/^[0-9a-f-]{36}$/.test(id);
+const okId=validHistoryId;
 function createWindow(){
   win=new BrowserWindow({width:1440,height:920,minWidth:910,minHeight:610,backgroundColor:'#101016',title:'Orbit Launcher',icon:path.join(__dirname,'../assets/icon.png'),show:false,
     titleBarStyle:process.platform==='darwin'?'hiddenInset':'default',
@@ -459,6 +459,9 @@ function handlers(){
     return {path:result.filePath,count:payload.games.length,portable:true,artworkCount:archive.artworkCount,missingArtwork:archive.missingArtwork};
   });
   bind('restoreLibrary',async()=>{
+    if(restoringLibrary)throw Error('An Orbit backup restore is already in progress.');
+    restoringLibrary=true;
+    try {
     const selected=await dialog.showOpenDialog(win,{title:'Restore Orbit library',properties:['openFile'],filters:[{name:'Orbit backups',extensions:['orbit','json']} ]});
     if(selected.canceled||!selected.filePaths[0])return null;
     const file=selected.filePaths[0],stat=await fsp.stat(file);
@@ -475,33 +478,55 @@ function handlers(){
     const withSessions=Object.hasOwn(data,'sessions');
     validateSessionHistory(data);
     if(withSessions)for(const game of data.games)cleanGame(game);
-    const artworkMap=await installBackupArtwork(portableArtwork,artworkDir());
-    let imported=0,skipped=0;const errors=[];
-    const preparedGames=[];
-    for(let i=0;i<data.games.length;i++){
-      const g=data.games[i];
-      try{
-        const artworkName=async name=>{
-          if(artworkMap.has(name))return artworkMap.get(name);
-          return typeof name==='string'&&/^[a-f0-9-]{36}\.(png|jpg|jpeg|webp)$/.test(name)&&await fsp.stat(path.join(artworkDir(),name)).catch(()=>null)?name:'';
-        };
-        const clean={...g,cover:await artworkName(g?.cover),banner:await artworkName(g?.banner),icon:await artworkName(g?.icon)};
-        if(withSessions)preparedGames.push(clean);
-        else{const res=db.restoreGame(clean);if(res.added)imported++;else skipped++;}
-      }catch(e){if(withSessions)throw e;errors.push(`${String(g?.name||'Entry').slice(0,80)}: ${e.message}`)}
-      if(i%50===49)await new Promise(resolve=>setImmediate(resolve));
+    const createdArtwork=new Map();
+    let restoreFailure;
+    const cleanupRestoreArtwork=async()=>{
+      if(!createdArtwork.size)return;
+      try{await cleanupUnusedBackupArtwork(createdArtwork,artworkDir(),db.list());}
+      catch(error){
+        if(!restoreFailure)throw error;
+        // Preserve the original restore failure while reporting cleanup errors.
+        restoreFailure.message+=` (Artwork cleanup also failed: ${error.message})`;
+      }
+    };
+    try {
+      const artworkMap=await installBackupArtwork(portableArtwork,artworkDir(),{created:createdArtwork});
+      let imported=0,skipped=0;const errors=[];
+      const preparedGames=[];
+      for(let i=0;i<data.games.length;i++){
+        const g=data.games[i];
+        try{
+          const artworkName=async name=>{
+            if(artworkMap.has(name))return artworkMap.get(name);
+            return typeof name==='string'&&/^[a-f0-9-]{36}\.(png|jpg|jpeg|webp)$/.test(name)&&await fsp.stat(path.join(artworkDir(),name)).catch(()=>null)?name:'';
+          };
+          const clean={...g,cover:await artworkName(g?.cover),banner:await artworkName(g?.banner),icon:await artworkName(g?.icon)};
+          if(withSessions)preparedGames.push(clean);
+          else{const res=db.restoreGame(clean);if(res.added)imported++;else skipped++;}
+        }catch(e){if(withSessions)throw e;errors.push(`${String(g?.name||'Entry').slice(0,80)}: ${e.message}`)}
+        if(i%50===49)await new Promise(resolve=>setImmediate(resolve));
+      }
+      let sessionsImported=0,sessionsSkipped=0;
+      if(withSessions){
+        const result=db.restoreBackupGames({...data,games:preparedGames});
+        ({imported,skipped,sessionsImported,sessionsSkipped}=result);
+      }
+      let settingsRestored=false;
+      if(data.settings&&typeof data.settings==='object'&&!Array.isArray(data.settings)){
+        try{const settings=db.saveSettings(data.settings);nativeTheme.themeSource=settings.theme;settingsRestored=true;broadcast({type:'settingsChanged',settings});}
+        catch(e){errors.push(`Settings: ${e.message}`)}
+      }
+      gamesChanged({reset:true,reason:'restore'});return {imported,skipped,errors,settingsRestored,sessionsImported,sessionsSkipped};
+    } catch(error) {
+      restoreFailure=error;
+      throw error;
+    } finally {
+      // The database restore can fail after artwork extraction, and legacy
+      // imports may skip invalid games. Keep only art referenced by a
+      // successfully restored game, without touching files that pre-existed.
+      await cleanupRestoreArtwork();
     }
-    let sessionsImported=0,sessionsSkipped=0;
-    if(withSessions){
-      const result=db.restoreBackupGames({...data,games:preparedGames});
-      ({imported,skipped,sessionsImported,sessionsSkipped}=result);
-    }
-    let settingsRestored=false;
-    if(data.settings&&typeof data.settings==='object'&&!Array.isArray(data.settings)){
-      try{const settings=db.saveSettings(data.settings);nativeTheme.themeSource=settings.theme;settingsRestored=true;broadcast({type:'settingsChanged',settings});}
-      catch(e){errors.push(`Settings: ${e.message}`)}
-    }
-    gamesChanged({reset:true,reason:'restore'});return {imported,skipped,errors,settingsRestored,sessionsImported,sessionsSkipped};
+    } finally {restoringLibrary=false;}
   });
   bind('getAppInfo',()=>({platform:process.platform,version:displayVersion(),dataPath:app.getPath('userData')}));
 }

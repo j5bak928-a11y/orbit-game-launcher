@@ -48,14 +48,95 @@ const iconPaths={
 const ic=(name,size=18)=>`<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">${iconPaths[name]||iconPaths.gamepad}</svg>`;
 const state={games:[],runningIds:[],settings:null,route:'home',query:'',filter:'all',tag:'all',genre:'all',view:'grid',sort:'name',modal:null,imports:[],importPage:0,selectedImports:new Set(),scanWarnings:[],scanDiagnostics:[],pendingLaunches:new Set(),scanning:false,busy:false,platform:'',version:'',viewGames:[],statistics:{status:'idle',data:null,error:''},updateStatus:{state:'idle',message:'Update check not started.'}};
 let controllerMode=null;
+// The desktop listens for a *new* standard Menu/Options (button 9) press.
+// Unlike controller mode, this watcher never polls when there is no gamepad,
+// a game is running, or the window is not visible and focused.
+const desktopPadEntry={ready:false,entering:false,timer:null,neutral:new Set()};
+function pauseDesktopPadEntry(){
+ if(desktopPadEntry.timer!==null)clearTimeout(desktopPadEntry.timer);
+ desktopPadEntry.timer=null;
+ desktopPadEntry.neutral.clear();
+}
+function canWatchDesktopPad(){
+ return desktopPadEntry.ready&&!desktopPadEntry.entering&&!!el('page-slot')&&
+  !document.hidden&&document.hasFocus()&&!state.modal&&!state.scanning&&!state.busy&&
+  !state.runningIds.length&&!state.pendingLaunches.size&&
+  !controllerMode?.active&&!controllerMode?.session;
+}
+function standardDesktopPads(){
+ if(typeof navigator.getGamepads!=='function')return [];
+ try{
+  const pads=navigator.getGamepads(),result=[];
+  for(let index=0;index<Math.min(pads?.length||0,16);index++){
+   const pad=pads[index];
+   if(pad?.connected===true&&pad.mapping==='standard'&&
+    Number.isInteger(pad.index)&&pad.index>=0&&pad.index<16&&
+    Number(pad.buttons?.length)>=10)result.push(pad);
+  }
+  return result;
+ }catch{return [];}
+}
+function padButtonPressed(button){return typeof button==='number'?button>0.5:!!button?.pressed||Number(button?.value)>0.5;}
+function padNeutral(pad){
+ for(let index=0;index<Math.min(pad.buttons.length,32);index++)if(padButtonPressed(pad.buttons[index]))return false;
+ for(let index=0;index<Math.min(pad.axes?.length||0,8);index++)if(Math.abs(Number(pad.axes[index]))>0.35)return false;
+ return true;
+}
+function pollDesktopPadEntry(){
+ desktopPadEntry.timer=null;
+ if(!canWatchDesktopPad()){pauseDesktopPadEntry();return;}
+ const pads=standardDesktopPads();
+ if(!pads.length){pauseDesktopPadEntry();return;}
+ const connected=new Set(pads.map(pad=>`${pad.index}:${pad.id}`));
+ for(const key of desktopPadEntry.neutral)if(!connected.has(key))desktopPadEntry.neutral.delete(key);
+ for(const pad of pads){
+  const key=`${pad.index}:${pad.id}`;
+  if(padNeutral(pad)){desktopPadEntry.neutral.add(key);continue;}
+  const freshMenu=desktopPadEntry.neutral.has(key)&&padButtonPressed(pad.buttons[9]);
+  desktopPadEntry.neutral.delete(key);
+  if(!freshMenu)continue;
+  desktopPadEntry.entering=true;
+  pauseDesktopPadEntry();
+  Promise.resolve().then(()=>{
+   // Recheck on the microtask boundary; a modal or game may have opened.
+   if(document.hidden||!document.hasFocus()||state.modal||state.scanning||state.busy||
+    state.runningIds.length||state.pendingLaunches.size||controllerMode?.active||controllerMode?.session)return;
+   return toggleControllerMode();
+  }).catch(error=>toast(error.message,true)).finally(()=>{
+   desktopPadEntry.entering=false;
+   wakeDesktopPadEntry();
+  });
+  return;
+ }
+ desktopPadEntry.timer=setTimeout(pollDesktopPadEntry,110);
+}
+function wakeDesktopPadEntry(){
+ if(!canWatchDesktopPad()){pauseDesktopPadEntry();return;}
+ if(desktopPadEntry.timer!==null)return;
+ const pads=standardDesktopPads();
+ if(!pads.length){pauseDesktopPadEntry();return;}
+ // A connected controller is the only reason to maintain a slow timer.
+ desktopPadEntry.timer=setTimeout(pollDesktopPadEntry,110);
+}
+function startDesktopPadEntry(){
+ if(desktopPadEntry.ready)return;
+ desktopPadEntry.ready=true;
+ window.addEventListener('gamepadconnected',()=>{pauseDesktopPadEntry();wakeDesktopPadEntry();});
+ window.addEventListener('gamepaddisconnected',()=>{pauseDesktopPadEntry();wakeDesktopPadEntry();});
+ window.addEventListener('blur',pauseDesktopPadEntry);
+ window.addEventListener('focus',wakeDesktopPadEntry);
+ document.addEventListener('visibilitychange',()=>{if(document.hidden)pauseDesktopPadEntry();else wakeDesktopPadEntry();});
+ wakeDesktopPadEntry();
+}
 function toggleControllerMode(){
+ pauseDesktopPadEntry();
  if(state.modal)closeModal();
  if(!controllerMode){
   if(!window.OrbitControllerMode)throw Error('Controller mode is unavailable. Restart Orbit to load the latest files.');
   controllerMode=window.OrbitControllerMode.create({api:window.orbit,
    snapshot:()=>({games:state.games,runningIds:state.runningIds,pendingLaunches:state.pendingLaunches}),
    launch:performLaunch,favorite,notify:toast,
-   onExit:()=>{refreshNavigation(true);document.querySelector('[data-action="controller-mode"]')?.focus();}
+   onExit:()=>{refreshNavigation(true);document.querySelector('[data-action="controller-mode"]')?.focus();wakeDesktopPadEntry();}
   });
  }
  return controllerMode.toggle();
@@ -98,7 +179,7 @@ function sidebar(){const links=[['home','home','Overview'],['library','library',
  <div class="side-bottom"><div class="side-version"><span class="status-dot"></span><span>${tr(state.scanning?'Scanning your games…':'Local library')} <span class="version-number">v${esc(state.version)}</span></span></div></div></aside>`}
 function topbar(){const name={home:'Overview',library:'My library',favorites:'Favorites',recent:'Recently played',statistics:'Gaming statistics',settings:'Settings'}[state.route]||'Overview';return `<header class="topbar"><div class="breadcrumb">${tr(name)}</div>
  <div class="topbar-right"><label class="searchbox">${ic('search',18)}<input id="global-search" type="search" placeholder="${tr('Search your library')}" value="${esc(state.query)}" autocomplete="off" aria-label="${tr('Search games')}"/><kbd>Ctrl K</kbd></label>
- <button class="top-icon" data-action="controller-mode" title="${tr('Controller mode (F11)')}" aria-label="${tr('Enter controller mode')}">${ic('gamepad',18)}</button>${['library','favorites','recent'].includes(state.route)?'':`<button class="top-icon" data-action="scan" title="${tr('Discover installed games')}" aria-label="${tr('Discover installed games')}">${ic('refresh',18)}</button>`}
+ <button class="top-icon" data-action="controller-mode" title="${tr('Controller mode (F11 / Menu)')}" aria-label="${tr('Enter controller mode')}">${ic('gamepad',18)}</button>${['library','favorites','recent'].includes(state.route)?'':`<button class="top-icon" data-action="scan" title="${tr('Discover installed games')}" aria-label="${tr('Discover installed games')}">${ic('refresh',18)}</button>`}
  <button class="primary-btn" data-action="add">${ic('plus',18)}<span>${tr('Add game')}</span></button></div></header>`}
 function headline(eyebrow,title,subtitle,buttons=''){return `<div class="page-heading"><div>${eyebrow?`<div class="eyebrow"><i></i>${esc(eyebrow)}</div>`:''}<h1 class="page-title">${esc(title)}</h1>${subtitle?`<p class="page-intro">${esc(subtitle)}</p>`:''}</div>${buttons}</div>`}
 function platformFilters(){
@@ -331,6 +412,7 @@ function refreshFilterOptions(id,values,label,active){
 function applyLibraryUpdate(change){
  const runningChanged=state.runningIds!==change.runningIds;
  state.games=change.games;state.runningIds=change.runningIds;
+ wakeDesktopPadEntry();
  if(controllerMode?.active){controllerMode.update();return;}
  const count=el('side-slot')?.querySelector('[data-route="library"] .count');
  if(count&&count.textContent!==formatNumber(state.games.length))count.textContent=formatNumber(state.games.length);
@@ -480,8 +562,8 @@ function openGameActions(trigger){
  menu.style.left=`${left}px`;menu.style.top=`${top}px`;
  menu.querySelector('[role=menuitem]')?.focus({preventScroll:true});
 }
-function openModal(type,meta={}){closeGameActions();if(!state.modal){modalReturnFocus=document.activeElement;modalReturnFocusAction=modalReturnFocus?.dataset.action?{action:modalReturnFocus.dataset.action,id:modalReturnFocus.dataset.id,kind:['game-card','game-row','continue-card','game-menu'].find(name=>modalReturnFocus.classList.contains(name))}:null;}state.modal={type,...meta};renderModal()}
-function closeModal(){state.modal=null;el('modal-root').innerHTML='';const candidates=modalReturnFocusAction?[...document.querySelectorAll('[data-action]')].filter(node=>node.dataset.action===modalReturnFocusAction.action&&node.dataset.id===modalReturnFocusAction.id):[];const target=modalReturnFocus?.isConnected?modalReturnFocus:candidates.find(node=>modalReturnFocusAction.kind&&node.classList.contains(modalReturnFocusAction.kind))||candidates[0];target?.focus({preventScroll:true});modalReturnFocus=null;modalReturnFocusAction=null}
+function openModal(type,meta={}){pauseDesktopPadEntry();closeGameActions();if(!state.modal){modalReturnFocus=document.activeElement;modalReturnFocusAction=modalReturnFocus?.dataset.action?{action:modalReturnFocus.dataset.action,id:modalReturnFocus.dataset.id,kind:['game-card','game-row','continue-card','game-menu'].find(name=>modalReturnFocus.classList.contains(name))}:null;}state.modal={type,...meta};renderModal()}
+function closeModal(){state.modal=null;el('modal-root').innerHTML='';const candidates=modalReturnFocusAction?[...document.querySelectorAll('[data-action]')].filter(node=>node.dataset.action===modalReturnFocusAction.action&&node.dataset.id===modalReturnFocusAction.id):[];const target=modalReturnFocus?.isConnected?modalReturnFocus:candidates.find(node=>modalReturnFocusAction.kind&&node.classList.contains(modalReturnFocusAction.kind))||candidates[0];target?.focus({preventScroll:true});modalReturnFocus=null;modalReturnFocusAction=null;wakeDesktopPadEntry();}
 function dialogFrame(title,description,body,footer='',wide=false){return `<div class="dialog-scrim" data-action="scrim"><section class="dialog ${wide?'wide':''}" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div class="dialog-header"><div><h2 id="dialog-title">${esc(title)}</h2><p>${esc(description)}</p></div><button class="ghost-btn" data-action="close-modal" aria-label="${tr('Close dialog')}">${ic('close',21)}</button></div>${body}${footer}</section></div>`}
 function editor(g){const isEdit=!!g;const title=t(isEdit?'Edit game':'Add a game');const params=Array.isArray(g?.launch_args)?JSON.stringify(g.launch_args):'[]';
  const imgSection=(key,label)=>`<div class="image-upload"><div id="preview-${key}">${artwork(g?.[key])?`<img src="${artwork(g[key])}" alt="${tr('{label} preview',{label:t(label)})}" />`:key==='cover'&&artwork(g?.icon)?`<div class="auto-icon-preview"><img src="${artwork(g.icon)}" alt="${tr('Icon fallback')}" /></div>`:`<div class="image-placeholder">${ic('image',21)}</div>`}</div><div style="flex:1"><p>${tr(label)}</p><small>${tr(key==='icon'?'Used when no cover exists':'PNG, JPEG or WebP')}</small></div><button type="button" class="secondary-btn" data-action="choose-art" data-key="${key}">${tr('Choose')}</button><button type="button" class="small-link" data-action="clear-art" data-key="${key}" aria-label="${tr('Clear {label}',{label:t(label)})}">${tr('Clear')}</button></div>`;
@@ -575,6 +657,7 @@ function syncActivity(){
  for(const button of document.querySelectorAll('[data-action="scan"]')){button.setAttribute('aria-busy',String(state.scanning));button.classList.toggle('is-scanning',state.scanning);button.title=t(state.scanning?'Scanning installed games…':'Find installed games');}
  const status=document.querySelector('.side-version>span:last-child');if(status)status.innerHTML=state.scanning?tr('Scanning your games…'):`${tr('Local library')} <span class="version-number">v${esc(state.version)}</span>`;
  controllerMode?.update();
+ wakeDesktopPadEntry();
 }
 async function performLaunch(id){const game=state.games.find(g=>g.id===id);if(!game||state.pendingLaunches.has(id)||state.runningIds.includes(id))return;
  const started=performance.now();state.pendingLaunches.add(id);
@@ -813,6 +896,7 @@ async function boot(){try{
  applyLanguage(data.settings?.language||'system');setupTheme();renderShell();
  lastRenderedLocale=localeRenderKey();
  for(const event of buffered)handleOrbitEvent(event);
+ if(typeof startDesktopPadEntry==='function')startDesktopPadEntry();
  // Update-service availability must not delay or prevent library startup.
  if(window.orbit.getUpdateStatus)Promise.resolve().then(()=>window.orbit.getUpdateStatus()).then(status=>{
   if(status){state.updateStatus=status;const statusNode=el('update-status');if(statusNode)statusNode.textContent=typeof t==='function'?t(status.message||''):status.message||'';}

@@ -25,7 +25,7 @@
     "test:experience": "node tests/experience-renderer.cjs",
     "test:cinematic": "node tests/cinematic-v2.cjs",
     "test:cards": "node tests/poster-cards.cjs",
-    "test:controller": "node tests/controller-renderer.cjs",
+    "test:controller": "node tests/controller-renderer.cjs && node tests/controller-entry.cjs && node tests/controller-layout.cjs",
     "test:languages": "node tests/multilingual-renderer.cjs",
     "test:visual": "node tests/visual-consistency.cjs"
   },

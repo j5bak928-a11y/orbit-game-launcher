@@ -23,3 +23,11 @@ One independent final review found controller ownership resetting on connection/
 ## Remaining native checks
 
 No physical controller or native OS fullscreen transition was demonstrated on this host. On a real desktop, verify USB/Bluetooth discovery and browser-standard mapping, repeat behavior, launching a game and returning to Orbit, focus loss, F11, native Escape/fullscreen exit, and prior-window-state restoration. Unsupported mappings retain keyboard/mouse controls. No game installation, EXE download, release or main-branch merge is part of this change.
+
+## Controller expansion — 7 November 2026
+
+This follow-up adds controller-only entry from the desktop using a **fresh Menu / Options (standard button 9) press**, and additional standard-mapped actions: View/Share back, Guide/Home exit when surfaced by the browser, LT/RT paging, and right-stick vertical scrolling alongside the existing D-pad/left stick, A/B/X/Y and LB/RB controls. Menu/Options jumps to recent games once fullscreen is active. The input policy requires a neutral controller before accepting a new owner, suppresses held-button replay, and stops desktop entry monitoring when unfocused, hidden, busy or already in controller mode. No app data, SQLite settings or game launch protocol changes are needed.
+
+`npm run test:controller` now runs the existing 5,000-game renderer journey, a mocked Gamepad API desktop-Menu-entry browser regression and a separate narrow/light/dark controller geometry suite. Unit tests under `npm test` cover standard button indices, trigger hysteresis, right-stick repeat limits, connection ownership and safe null/unmapped-pad behavior. These test paths use synthetic data and never open an installed user profile.
+
+Real device support remains bounded by the platform's `Gamepad.mapping === 'standard'` implementation. Xbox and PlayStation names represent expected standard-mapped control layouts, not a promise of raw HID/gyro/touchpad or universal USB/Bluetooth driver support. A DualSense device is enumerated by Windows on the test PC, but no physical button sequence has been validated through the installed Orbit preview. Complete physical acceptance still needs a paired controller, repeated launch/back/reconnect, tray/Windows fullscreen transitions and a disposable native profile; the automated browser fixture does not substitute for that check.

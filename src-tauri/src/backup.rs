@@ -2,6 +2,7 @@
 //! Only artwork referenced by a library game may be restored to disk.
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use chrono::DateTime;
 use flate2::{read::MultiGzDecoder, write::GzEncoder, Compression};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -17,6 +18,10 @@ const MAX_ARCHIVE: u64 = 128 * 1024 * 1024;
 const MAX_UNCOMPRESSED: u64 = 192 * 1024 * 1024;
 const MAX_IMAGE: u64 = 15 * 1024 * 1024;
 const MAX_ARTWORK_TOTAL: u64 = 100 * 1024 * 1024;
+const MAX_LIBRARY_ROWS: usize = 100_000;
+const MAX_SESSION_SECONDS: u64 = 7 * 86_400;
+const MAX_SESSION_ID_LENGTH: usize = 128;
+const MAX_SESSION_DATE_LENGTH: usize = 50;
 const PORTABLE_FORMAT: &str = "orbit.portable.v1";
 const LIBRARY_FORMAT: &str = "orbit.library.v1";
 const ARTWORK_FIELDS: [&str; 3] = ["cover", "banner", "icon"];
@@ -66,10 +71,97 @@ fn games(library: &Value) -> Result<&Vec<Value>, String> {
         .get("games")
         .and_then(Value::as_array)
         .ok_or_else(|| err("Invalid library for backup."))?;
-    if rows.len() > 100_000 || rows.iter().any(|game| !game.is_object()) {
+    if rows.len() > MAX_LIBRARY_ROWS || rows.iter().any(|game| !game.is_object()) {
         return Err(err("Invalid games in Orbit library."));
     }
+    validate_sessions(library, rows)?;
     Ok(rows)
+}
+
+/// An absent sessions property is valid for original orbit.library.v1 backups.
+/// When present, every record must represent a completed session referring to
+/// an exported game. Reject the entire archive before installing any artwork.
+fn validate_sessions(library: &Value, rows: &[Value]) -> Result<(), String> {
+    let Some(value) = library.get("sessions") else {
+        return Ok(());
+    };
+    let sessions = value
+        .as_array()
+        .ok_or_else(|| err("Invalid sessions in Orbit library."))?;
+    if sessions.len() > MAX_LIBRARY_ROWS {
+        return Err(err(
+            "Orbit session history exceeds the 100000-session limit.",
+        ));
+    }
+    let mut game_ids = BTreeSet::new();
+    for game in rows {
+        let id = game
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| valid_session_id(id))
+            .ok_or_else(|| err("Session history references invalid game IDs."))?;
+        if !game_ids.insert(id) {
+            return Err(err("Session history contains duplicate game IDs."));
+        }
+    }
+
+    let mut seen = BTreeSet::new();
+    for session in sessions {
+        let fields = session
+            .as_object()
+            .filter(|fields| {
+                fields.len() == 5
+                    && ["id", "game_id", "started_at", "finished_at", "seconds"]
+                        .iter()
+                        .all(|key| fields.contains_key(*key))
+            })
+            .ok_or_else(|| err("Invalid completed session in Orbit library."))?;
+        let id = fields
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| valid_session_id(id))
+            .ok_or_else(|| err("Invalid session ID in Orbit library."))?;
+        fields
+            .get("game_id")
+            .and_then(Value::as_str)
+            .filter(|id| game_ids.contains(id))
+            .ok_or_else(|| err("Session history references an unknown game."))?;
+        if !seen.insert(id) {
+            return Err(err("Duplicate session ID in Orbit library."));
+        }
+
+        let parse_date = |key| {
+            fields
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|date| !date.is_empty() && date.len() <= MAX_SESSION_DATE_LENGTH)
+                .and_then(|date| DateTime::parse_from_rfc3339(date).ok())
+        };
+        let started = parse_date("started_at")
+            .ok_or_else(|| err("Invalid session start time in Orbit library."))?;
+        let finished = parse_date("finished_at")
+            .ok_or_else(|| err("Invalid completed session time in Orbit library."))?;
+        if finished < started {
+            return Err(err(
+                "Session history contains a session ending before its start.",
+            ));
+        }
+        if !fields
+            .get("seconds")
+            .and_then(Value::as_u64)
+            .is_some_and(|seconds| seconds <= MAX_SESSION_SECONDS)
+        {
+            return Err(err("Invalid completed session duration in Orbit library."));
+        }
+    }
+    Ok(())
+}
+
+fn valid_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_SESSION_ID_LENGTH
+        && id.trim() == id
+        && id.chars().all(|character| !character.is_control())
 }
 
 fn asset_names(rows: &[Value]) -> BTreeSet<String> {
@@ -290,6 +382,20 @@ fn decode_artwork(
 /// and returns the orbit.library.v1 object for database restoration. Artwork
 /// fields are rewritten to locally installed filenames or cleared.
 pub fn import_backup(input: &Path, artwork_dir: &Path) -> Result<Value, String> {
+    import_backup_checked(input, artwork_dir, |_| Ok(()))
+}
+
+/// The caller must validate database identity/session conflicts before any
+/// artwork is installed. A malformed library must not leave arbitrary assets
+/// behind when its eventual DB restore fails. Old archives remain readable.
+pub fn import_backup_checked<F>(
+    input: &Path,
+    artwork_dir: &Path,
+    preflight: F,
+) -> Result<Value, String>
+where
+    F: FnOnce(&Value) -> Result<(), String>,
+{
     let compressed = read_bounded(input, MAX_ARCHIVE)
         .map_err(|_| err("Invalid Orbit portable backup or archive exceeds the 128 MB limit."))?;
     let unpacked = gunzip_bounded(&compressed)?;
@@ -303,6 +409,11 @@ pub fn import_backup(input: &Path, artwork_dir: &Path) -> Result<Value, String> 
         .cloned()
         .ok_or_else(|| err("Unrecognized portable backup format."))?;
     let rows = games(&library)?;
+    // Validate every game before installing embedded artwork, including a
+    // sessions: [] backup (which otherwise skipped game-ID checks).
+    for game in rows {
+        crate::database::clean_game(game, None)?;
+    }
     let referenced = asset_names(rows);
     let artwork = envelope
         .get("artwork")
@@ -310,6 +421,7 @@ pub fn import_backup(input: &Path, artwork_dir: &Path) -> Result<Value, String> 
         .ok_or_else(|| err("Unrecognized portable backup format."))?;
     // Fully validate the entire archive before making any filesystem changes.
     let assets = decode_artwork(artwork, &referenced)?;
+    preflight(&library)?;
     let mut installed = BTreeMap::new();
     if !assets.is_empty() {
         ensure_artwork_dir(artwork_dir)?;
@@ -371,10 +483,16 @@ mod tests {
             fs::write(source.join(&cover), png()).unwrap();
             fs::write(source.join(&banner), jpeg()).unwrap();
             fs::write(source.join(&icon), webp()).unwrap();
+            let game_id = Uuid::new_v4().to_string();
             let payload = json!({
                 "format":"orbit.library.v1",
                 "settings":{"theme":"dark"},
-                "games":[{"name":"Example","cover":cover,"banner":banner,"icon":icon,"total_play_seconds":555}]
+                "games":[{"id":game_id,"name":"Example","cover":cover,"banner":banner,"icon":icon,"total_play_seconds":555}],
+                "sessions":[{
+                    "id":Uuid::new_v4().to_string(),"game_id":game_id,
+                    "started_at":"2025-07-20T10:00:00.000Z",
+                    "finished_at":"2025-07-20T10:09:15.000Z","seconds":555
+                }]
             });
             let output = root.join("backup.orbit");
             Self {
@@ -431,6 +549,7 @@ mod tests {
         assert_eq!(result["missingArtwork"], 0);
         let restored = import_backup(&f.output, &f.dest).unwrap();
         assert_eq!(restored["settings"], f.payload["settings"]);
+        assert_eq!(restored["sessions"], f.payload["sessions"]);
         for (field, name, expected) in [
             ("cover", &f.cover, png()),
             ("banner", &f.banner, jpeg()),
@@ -444,6 +563,154 @@ mod tests {
         let again = import_backup(&f.output, &f.dest).unwrap();
         assert_eq!(restored, again);
         assert_eq!(fs::read_dir(&f.dest).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn legacy_v1_without_session_history_still_imports() {
+        let f = Fixture::new();
+        let mut legacy = f.payload.clone();
+        legacy.as_object_mut().unwrap().remove("sessions");
+        write_envelope(&f, &legacy, json!({}));
+        let restored = import_backup(&f.output, &f.dest).unwrap();
+        assert!(restored.get("sessions").is_none());
+        assert_eq!(restored["games"][0]["name"], "Example");
+        assert!(!f.dest.exists());
+    }
+
+    #[test]
+    fn zero_second_completed_sessions_accept_valid_timezone_offsets() {
+        let f = Fixture::new();
+        let mut library = f.payload.clone();
+        library["sessions"][0]["started_at"] = json!("2025-07-20T12:00:00+02:00");
+        library["sessions"][0]["finished_at"] = json!("2025-07-20T10:00:01Z");
+        library["sessions"][0]["seconds"] = json!(0);
+        export_backup(&library, &f.source, &f.output).unwrap();
+        let restored = import_backup(&f.output, &f.dest).unwrap();
+        assert_eq!(restored["sessions"], library["sessions"]);
+    }
+
+    #[test]
+    fn zero_second_completed_session_with_identical_timestamps_roundtrips() {
+        let f = Fixture::new();
+        let mut library = f.payload.clone();
+        library["sessions"][0]["finished_at"] = library["sessions"][0]["started_at"].clone();
+        library["sessions"][0]["seconds"] = json!(0);
+        export_backup(&library, &f.source, &f.output).unwrap();
+        let restored = import_backup(&f.output, &f.dest).unwrap();
+        assert_eq!(restored["sessions"], library["sessions"]);
+        assert_eq!(
+            restored["sessions"][0]["started_at"],
+            restored["sessions"][0]["finished_at"]
+        );
+        assert_eq!(restored["sessions"][0]["seconds"], 0);
+    }
+
+    #[test]
+    fn malformed_sessions_cannot_install_artwork_or_export_backup() {
+        let f = Fixture::new();
+        fs::create_dir_all(&f.dest).unwrap();
+        fs::write(f.dest.join("preserve.txt"), b"untouched").unwrap();
+        let sample = f.payload["sessions"][0].clone();
+        let mut duplicate = sample.clone();
+        duplicate["finished_at"] = json!("2025-07-20T11:00:00.000Z");
+        let mut missing_id = sample.clone();
+        missing_id.as_object_mut().unwrap().remove("id");
+        let mut extra_field = sample.clone();
+        extra_field["heartbeat_seconds"] = json!(3);
+        let mut invalid_end = sample.clone();
+        invalid_end["finished_at"] = Value::Null;
+        let mut invalid_seconds = sample.clone();
+        invalid_seconds["seconds"] = json!(1.5);
+        let mut future_duration = sample.clone();
+        future_duration["seconds"] = json!(MAX_SESSION_SECONDS + 1);
+        let mut unknown_game = sample.clone();
+        unknown_game["game_id"] = json!(Uuid::new_v4().to_string());
+        let mut backwards = sample.clone();
+        backwards["finished_at"] = json!("2025-07-20T09:00:00.000Z");
+        let mut malformed_date = sample.clone();
+        malformed_date["started_at"] = json!("2025-13-20T10:00:00Z");
+        let mut nonstring_id = sample.clone();
+        nonstring_id["id"] = json!(4);
+        let mut empty_id = sample.clone();
+        empty_id["id"] = json!("");
+        let mut very_long_id = sample.clone();
+        very_long_id["id"] = json!("a".repeat(MAX_SESSION_ID_LENGTH + 1));
+        let mut invalid_integer = sample.clone();
+        invalid_integer["seconds"] = json!(-1);
+        for sessions in [
+            Value::Null,
+            json!({}),
+            json!([null]),
+            json!([missing_id]),
+            json!([extra_field]),
+            json!([invalid_end]),
+            json!([invalid_seconds]),
+            json!([future_duration]),
+            json!([unknown_game]),
+            json!([backwards]),
+            json!([malformed_date]),
+            json!([nonstring_id]),
+            json!([empty_id]),
+            json!([very_long_id]),
+            json!([invalid_integer]),
+            json!([sample.clone(), duplicate]),
+        ] {
+            let mut library = f.payload.clone();
+            library["sessions"] = sessions;
+            write_envelope(&f, &library, artwork_entry(&f.cover, BASE64.encode(png())));
+            assert!(import_backup(&f.output, &f.dest).is_err(), "{library}");
+            assert!(export_backup(&library, &f.source, &f.root.join("bad-export.orbit")).is_err());
+            assert!(!f.root.join("bad-export.orbit").exists());
+            assert_eq!(fs::read_dir(&f.dest).unwrap().count(), 1);
+            assert_eq!(fs::read(f.dest.join("preserve.txt")).unwrap(), b"untouched");
+        }
+    }
+
+    #[test]
+    fn session_history_rejects_duplicate_game_ids_and_excessive_rows() {
+        let f = Fixture::new();
+        let mut library = f.payload.clone();
+        let repeated_game = library["games"][0].clone();
+        library["games"].as_array_mut().unwrap().push(repeated_game);
+        write_envelope(&f, &library, artwork_entry(&f.cover, BASE64.encode(png())));
+        assert!(import_backup(&f.output, &f.dest).is_err());
+        assert!(!f.dest.exists());
+
+        let mut too_many = f.payload.clone();
+        too_many["sessions"] =
+            Value::Array(vec![f.payload["sessions"][0].clone(); MAX_LIBRARY_ROWS + 1]);
+        write_envelope(&f, &too_many, artwork_entry(&f.cover, BASE64.encode(png())));
+        assert!(import_backup(&f.output, &f.dest).is_err());
+        assert!(export_backup(&too_many, &f.source, &f.root.join("bad-export.orbit")).is_err());
+        assert!(!f.dest.exists());
+    }
+
+    #[test]
+    fn crafted_portable_game_or_database_conflict_cannot_install_artwork() {
+        let f = Fixture::new();
+        let embedded = artwork_entry(&f.cover, BASE64.encode(png()));
+
+        // An empty sessions array used to evade game-ID validation. The
+        // archive must not create artwork that the DB will later reject.
+        let mut missing_game_id = f.payload.clone();
+        missing_game_id["sessions"] = json!([]);
+        missing_game_id["games"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("id");
+        write_envelope(&f, &missing_game_id, embedded.clone());
+        assert!(import_backup(&f.output, &f.dest).is_err());
+        assert!(!f.dest.exists());
+
+        // Even a structurally valid history may conflict with a real target
+        // game/session. The caller's rollback-only DB preflight must run
+        // before portable artwork installation.
+        write_envelope(&f, &f.payload, embedded);
+        let result = import_backup_checked(&f.output, &f.dest, |_| {
+            Err("Conflicting session ID in destination".into())
+        });
+        assert!(result.unwrap_err().contains("Conflicting session"));
+        assert!(!f.dest.exists());
     }
 
     #[test]

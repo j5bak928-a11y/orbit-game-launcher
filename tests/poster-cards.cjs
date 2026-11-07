@@ -68,10 +68,17 @@ test('poster cards keep the existing Orbit shell and expose working artwork acti
  assert(buttons.heart.x<buttons.cover.x+buttons.cover.width/2,'favorite is top-left');
  assert(buttons.menu.x>buttons.cover.x+buttons.cover.width/2,'menu is top-right');
  assert(buttons.heart.right<buttons.menu.x,'upper corner actions do not overlap');
- assert(buttons.play.width>buttons.cover.width*.7,'wide blue Play button sits on the poster');
+ assert(buttons.play.width>buttons.cover.width*.7,'wide accent-colored Play button sits on the poster');
  assert(buttons.play.bottom<buttons.cover.bottom+1,'Play stays inside the poster');
  assert.equal(await card.locator('.cover-play').textContent(),'Spelen');
- assert.equal(await card.locator('.cover-play').evaluate(x=>getComputedStyle(x).backgroundColor),'rgb(36, 184, 245)');
+ assert.equal(await card.locator('.cover-play').evaluate(x=>getComputedStyle(x).backgroundColor),'rgb(139, 122, 255)',
+  'poster Play uses the same purple accent as other primary buttons');
+ assert.equal(await card.locator('.cover-play svg').evaluate(x=>getComputedStyle(x).fill),'rgb(17, 18, 29)',
+  'poster Play icon uses the shared dark-on-accent ink');
+ await page.evaluate(()=>window.orbit.saveSettings({accent:'#fc8ca8'}));
+ assert.equal(await card.locator('.cover-play').evaluate(x=>getComputedStyle(x).backgroundColor),'rgb(252, 140, 168)',
+  'poster Play follows a changed accent preference instead of staying hard-coded blue');
+ await page.evaluate(()=>window.orbit.saveSettings({accent:'#8b7aff'}));
  if(screenshotDir){fs.mkdirSync(screenshotDir,{recursive:true});await page.screenshot({path:path.join(screenshotDir,'orbit-posters-desktop.png')});}
  const heart=card.locator('.favorite-float');await heart.click();
  await card.locator('.favorite-float.active').waitFor({state:'attached'});

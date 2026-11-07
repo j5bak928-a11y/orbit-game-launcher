@@ -50,6 +50,7 @@ const SOURCES: [&str; 9] = [
 ];
 const MAX_SESSION_SECONDS: i64 = 7 * 86_400;
 const STATS_MAX_ROWS: i64 = 100_000;
+const BACKUP_MAX_GAMES: usize = 100_000;
 const BACKUP_MAX_SESSIONS: usize = 100_000;
 type DbResult<T> = Result<T, String>;
 
@@ -62,7 +63,10 @@ struct BackupSession {
     seconds: i64,
 }
 
-fn valid_backup_id(value: &str) -> bool {
+/// Stable IDs in old Orbit libraries may predate UUIDs. Use the original
+/// backup contract for every API that accepts a game ID. These are opaque
+/// SQLite parameter values, never filesystem paths or SQL statements.
+pub(crate) fn valid_backup_id(value: &str) -> bool {
     !value.is_empty()
         && value.trim() == value
         && value.len() <= 128
@@ -92,6 +96,15 @@ fn validate_backup_sessions(payload: &Value) -> DbResult<Option<Vec<BackupSessio
     let mut seen = HashSet::with_capacity(sessions.len());
     let mut validated = Vec::with_capacity(sessions.len());
     for (index, raw) in sessions.iter().enumerate() {
+        let fields = raw.as_object().filter(|fields| {
+            fields.len() == 5
+                && ["id", "game_id", "started_at", "finished_at", "seconds"]
+                    .iter()
+                    .all(|key| fields.contains_key(*key))
+        });
+        if fields.is_none() {
+            return Err(format!("Invalid backup session fields at index {index}."));
+        }
         let id = raw
             .get("id")
             .and_then(Value::as_str)
@@ -1702,6 +1715,12 @@ impl LibraryDatabase {
     /// report that explicitly instead of silently producing a partial backup.
     pub fn export_json(&self) -> DbResult<Value> {
         let tx = self.conn.unchecked_transaction().map_err(error)?;
+        let game_count: i64 = tx
+            .query_row("SELECT COUNT(*) FROM games", [], |row| row.get(0))
+            .map_err(error)?;
+        if game_count > BACKUP_MAX_GAMES as i64 {
+            return Err("Cannot export more than 100000 games in an Orbit backup.".into());
+        }
         let unfinished: i64 = tx
             .query_row(
                 "SELECT COUNT(*) FROM sessions WHERE finished_at IS NULL",
@@ -1715,6 +1734,12 @@ impl LibraryDatabase {
             ));
         }
         let games = self.list("name")?;
+        if games
+            .as_array()
+            .map_or(true, |rows| rows.len() > BACKUP_MAX_GAMES)
+        {
+            return Err("Cannot export more than 100000 games in an Orbit backup.".into());
+        }
         let game_ids: HashSet<&str> = games
             .as_array()
             .ok_or("Invalid library for backup.")?
@@ -1916,7 +1941,7 @@ impl LibraryDatabase {
             .get("games")
             .and_then(Value::as_array)
             .ok_or("Unrecognized Orbit backup format.")?;
-        if games.len() > 100_000 {
+        if games.len() > BACKUP_MAX_GAMES {
             return Err("Backup game count exceeds the safe limit.".into());
         }
         for game in games {
@@ -1924,6 +1949,22 @@ impl LibraryDatabase {
         }
         if let Some(sessions) = validate_backup_sessions(payload)? {
             self.restore_with_sessions(games, &sessions, None, true)?;
+        } else {
+            // Old orbit.library.v1 files have no sessions property. Exercise
+            // their actual game insert and metadata writes in a rollback-only
+            // transaction before portable artwork is installed. Validation of
+            // fields alone cannot detect a failing SQLite constraint/trigger.
+            let tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(error)?;
+            for raw in games {
+                let result = upsert_on(&tx, raw, false)?;
+                if result["added"] == true {
+                    restore_metadata_on(&tx, raw, field(&result["game"], "id"))?;
+                }
+            }
+            tx.rollback().map_err(error)?;
         }
         Ok(())
     }
@@ -1939,7 +1980,7 @@ impl LibraryDatabase {
             .get("games")
             .and_then(Value::as_array)
             .ok_or_else(|| "Unrecognized Orbit backup format.".to_string())?;
-        if games.len() > 100_000 {
+        if games.len() > BACKUP_MAX_GAMES {
             return Err("Unrecognized Orbit backup format.".into());
         }
         let sessions = validate_backup_sessions(payload)?;
@@ -2590,6 +2631,9 @@ mod tests {
             let mut not_array = base.clone();
             not_array["sessions"] = json!({});
             bad_cases.push(not_array);
+            let mut extra_field = base.clone();
+            extra_field["sessions"][0]["unexpected"] = json!("not in portable contract");
+            bad_cases.push(extra_field);
             for case in bad_cases {
                 assert!(db.restore_json(&case).is_err());
                 assert_eq!(db.count().unwrap(), 0);
@@ -2685,6 +2729,57 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(elapsed, 60, "rejected archive cannot change a session");
+        });
+    }
+
+    #[test]
+    fn legacy_portable_preflight_checks_real_sql_writes_without_leaving_rows() {
+        with_database(|db, _| {
+            let legacy = json!({
+                "format":"orbit.library.v1",
+                "games":[{"name":"Legacy backup","source":"manual","total_play_seconds":65}]
+            });
+            db.conn
+                .execute_batch(
+                    "CREATE TRIGGER prevent_legacy_import BEFORE INSERT ON games
+                 BEGIN SELECT RAISE(ABORT, 'intentional constraint failure'); END;",
+                )
+                .unwrap();
+            assert!(db
+                .preflight_restore_json(&legacy)
+                .unwrap_err()
+                .contains("constraint failure"));
+            assert_eq!(db.count().unwrap(), 0);
+            db.conn
+                .execute_batch("DROP TRIGGER prevent_legacy_import")
+                .unwrap();
+            db.preflight_restore_json(&legacy).unwrap();
+            assert_eq!(db.count().unwrap(), 0);
+            assert_eq!(db.restore_json(&legacy).unwrap()["imported"], 1);
+            assert_eq!(db.list("name").unwrap()[0]["total_play_seconds"], 65);
+        });
+    }
+
+    #[test]
+    fn json_export_fails_closed_for_more_than_100000_games() {
+        with_database(|db, _| {
+            // Keep the payload well below 128 MB: only the row count makes
+            // this export unsafe for a restore into another Orbit instance.
+            db.conn.execute_batch(
+                "WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n < 100001)
+                 INSERT INTO games(id,name,source,created_at,updated_at)
+                 SELECT 'bulk-'||n,'Game '||n,'manual','2025-01-01T00:00:00Z','2025-01-01T00:00:00Z' FROM seq;"
+            ).unwrap();
+            assert_eq!(db.count().unwrap(), 100001);
+            assert!(db.export_json().unwrap_err().contains("100000 games"));
+            let count_after: i64 = db
+                .conn
+                .query_row("SELECT COUNT(*) FROM games", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(
+                count_after, 100001,
+                "export refusal must never alter the library"
+            );
         });
     }
 

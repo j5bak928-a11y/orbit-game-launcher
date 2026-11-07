@@ -7,10 +7,10 @@ use flate2::{read::MultiGzDecoder, write::GzEncoder, Compression};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs::{self, File, OpenOptions},
     io::{Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
 use uuid::Uuid;
 
@@ -158,10 +158,7 @@ fn validate_sessions(library: &Value, rows: &[Value]) -> Result<(), String> {
 }
 
 fn valid_session_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= MAX_SESSION_ID_LENGTH
-        && id.trim() == id
-        && id.chars().all(|character| !character.is_control())
+    id.len() <= MAX_SESSION_ID_LENGTH && crate::database::valid_backup_id(id)
 }
 
 fn asset_names(rows: &[Value]) -> BTreeSet<String> {
@@ -305,7 +302,126 @@ fn ensure_artwork_dir(dir: &Path) -> Result<(), String> {
 
 /// Atomically links a complete temporary file to a new, sanitized name.
 /// The link operation never overwrites an existing file, including symlinks.
-fn install_artwork(dir: &Path, original: &str, bytes: &[u8]) -> Result<String, String> {
+struct CreatedArtwork {
+    name: String,
+    path: PathBuf,
+    digest: [u8; 32],
+}
+
+/// Tracks only final hard links created by this import, never pre-existing
+/// identical or conflicting files. Dropping a pending restore rolls them back.
+pub struct StagedBackup {
+    library: Value,
+    created: Vec<CreatedArtwork>,
+    artwork_dir: PathBuf,
+    created_dir: bool,
+    committed: bool,
+}
+
+impl StagedBackup {
+    pub fn library(&self) -> &Value {
+        &self.library
+    }
+
+    fn rollback_unused(&mut self, referenced: &HashSet<String>) -> Result<(), String> {
+        let mut errors = Vec::new();
+        let mut pending = Vec::new();
+        for artwork in self.created.drain(..) {
+            if referenced.contains(&artwork.name) {
+                // A committed database game now points to this image.
+                continue;
+            }
+            // A changed file or symlink is no longer ours to delete. Hashing
+            // before unlink also avoids deleting another writer's replacement.
+            let removal = match fs::symlink_metadata(&artwork.path) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(e.to_string()),
+                Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() => {
+                    Err("artwork was replaced by another filesystem object".into())
+                }
+                Ok(_) => match read_bounded(&artwork.path, MAX_IMAGE) {
+                    Ok(contents)
+                        if <[u8; 32]>::from(Sha256::digest(&contents)) == artwork.digest =>
+                    {
+                        fs::remove_file(&artwork.path).map_err(|e| e.to_string())
+                    }
+                    Ok(_) => Err("artwork contents changed after installation".into()),
+                    Err(e) => Err(e),
+                },
+            };
+            if let Err(message) = removal {
+                errors.push(format!("{}: {message}", artwork.name));
+                pending.push(artwork);
+            }
+        }
+        self.created = pending;
+        if self.created_dir && self.created.is_empty() {
+            // Only remove an empty directory created by this import. It may
+            // contain unrelated files placed there by another process.
+            if fs::remove_dir(&self.artwork_dir).is_ok() {
+                self.created_dir = false;
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Could not roll back newly installed artwork: {}",
+                errors.join("; ")
+            ))
+        }
+    }
+
+    /// On a successful restore, preserve only images referenced by the final
+    /// database library. Legacy v1 can import some games and skip others.
+    /// If the DB cannot be read, pass None and conservatively retain images.
+    pub fn finish(
+        mut self,
+        restore: Result<Value, String>,
+        referenced: Option<&HashSet<String>>,
+    ) -> Result<Value, String> {
+        match restore {
+            Ok(report) => {
+                if let Some(referenced) = referenced {
+                    if let Err(e) = self.rollback_unused(referenced) {
+                        self.committed = true; // DB already committed; don't undo referenced images.
+                        return Err(format!("Library restored, but artwork cleanup failed: {e}"));
+                    }
+                }
+                self.created.clear();
+                self.committed = true;
+                Ok(report)
+            }
+            Err(reason) => {
+                let cleanup = self.rollback_unused(&HashSet::new());
+                self.committed = cleanup.is_ok();
+                match cleanup {
+                    Ok(()) => Err(reason),
+                    Err(e) => Err(format!("{reason}; {e}")),
+                }
+            }
+        }
+    }
+
+    fn into_library(mut self) -> Value {
+        self.committed = true;
+        std::mem::take(&mut self.library)
+    }
+}
+
+impl Drop for StagedBackup {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = self.rollback_unused(&HashSet::new());
+        }
+    }
+}
+
+fn install_artwork(
+    dir: &Path,
+    original: &str,
+    bytes: &[u8],
+) -> Result<(String, Option<CreatedArtwork>), String> {
     let digest = format!("{:x}", Sha256::digest(bytes));
     let ext = image_extension(original).ok_or_else(|| err("Backup contains invalid artwork."))?;
     let preferred = format!(
@@ -318,7 +434,7 @@ fn install_artwork(dir: &Path, original: &str, bytes: &[u8]) -> Result<String, S
         ext
     );
     let temporary = dir.join(format!(".orbit-{}.tmp", Uuid::new_v4()));
-    let result = (|| -> Result<String, String> {
+    let result = (|| -> Result<(String, Option<CreatedArtwork>), String> {
         let mut file = OpenOptions::new()
             .create_new(true)
             .write(true)
@@ -335,10 +451,17 @@ fn install_artwork(dir: &Path, original: &str, bytes: &[u8]) -> Result<String, S
             };
             let target = dir.join(&name);
             match fs::hard_link(&temporary, &target) {
-                Ok(()) => return Ok(name),
+                Ok(()) => {
+                    let created = CreatedArtwork {
+                        name: name.clone(),
+                        path: target,
+                        digest: Sha256::digest(bytes).into(),
+                    };
+                    return Ok((name, Some(created)));
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     if existing_is_identical(&target, bytes) {
-                        return Ok(name);
+                        return Ok((name, None));
                     }
                 }
                 Err(e) => return Err(e.to_string()),
@@ -396,6 +519,32 @@ pub fn import_backup_checked<F>(
 where
     F: FnOnce(&Value) -> Result<(), String>,
 {
+    Ok(import_backup_checked_staged(input, artwork_dir, preflight)?.into_library())
+}
+
+/// Keep newly installed artwork reversible until the caller completes the
+/// actual SQLite restore. The UI uses finish() after db.restore_json().
+pub fn import_backup_checked_staged<F>(
+    input: &Path,
+    artwork_dir: &Path,
+    preflight: F,
+) -> Result<StagedBackup, String>
+where
+    F: FnOnce(&Value) -> Result<(), String>,
+{
+    import_backup_staged_with_installer(input, artwork_dir, preflight, install_artwork)
+}
+
+fn import_backup_staged_with_installer<F, I>(
+    input: &Path,
+    artwork_dir: &Path,
+    preflight: F,
+    mut installer: I,
+) -> Result<StagedBackup, String>
+where
+    F: FnOnce(&Value) -> Result<(), String>,
+    I: FnMut(&Path, &str, &[u8]) -> Result<(String, Option<CreatedArtwork>), String>,
+{
     let compressed = read_bounded(input, MAX_ARCHIVE)
         .map_err(|_| err("Invalid Orbit portable backup or archive exceeds the 128 MB limit."))?;
     let unpacked = gunzip_bounded(&compressed)?;
@@ -423,10 +572,23 @@ where
     let assets = decode_artwork(artwork, &referenced)?;
     preflight(&library)?;
     let mut installed = BTreeMap::new();
+    let mut staged = StagedBackup {
+        library: Value::Null,
+        created: Vec::new(),
+        artwork_dir: artwork_dir.to_path_buf(),
+        created_dir: false,
+        committed: false,
+    };
     if !assets.is_empty() {
+        staged.created_dir = fs::symlink_metadata(artwork_dir)
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound);
         ensure_artwork_dir(artwork_dir)?;
         for (name, bytes) in &assets {
-            installed.insert(name.clone(), install_artwork(artwork_dir, name, bytes)?);
+            let (installed_name, created) = installer(artwork_dir, name, bytes)?;
+            if let Some(created) = created {
+                staged.created.push(created);
+            }
+            installed.insert(name.clone(), installed_name);
         }
     }
     for game in library["games"].as_array_mut().expect("validated games") {
@@ -451,7 +613,8 @@ where
             fields.insert(field.to_owned(), Value::String(replacement));
         }
     }
-    Ok(library)
+    staged.library = library;
+    Ok(staged)
 }
 
 #[cfg(test)]
@@ -711,6 +874,184 @@ mod tests {
         });
         assert!(result.unwrap_err().contains("Conflicting session"));
         assert!(!f.dest.exists());
+    }
+
+    #[test]
+    fn legacy_portable_without_sessions_runs_sql_preflight_before_artwork_installation() {
+        let f = Fixture::new();
+        let mut legacy = f.payload.clone();
+        legacy.as_object_mut().unwrap().remove("sessions");
+        write_envelope(&f, &legacy, artwork_entry(&f.cover, BASE64.encode(png())));
+        let sqlite = f.root.join("library.sqlite");
+        let mut db = crate::database::LibraryDatabase::open(&sqlite).unwrap();
+        let conn = rusqlite::Connection::open(&sqlite).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER block_legacy_restore BEFORE INSERT ON games
+             BEGIN SELECT RAISE(ABORT,'database import rejected'); END;",
+        )
+        .unwrap();
+
+        let failure = import_backup_checked(&f.output, &f.dest, |payload| {
+            db.preflight_restore_json(payload)
+        })
+        .unwrap_err();
+        assert!(failure.contains("database import rejected"), "{failure}");
+        assert!(
+            !f.dest.exists(),
+            "failed legacy SQL preflight must not install artwork"
+        );
+        assert_eq!(db.count().unwrap(), 0);
+
+        conn.execute_batch("DROP TRIGGER block_legacy_restore")
+            .unwrap();
+        let restored = import_backup_checked(&f.output, &f.dest, |payload| {
+            db.preflight_restore_json(payload)
+        })
+        .unwrap();
+        assert_eq!(db.count().unwrap(), 0, "preflight must roll back writes");
+        assert_eq!(db.restore_json(&restored).unwrap()["imported"], 1);
+        assert_eq!(db.count().unwrap(), 1);
+        let image = restored["games"][0]["cover"].as_str().unwrap();
+        assert_eq!(fs::read(f.dest.join(image)).unwrap(), png());
+        drop(conn);
+        drop(db);
+    }
+
+    #[test]
+    fn partial_artwork_install_failure_rolls_back_new_links_but_keeps_identical_existing() {
+        let f = Fixture::new();
+        let mut artwork = Map::new();
+        let mut images = vec![
+            (f.cover.clone(), png()),
+            (f.banner.clone(), jpeg()),
+            (f.icon.clone(), webp()),
+        ];
+        images.sort_by(|left, right| left.0.cmp(&right.0));
+        for (name, bytes) in &images {
+            artwork.insert(name.clone(), json!(BASE64.encode(bytes)));
+        }
+        write_envelope(&f, &f.payload, Value::Object(artwork));
+        fs::create_dir_all(&f.dest).unwrap();
+        let (existing_name, seeded) = install_artwork(&f.dest, &images[0].0, &images[0].1).unwrap();
+        assert!(seeded.is_some());
+        fs::write(f.dest.join("keep.txt"), b"unrelated").unwrap();
+
+        let mut attempts = 0;
+        let failed = import_backup_staged_with_installer(
+            &f.output,
+            &f.dest,
+            |_| Ok(()),
+            |directory, name, bytes| {
+                attempts += 1;
+                if attempts == 3 {
+                    return Err("simulated ENOSPC writing third artwork".into());
+                }
+                install_artwork(directory, name, bytes)
+            },
+        );
+        assert!(failed
+            .err()
+            .expect("injected failure must abort")
+            .contains("simulated ENOSPC"));
+        assert_eq!(attempts, 3);
+        assert_eq!(fs::read(f.dest.join(&existing_name)).unwrap(), images[0].1);
+        assert_eq!(fs::read(f.dest.join("keep.txt")).unwrap(), b"unrelated");
+        assert_eq!(fs::read_dir(&f.dest).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn post_preflight_database_failure_rolls_back_only_new_artwork() {
+        let f = Fixture::new();
+        let mut artwork = Map::new();
+        artwork.insert(f.cover.clone(), json!(BASE64.encode(png())));
+        artwork.insert(f.banner.clone(), json!(BASE64.encode(jpeg())));
+        write_envelope(&f, &f.payload, Value::Object(artwork));
+        fs::create_dir_all(&f.dest).unwrap();
+        let (existing_name, _) = install_artwork(&f.dest, &f.cover, &png()).unwrap();
+        let sqlite = f.root.join("sqlite-post-preflight.sqlite");
+        let mut db = crate::database::LibraryDatabase::open(&sqlite).unwrap();
+        let staged = import_backup_checked_staged(&f.output, &f.dest, |library| {
+            db.preflight_restore_json(library)
+        })
+        .unwrap();
+        assert_eq!(fs::read_dir(&f.dest).unwrap().count(), 2);
+
+        // A transient DB error appears only after preflight and artwork
+        // installation; session restore is transactional and rolls back.
+        let other = rusqlite::Connection::open(&sqlite).unwrap();
+        other
+            .execute_batch(
+                "CREATE TRIGGER inject_post_artwork_failure BEFORE INSERT ON sessions
+             BEGIN SELECT RAISE(ABORT,'simulated SQLITE_FULL'); END;",
+            )
+            .unwrap();
+        let restore = db.restore_json(staged.library());
+        let failure = staged.finish(restore, None).unwrap_err();
+        assert!(failure.contains("simulated SQLITE_FULL"), "{failure}");
+        assert_eq!(db.count().unwrap(), 0);
+        assert_eq!(fs::read_dir(&f.dest).unwrap().count(), 1);
+        assert_eq!(fs::read(f.dest.join(existing_name)).unwrap(), png());
+    }
+
+    #[test]
+    fn legacy_partial_restore_keeps_art_for_committed_games_and_prunes_orphans() {
+        let f = Fixture::new();
+        let mut legacy = f.payload.clone();
+        legacy.as_object_mut().unwrap().remove("sessions");
+        legacy["games"][0]["banner"] = json!("");
+        legacy["games"][0]["icon"] = json!("");
+        legacy["games"].as_array_mut().unwrap().push(json!({
+            "name":"Reject this game after preflight", "source":"gog",
+            "source_id":"rejected-unique-identity", "cover":f.banner
+        }));
+        let mut artwork = Map::new();
+        artwork.insert(f.cover.clone(), json!(BASE64.encode(png())));
+        artwork.insert(f.banner.clone(), json!(BASE64.encode(jpeg())));
+        write_envelope(&f, &legacy, Value::Object(artwork));
+        let sqlite = f.root.join("legacy-partial.sqlite");
+        let mut db = crate::database::LibraryDatabase::open(&sqlite).unwrap();
+        let staged = import_backup_checked_staged(&f.output, &f.dest, |payload| {
+            db.preflight_restore_json(payload)
+        })
+        .unwrap();
+        assert_eq!(fs::read_dir(&f.dest).unwrap().count(), 2);
+
+        let conn = rusqlite::Connection::open(&sqlite).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER reject_one_import BEFORE INSERT ON games
+             WHEN NEW.name='Reject this game after preflight'
+             BEGIN SELECT RAISE(ABORT, 'simulated legacy per-item error'); END;",
+        )
+        .unwrap();
+        let restored = db.restore_json(staged.library());
+        assert!(
+            restored.as_ref().unwrap()["errors"]
+                .as_array()
+                .unwrap()
+                .len()
+                == 1
+        );
+        let referenced = db
+            .list("name")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|game| {
+                ["cover", "banner", "icon"]
+                    .into_iter()
+                    .filter_map(|field| game[field].as_str().map(str::to_owned))
+            })
+            .collect::<HashSet<String>>();
+        let report = staged.finish(restored, Some(&referenced)).unwrap();
+        assert_eq!(report["imported"], 1);
+        assert_eq!(db.count().unwrap(), 1);
+        assert_eq!(fs::read_dir(&f.dest).unwrap().count(), 1);
+        let cover = db.list("name").unwrap()[0]["cover"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(fs::read(f.dest.join(cover)).unwrap(), png());
     }
 
     #[test]

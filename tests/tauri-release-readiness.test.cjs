@@ -112,9 +112,11 @@ test('export/restore dialog cancellation occurs before any file or database muta
   }
   assert.ok(restoreFlow.indexOf('choose_file(app, &["orbit", "json"])') >= 0);
   assert.ok(restoreFlow.indexOf(cancel) > restoreFlow.indexOf('choose_file('));
-  for (const operation of ['backup::import_backup_checked(', 'db.restore_json(']) {
+  for (const operation of ['backup::import_backup_checked_staged(', 'db.restore_json(']) {
     assert.ok(restoreFlow.indexOf(cancel) < restoreFlow.indexOf(operation));
   }
+  assert.match(restoreFlow, /staged\.finish\(restore, live_artwork\.as_ref\(\)\)/,
+    'portable artwork cleanup must remain tied to the eventual database restore');
   assert.match(src.slice(src.indexOf('fn write_json_backup('), src.indexOf('fn argument(', src.indexOf('fn write_json_backup(')) > 0 ? src.indexOf('fn argument(', src.indexOf('fn write_json_backup(')) : src.length), /create_new\(true\)/);
 });
 

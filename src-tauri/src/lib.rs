@@ -582,10 +582,83 @@ fn str_argument<'a>(args: &'a [Value], index: usize) -> Result<&'a str, String> 
 }
 fn game_id(args: &[Value]) -> Result<&str, String> {
     let id = str_argument(args, 0)?;
-    if uuid::Uuid::parse_str(id).is_err() {
+    if !database::valid_backup_id(id) {
         return Err("Invalid game identifier".into());
     }
     Ok(id)
+}
+
+#[cfg(test)]
+mod backup_game_id_acceptance_tests {
+    use super::*;
+
+    #[test]
+    fn imported_historical_game_ids_remain_accessible_to_all_game_commands() {
+        for id in [
+            "legacy-game-001",
+            "old.steam:1234",
+            "db:history:edition_a",
+            "legacy/path:edition-A",
+            r"legacy\path",
+            "..",
+            "bc69e933-023b-4574-bfef-1522a6ab61ca",
+        ] {
+            assert_eq!(game_id(&[json!(id)]).unwrap(), id);
+        }
+        for id in ["", " ", "two\nlines", "zero\0byte", " leading", "trailing "] {
+            assert!(
+                game_id(&[json!(id)]).is_err(),
+                "accepted malformed game ID: {id:?}"
+            );
+        }
+        assert!(game_id(&[json!("x".repeat(129))]).is_err());
+        assert!(game_id(&[Value::Null]).is_err());
+    }
+
+    #[test]
+    fn legacy_non_uuid_game_id_survives_restore_and_parameterized_database_access() {
+        let root = std::env::temp_dir().join(format!("orbit-api-legacy-{}", uuid::Uuid::new_v4()));
+        let file = root.join("db.sqlite");
+        let mut db = database::LibraryDatabase::open(&file).unwrap();
+        let legacy_id = "legacy.title:before-uuid";
+        let payload = json!({
+            "format":"orbit.library.v1",
+            "games":[{"id":legacy_id,"name":"Legacy playable title","source":"gog","source_id":"legacy-001"}],
+            "sessions":[{"id":"legacy-session-1","game_id":legacy_id,
+                "started_at":"2025-01-01T10:00:00Z","finished_at":"2025-01-01T10:02:00Z","seconds":120}]
+        });
+        assert_eq!(db.restore_json(&payload).unwrap()["sessionsImported"], 1);
+        let id_args = [json!(legacy_id)];
+        let id = game_id(&id_args).unwrap();
+        assert_eq!(db.get(id).unwrap()["name"], "Legacy playable title");
+        assert_eq!(db.toggle_favorite(id).unwrap()["favorite"], true);
+        assert_eq!(
+            db.update(id, &json!({"name":"Playable again"})).unwrap()["name"],
+            "Playable again"
+        );
+        let session = db.start_session(id).unwrap();
+        assert!(db.finish_session(&session, 10).unwrap());
+        assert_eq!(db.get(id).unwrap()["total_play_seconds"], 10);
+        assert_eq!(
+            db.export_json().unwrap()["sessions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(db.remove(id).unwrap());
+        assert!(db.get(id).unwrap().is_null());
+
+        // SQL metacharacters are not interpolated into a query or used as
+        // paths; a forged lookup cannot select a different library game.
+        let untouched = db.upsert(&json!({"name":"Untouched"})).unwrap();
+        let suspicious = "' OR 1=1 --";
+        assert!(db.get(suspicious).unwrap().is_null());
+        assert_eq!(db.count().unwrap(), 1);
+        assert!(!untouched["game"]["id"].as_str().unwrap().is_empty());
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 fn choose_file(app: &tauri::AppHandle, extensions: &[&str]) -> Result<Option<PathBuf>, String> {
@@ -1103,41 +1176,83 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             // validation and commit. Native playtime tracking continues after
             // this explicit, bounded user-requested restore operation.
             let mut db = state.db.lock().unwrap();
-            let payload = if path.extension().and_then(|s| s.to_str()) == Some("orbit") {
-                backup::import_backup_checked(&path, &state.artwork_dir, |library| {
-                    db.preflight_restore_json(library)
-                })?
+            let portable = path.extension().and_then(|s| s.to_str()) == Some("orbit");
+            let staged = if portable {
+                Some(backup::import_backup_checked_staged(
+                    &path,
+                    &state.artwork_dir,
+                    |library| db.preflight_restore_json(library),
+                )?)
             } else {
-                serde_json::from_slice::<Value>(&std::fs::read(&path).map_err(|e| e.to_string())?)
-                    .map_err(|e| e.to_string())?
+                None
             };
-            if payload["format"] != "orbit.library.v1" {
-                return Err("Invalid Orbit backup format".into());
-            }
-            let games = payload["games"].as_array().ok_or("Invalid game list")?;
-            if games.len() > 100_000 {
-                return Err("Too many games in backup".into());
-            }
-            let mut clean_payload = payload.clone();
-            let clean_games = clean_payload["games"]
-                .as_array_mut()
-                .ok_or("Invalid game list")?;
-            // Artwork tokens have already been extracted/validated by backup;
-            // a JSON backup may only refer to safe, existing local files.
-            for (clean, original) in clean_games.iter_mut().zip(games.iter()) {
-                if let Some(game) = clean.as_object_mut() {
-                    for field in ["cover", "banner", "icon"] {
-                        game.insert(
-                            field.into(),
-                            json!(restored_artwork_token(&original[field], &state.artwork_dir)),
-                        );
+            let json_payload = if portable {
+                None
+            } else {
+                Some(
+                    serde_json::from_slice::<Value>(
+                        &std::fs::read(&path).map_err(|e| e.to_string())?,
+                    )
+                    .map_err(|e| e.to_string())?,
+                )
+            };
+            let payload = staged
+                .as_ref()
+                .map(backup::StagedBackup::library)
+                .or(json_payload.as_ref())
+                .ok_or("Missing Orbit restore payload")?;
+            let restore = (|| -> Result<Value, String> {
+                if payload["format"] != "orbit.library.v1" {
+                    return Err("Invalid Orbit backup format".into());
+                }
+                let games = payload["games"].as_array().ok_or("Invalid game list")?;
+                if games.len() > 100_000 {
+                    return Err("Too many games in backup".into());
+                }
+                let mut clean_payload = payload.clone();
+                let clean_games = clean_payload["games"]
+                    .as_array_mut()
+                    .ok_or("Invalid game list")?;
+                // Artwork tokens have already been extracted/validated by backup;
+                // a JSON backup may only refer to safe, existing local files.
+                for (clean, original) in clean_games.iter_mut().zip(games.iter()) {
+                    if let Some(game) = clean.as_object_mut() {
+                        for field in ["cover", "banner", "icon"] {
+                            game.insert(
+                                field.into(),
+                                json!(restored_artwork_token(&original[field], &state.artwork_dir)),
+                            );
+                        }
                     }
                 }
-            }
-            // The database layer validates session IDs/references before
-            // writing, maps old game IDs to their imported/deduplicated IDs,
-            // and imports history without adding playtime twice.
-            let result = db.restore_json(&clean_payload)?;
+                // The database layer maps source IDs and imports completed
+                // history without crediting aggregate playtime twice.
+                db.restore_json(&clean_payload)
+            })();
+            let result = if let Some(staged) = staged {
+                // Old v1 restores can succeed partially. Preserve artwork used
+                // by any committed game and prune only newly installed files
+                // that are unreferenced after the database operation.
+                let live_artwork = if restore.is_ok() {
+                    db.list("name").ok().and_then(|library| {
+                        library.as_array().map(|games| {
+                            games
+                                .iter()
+                                .flat_map(|game| {
+                                    ["cover", "banner", "icon"]
+                                        .into_iter()
+                                        .filter_map(|field| game[field].as_str().map(str::to_owned))
+                                })
+                                .collect::<HashSet<_>>()
+                        })
+                    })
+                } else {
+                    None
+                };
+                staged.finish(restore, live_artwork.as_ref())?
+            } else {
+                restore?
+            };
             drop(db);
             changed(app, &state, vec![], vec![], "restore", true);
             queue_artwork_scan(app);

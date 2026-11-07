@@ -18,6 +18,7 @@ The main desktop application uses **Electron**. A separate, **experimental Rust 
 - **Track playtime:** record supported direct-launch sessions and detect certain externally launched games on Windows. Tracking accuracy depends on how a game starts and which processes can be identified.
 - **Show game artwork:** look for validated portrait artwork in bounded neighboring folders, use cached covers and icons offline, optionally look up online artwork, or select your own cover, banner, and icon.
 - **Play with a controller:** use a fullscreen, gamepad-friendly library with keyboard and mouse fallback.
+- **Choose your language:** use Orbit in English, Nederlands, Deutsch, Français or Español; follow the system language automatically or select one in Settings. Both desktop editions save this preference locally.
 - **Review gaming statistics:** recorded-session totals for recent days and weeks, a daily activity chart, recent games and a period-best day. Overlapping records for a single game are deduplicated in reports without rewriting play history.
 - **Keep your data local:** store games, settings, and play history in SQLite; export and restore library backups.
 
@@ -176,6 +177,12 @@ The cinematic controller detail view keeps game artwork contained and provides a
 
 Open **Statistics** in the sidebar to view the last 7 and 30 local calendar days, an activity chart, period-best day, recent completed games, and all recorded finished-session time. The calculations read session history, not the game's editable/imported aggregate counter. They omit unfinished checkpoints and flag invalid timestamps; overlapping sessions for the **same game ID** are coalesced in this *report only*. Existing historical sessions and `games.total_play_seconds` are not modified, and separate game IDs or two independently running editions may still have separate records. An old imported library with aggregate playtime but no session rows can show lower recorded-session statistics than game cards.
 
+## Interface languages
+
+Open **Settings → Appearance → Language** to choose **System (automatic)**, English, Nederlands, Deutsch, Français, or Español. The system option follows the browser/WebView2 language when it is supported; otherwise Orbit uses English. Switching languages updates the library interface and fullscreen controller experience without restarting. The language choice is stored with the other local SQLite preferences and included in backups. Game titles, personal tags, filenames, and storefront metadata are **not** machine-translated or renamed.
+
+The built-in localization files live in `src/ui/i18n.js` and require no connection or translation service. New strings must have an English fallback and should be added to all supported language catalogs. Native OS dialogs and game storefront interfaces may continue using their own display language.
+
 ## Your data and backups
 
 Orbit stores its library, play history, preferences, and cached artwork locally. Use **Settings → Open folder** to find the current edition's data directory.
@@ -197,6 +204,7 @@ npm run check
 npm test
 npm run lint
 npm run test:controller
+npm run test:languages
 npm run test:renderer
 npm run test:experience
 npm run test:cinematic

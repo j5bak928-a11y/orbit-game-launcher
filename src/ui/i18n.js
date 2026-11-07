@@ -278,6 +278,7 @@
     ["Scanning installed games…", "Geïnstalleerde games scannen…", "Installierte Spiele werden gesucht…", "Analyse des jeux installés…", "Buscando juegos instalados…"],
     ["Find installed games", "Geïnstalleerde games vinden", "Installierte Spiele finden", "Trouver les jeux installés", "Buscar juegos instalados"],
     ["Controller mode (F11)", "Controllermodus (F11)", "Controller-Modus (F11)", "Mode manette (F11)", "Modo mando (F11)"],
+    ["Controller mode (F11 / Menu)", "Controllermodus (F11 / Menu)", "Controller-Modus (F11 / Menü)", "Mode manette (F11 / Menu)", "Modo mando (F11 / Menú)"],
     ["Enter controller mode", "Controllermodus openen", "Controller-Modus öffnen", "Activer le mode manette", "Entrar en modo mando"],
     ["Controller mode", "Controllermodus", "Controller-Modus", "Mode manette", "Modo mando"],
 
@@ -298,6 +299,7 @@
     ["Next →", "Volgende →", "Weiter →", "Suivant →", "Siguiente →"],
     ["Choose something to play.", "Kies iets om te spelen.", "Wähle ein Spiel aus.", "Choisissez un jeu.", "Elige algo a lo que jugar."],
     ["Move", "Bewegen", "Bewegen", "Déplacer", "Mover"],
+    ["Scroll", "Scrollen", "Scrollen", "Faire défiler", "Desplazar"],
     ["Select", "Selecteren", "Auswählen", "Sélectionner", "Seleccionar"],
     ["Back", "Terug", "Zurück", "Retour", "Volver"],
     ["Favorite", "Favoriet", "Favorit", "Favori", "Favorito"],

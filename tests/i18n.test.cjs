@@ -103,6 +103,49 @@ test('controller right-stick scroll hint and F11/Menu tooltip translate exactly 
   }
 });
 
+test('Rust-primary 0.2.8 What\'s New dialog and changelog descriptions cover all five languages', () => {
+  const { i18n } = createRuntime();
+  const keys = [
+    "What's new", "What's new in Orbit", "See what's new", 'Release notes',
+    'Continue to your library', 'Close release notes', 'Your Orbit is ready',
+    'Highlights from 0.2.7 and 0.2.8', 'Rust is now the primary Windows edition',
+    'Electron remains available as a fallback.', '0.2.8 — New',
+    '0.2.7 — Included improvements', 'A cleaner library', 'Controller experience',
+    'Language and accessibility', 'Data safety and performance',
+    'Fully purple favorite hearts', 'Read the full changelog', 'View release notes',
+    'You can reopen this screen in Settings.', "Show what's new after installing or updating.",
+    'Poster cards, purple Play buttons and responsive layouts.',
+    'Standard gamepads: Menu/Options entry, safer focus, triggers and right-stick scrolling.',
+    'English, Nederlands, Deutsch, Français and Español with automatic language selection.',
+    'Safer portable backups, completed play-session history and first-run library migration.',
+    'Stronger artwork handling, offline cover repair and session recovery.',
+    'Windows builds are unsigned; automatic update installation remains disabled.',
+    'Rust and Electron keep separate profiles. Back up before switching.',
+    'Release highlights appear once per version and can be reopened in Settings.',
+  ];
+  assert.equal(keys.length, 29);
+  const expectedHeadings = {
+    en: ["What's new", 'Release notes', '0.2.8 — New'],
+    nl: ['Wat is er nieuw', 'Versienotities', '0.2.8 — Nieuw'],
+    de: ['Neuigkeiten', 'Versionshinweise', '0.2.8 — Neu'],
+    fr: ['Nouveautés', 'Notes de version', '0.2.8 — Nouveautés'],
+    es: ['Novedades', 'Notas de la versión', '0.2.8 — Novedades'],
+  };
+  const placeholderNames = value => [...value.matchAll(/\{([A-Za-z][A-Za-z0-9_]*)\}/g)]
+    .map(match => match[1]).sort();
+  for (const code of ['en', 'nl', 'de', 'fr', 'es']) {
+    i18n.setLanguage(code);
+    assert.deepEqual([i18n.t(keys[0]), i18n.t(keys[3]), i18n.t(keys[10])], expectedHeadings[code]);
+    for (const key of keys) {
+      const translated = i18n.t(key);
+      assert.ok(translated.length > 0, `${code}: empty release translation for ${key}`);
+      assert.deepEqual(placeholderNames(translated), placeholderNames(key), `${code}: ${key}`);
+      if (code !== 'en') assert.notEqual(translated, key, `${code}: untranslated release key ${key}`);
+      else assert.equal(translated, key, 'English release text should match its source key');
+    }
+  }
+});
+
 test('known Electron and Rust update-status messages are translated without changing unknown backend errors', () => {
   const { i18n } = createRuntime();
   const electron = createUpdateService({ app: { isPackaged: true }, platform: 'win32', env: {} });

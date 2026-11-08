@@ -1,6 +1,6 @@
 {
   "name": "orbit-game-launcher",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "private": true,
   "description": "Orbit — a fast, local-first desktop game launcher",
   "main": "src/main.cjs",
@@ -27,7 +27,8 @@
     "test:cards": "node tests/poster-cards.cjs",
     "test:controller": "node tests/controller-renderer.cjs && node tests/controller-entry.cjs && node tests/controller-layout.cjs",
     "test:languages": "node tests/multilingual-renderer.cjs",
-    "test:visual": "node tests/visual-consistency.cjs"
+    "test:visual": "node tests/visual-consistency.cjs",
+    "test:whats-new": "node tests/whats-new.cjs"
   },
   "engines": {
     "node": ">=22.13.0"
@@ -39,7 +40,7 @@
     "playwright": "1.62.1"
   },
   "build": {
-    "buildVersion": "0.2.7",
+    "buildVersion": "0.2.8",
     "appId": "com.orbitlauncher.desktop",
     "productName": "Orbit Launcher",
     "directories": {
@@ -83,12 +84,12 @@
       "category": "Game"
     },
     "nsis": {
-      "artifactName": "Orbit-Launcher-Setup-0.2.7.${ext}",
+      "artifactName": "Orbit-Launcher-Setup-0.2.8.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
     },
     "portable": {
-      "artifactName": "Orbit-Launcher-0.2.7.${ext}"
+      "artifactName": "Orbit-Launcher-0.2.8.${ext}"
     },
     "electronFuses": {
       "runAsNode": false,

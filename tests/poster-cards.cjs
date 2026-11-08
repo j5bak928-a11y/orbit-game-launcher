@@ -86,6 +86,21 @@ test('poster cards keep the existing Orbit shell and expose working artwork acti
  const heart=card.locator('.favorite-float');await heart.click();
  await card.locator('.favorite-float.active').waitFor({state:'attached'});
  assert(await card.locator('.favorite-float.active').count(),'heart action updates favorite instead of opening details');
+ assert.equal(await card.locator('.favorite-float').getAttribute('aria-pressed'),'true');
+ assert.equal(await card.locator('.favorite-float svg').evaluate(x=>getComputedStyle(x).fill),'rgb(139, 122, 255)',
+  'favorited poster heart is fully filled purple, not partially transparent');
+ assert.equal(await card.locator('.favorite-float svg').evaluate(x=>getComputedStyle(x).stroke),'rgb(139, 122, 255)',
+  'favorited poster heart outline matches the purple fill even on hover');
+ await page.evaluate(()=>window.orbit.saveSettings({accent:'#fc8ca8'}));
+ assert.equal(await card.locator('.favorite-float svg').evaluate(x=>getComputedStyle(x).fill),'rgb(252, 140, 168)',
+  'selected heart follows a customized accent');
+ await page.evaluate(()=>window.orbit.saveSettings({accent:'#8b7aff'}));
+ await heart.click();
+ await page.waitForFunction(()=>document.querySelector('.poster-card .favorite-float')?.getAttribute('aria-pressed')==='false');
+ assert.equal(await card.locator('.favorite-float svg').evaluate(x=>getComputedStyle(x).fill),'none',
+  'removing a favorite restores the unfilled heart');
+ await heart.click();
+ await page.waitForFunction(()=>document.querySelector('.poster-card .favorite-float')?.getAttribute('aria-pressed')==='true');
  await card.locator('.card-menu-float').click();
  await page.locator('#game-actions-popup').waitFor();
  await page.keyboard.press('Escape');
@@ -94,8 +109,25 @@ test('poster cards keep the existing Orbit shell and expose working artwork acti
  await page.waitForFunction(()=>document.querySelector('.poster-card')?.querySelector('.game-meta')?.textContent.includes('Playing now'));
  assert.equal(await page.locator('[role=dialog]').count(),0,'Play does not open the details dialog');
  await card.focus();await page.keyboard.press('Enter');
- await page.locator('[role=dialog]').waitFor();await page.keyboard.press('Escape');
+ await page.locator('[role=dialog]').waitFor();
+ const modalFavorite=page.locator('.showcase-favorite');
+ assert.equal(await modalFavorite.getAttribute('aria-pressed'),'true');
+ assert.equal(await modalFavorite.locator('svg').evaluate(x=>getComputedStyle(x).fill),'rgb(139, 122, 255)',
+  'favorited game details show a solid purple heart');
+ await page.keyboard.press('Escape');
  assert(await page.locator('.poster-card').first().evaluate(node=>document.activeElement===node),'Escape restores card focus');
+ await page.locator('[data-action=view][data-view=list]').click();
+ const listFavorite=page.locator('.game-row').first().locator('[data-action=favorite]');
+ await listFavorite.waitFor();
+ assert.equal(await listFavorite.getAttribute('aria-pressed'),'true');
+ assert.equal(await listFavorite.locator('svg').evaluate(x=>getComputedStyle(x).fill),'rgb(139, 122, 255)',
+  'favorited list row also shows a fully purple heart');
+ await listFavorite.click();
+ await page.waitForFunction(()=>document.querySelector('.game-row [data-action=favorite]')?.getAttribute('aria-pressed')==='false');
+ assert.equal(await listFavorite.locator('svg').evaluate(x=>getComputedStyle(x).fill),'none',
+  'unfavorited list row restores the outline');
+ await page.locator('[data-action=view][data-view=grid]').click();
+ await card.waitFor();
  await page.setViewportSize({width:390,height:780});await page.locator('.poster-card').first().hover();
  const narrow=await page.locator('.poster-card').first().evaluate(node=>{
   const cover=node.querySelector('.cover').getBoundingClientRect();

@@ -57,7 +57,7 @@ jobs:
       - name: Create SHA-256 manifest
         shell: pwsh
         run: |
-          $lines = Get-ChildItem release -File | Where-Object { $_.Name -match '\.(exe|yml|blockmap)$' } | ForEach-Object {
+          $lines = Get-ChildItem release -File | Where-Object { $_.Name -match '\.(exe|blockmap)$' -or $_.Name -eq 'latest.yml' } | ForEach-Object {
             (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower() + '  ' + $_.Name
           }
           $lines | Set-Content -Encoding ascii release/SHA256SUMS.txt
@@ -69,7 +69,7 @@ jobs:
           name: Orbit-Windows-${{ github.sha }}
           path: |
             release/*.exe
-            release/*.yml
+            release/latest.yml
             release/*.blockmap
             release/SHA256SUMS.txt
           if-no-files-found: error
@@ -122,7 +122,7 @@ jobs:
         shell: pwsh
         run: |
           if (!(Test-Path release/SHA256SUMS.txt)) {
-            $lines = Get-ChildItem release -File | Where-Object { $_.Name -match '\.(exe|yml|blockmap)$' } | ForEach-Object {
+            $lines = Get-ChildItem release -File | Where-Object { $_.Name -match '\.(exe|blockmap)$' -or $_.Name -eq 'latest.yml' } | ForEach-Object {
               (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower() + '  ' + $_.Name
             }
             $lines | Set-Content -Encoding ascii release/SHA256SUMS.txt
@@ -135,7 +135,7 @@ jobs:
         run: |
           $version = (Get-Content package.json | ConvertFrom-Json).version -replace '\+(\d+)$', '.$1'
           $tag = "v$version"
-          $files = @(Get-ChildItem release -File | Where-Object { $_.Name -match '\.(exe|yml|blockmap)$' -or $_.Name -eq 'SHA256SUMS.txt' } | ForEach-Object { $_.FullName })
+          $files = @(Get-ChildItem release -File | Where-Object { $_.Name -match '\.(exe|blockmap)$' -or $_.Name -in @('latest.yml','SHA256SUMS.txt') } | ForEach-Object { $_.FullName })
           if (@($files | Where-Object { $_ -match '\.exe$' }).Count -lt 2) { throw 'Expected installer and portable EXE' }
           if (-not ($files | Where-Object { $_ -match 'latest\.yml$' })) { throw 'Missing latest.yml update manifest' }
           gh release create $tag @files --title "Orbit $version" --notes "Windows installer and portable executable. Unsigned builds; real Windows smoke tests and signing remain required." --latest --target $env:GITHUB_SHA

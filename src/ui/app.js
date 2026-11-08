@@ -369,7 +369,8 @@ function settingsView(){const s=state.settings,folders=s.libraryFolders||[];retu
  <div class="settings-card"><h2>${tr('Performance & updates')}</h2><p>${tr('Keep game performance first. Orbit remains available in the tray for playtime tracking.')}</p>
  <div class="setting-row"><div><div class="setting-name">${tr('Performance Guard')}</div><div class="setting-help">${tr("Hide Orbit's window after a confirmed game start on Windows, keeping your edits open.")}</div></div><button class="switch ${s.performanceGuard?'on':''}" data-action="setting-toggle" data-key="performanceGuard" role="switch" aria-checked="${!!s.performanceGuard}" aria-label="${tr('Performance Guard')}"></button></div>
  <div class="setting-row"><div><div class="setting-name">${tr('Automatic updates')}</div><div class="setting-help">${tr('Unavailable until signed releases are configured. Your preference is saved for later.')}</div></div><button class="switch ${s.autoUpdates?'on':''}" data-action="setting-toggle" data-key="autoUpdates" role="switch" aria-checked="${!!s.autoUpdates}" aria-label="${tr('Automatic updates')}"></button></div>
- <div class="setting-row"><div><div class="setting-name">${tr('Update status')}</div><div class="setting-help" id="update-status" role="status" aria-live="polite">${tr(state.updateStatus?.message||'Checking availability…')}</div></div><div class="setting-control" style="display:flex;gap:8px"><button class="secondary-btn" data-action="check-update">${tr('Check now')}</button>${state.updateStatus?.state==='ready'?`<button class="primary-btn" data-action="install-update">${tr('Install update')}</button>`:''}</div></div></div>
+ <div class="setting-row"><div><div class="setting-name">${tr('Update status')}</div><div class="setting-help" id="update-status" role="status" aria-live="polite">${tr(state.updateStatus?.message||'Checking availability…')}</div></div><div class="setting-control" style="display:flex;gap:8px"><button class="secondary-btn" data-action="check-update">${tr('Check now')}</button>${state.updateStatus?.state==='ready'?`<button class="primary-btn" data-action="install-update">${tr('Install update')}</button>`:''}</div></div>
+ <div class="setting-row"><div><div class="setting-name">${tr("What's new")}</div><div class="setting-help">${tr('Release highlights appear once per version and can be reopened in Settings.')}</div></div><button class="secondary-btn" data-action="whats-new">${ic('sparkles',15)} ${tr("See what's new")}</button></div></div>
  <div class="settings-card"><h2>${tr('Library discovery')}</h2><p>${tr('Orbit searches installed game stores and folders you select. Downloads is never scanned automatically.')}</p>
  <div class="setting-row"><div><div class="setting-name">${tr('Scan at startup')}</div><div class="setting-help">${tr('Look for new games whenever Orbit starts.')}</div></div><button class="switch ${s.autoScan?'on':''}" data-action="setting-toggle" data-key="autoScan" role="switch" aria-checked="${s.autoScan}" aria-label="${tr('Scan at startup')}"></button></div>
  <div class="setting-row"><div><div class="setting-name">${tr('Online artwork')}</div><div class="setting-help">${tr('Find covers using Steam and Epic Games when online.')}</div></div><button class="switch ${s.useSteamArtwork?'on':''}" data-action="setting-toggle" data-key="useSteamArtwork" role="switch" aria-checked="${s.useSteamArtwork}" aria-label="${tr('Online artwork downloads')}"></button></div>
@@ -563,7 +564,34 @@ function openGameActions(trigger){
  menu.querySelector('[role=menuitem]')?.focus({preventScroll:true});
 }
 function openModal(type,meta={}){pauseDesktopPadEntry();closeGameActions();if(!state.modal){modalReturnFocus=document.activeElement;modalReturnFocusAction=modalReturnFocus?.dataset.action?{action:modalReturnFocus.dataset.action,id:modalReturnFocus.dataset.id,kind:['game-card','game-row','continue-card','game-menu'].find(name=>modalReturnFocus.classList.contains(name))}:null;}state.modal={type,...meta};renderModal()}
-function closeModal(){state.modal=null;el('modal-root').innerHTML='';const candidates=modalReturnFocusAction?[...document.querySelectorAll('[data-action]')].filter(node=>node.dataset.action===modalReturnFocusAction.action&&node.dataset.id===modalReturnFocusAction.id):[];const target=modalReturnFocus?.isConnected?modalReturnFocus:candidates.find(node=>modalReturnFocusAction.kind&&node.classList.contains(modalReturnFocusAction.kind))||candidates[0];target?.focus({preventScroll:true});modalReturnFocus=null;modalReturnFocusAction=null;wakeDesktopPadEntry();}
+const WHATS_NEW_VERSION='0.2.8';
+const WHATS_NEW_KEY='orbit.whatsNew.lastAcknowledgedVersion';
+function markWhatsNewSeen(){
+ try{window.localStorage?.setItem(WHATS_NEW_KEY,WHATS_NEW_VERSION)}catch{/* Denied storage must not break the launcher. */}
+}
+function showWhatsNewAfterBoot(){
+ // Test fixtures and development sessions do not claim to be a packaged release.
+ if(state.version!==WHATS_NEW_VERSION||state.modal)return;
+ try{if(window.localStorage?.getItem(WHATS_NEW_KEY)===WHATS_NEW_VERSION)return}catch{/* Show once per running session if storage is denied. */}
+ openModal('whats-new',{automatic:true});
+}
+function whatsNewDialog(){
+ const points=(items)=>items.map(item=>`<li>${tr(item)}</li>`).join('');
+ return `<div class="dialog-scrim" data-action="scrim"><section class="dialog wide whats-new-dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="whats-new-intro">
+ <div class="whats-new-header"><span class="whats-new-eyebrow">${ic('sparkles',15)} ORBIT · v${WHATS_NEW_VERSION}</span><button class="ghost-btn whats-new-close" data-action="close-modal" aria-label="${tr('Close release notes')}">${ic('close',20)}</button>
+ <h2 id="dialog-title">${tr("What's new in Orbit")}</h2><p id="whats-new-intro">${tr('Highlights from 0.2.7 and 0.2.8')}</p></div>
+ <div class="whats-new-content">
+ <section class="whats-new-version"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.2.8 — New')}</span><h3>${tr('Your Orbit is ready')}</h3></div>
+ <ul>${points(['Rust is now the primary Windows edition','Fully purple favorite hearts','Show what\'s new after installing or updating.','Electron remains available as a fallback.'])}</ul></section>
+ <section class="whats-new-version whats-new-history"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.2.7 — Included improvements')}</span><h3>${tr('A cleaner library')}</h3></div>
+ <ul>${points(['Poster cards, purple Play buttons and responsive layouts.'])}</ul>
+ <h3>${tr('Controller experience')}</h3><ul>${points(['Standard gamepads: Menu/Options entry, safer focus, triggers and right-stick scrolling.'])}</ul>
+ <h3>${tr('Language and accessibility')}</h3><ul>${points(['English, Nederlands, Deutsch, Français and Español with automatic language selection.'])}</ul>
+ <h3>${tr('Data safety and performance')}</h3><ul>${points(['Safer portable backups, completed play-session history and first-run library migration.','Stronger artwork handling, offline cover repair and session recovery.'])}</ul></section>
+ <p class="whats-new-warning">${ic('info',15)} ${tr('Rust and Electron keep separate profiles. Back up before switching.')} ${tr('Windows builds are unsigned; automatic update installation remains disabled.')}</p>
+ </div><div class="whats-new-footer"><span>${tr('You can reopen this screen in Settings.')}</span><button class="primary-btn" data-action="close-modal">${tr('Continue to your library')} ${ic('arrow',16)}</button></div></section></div>`;
+}
+function closeModal(){if(state.modal?.type==='whats-new')markWhatsNewSeen();state.modal=null;el('modal-root').innerHTML='';const candidates=modalReturnFocusAction?[...document.querySelectorAll('[data-action]')].filter(node=>node.dataset.action===modalReturnFocusAction.action&&node.dataset.id===modalReturnFocusAction.id):[];const target=modalReturnFocus?.isConnected?modalReturnFocus:candidates.find(node=>modalReturnFocusAction.kind&&node.classList.contains(modalReturnFocusAction.kind))||candidates[0];target?.focus({preventScroll:true});modalReturnFocus=null;modalReturnFocusAction=null;wakeDesktopPadEntry();}
 function dialogFrame(title,description,body,footer='',wide=false){return `<div class="dialog-scrim" data-action="scrim"><section class="dialog ${wide?'wide':''}" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div class="dialog-header"><div><h2 id="dialog-title">${esc(title)}</h2><p>${esc(description)}</p></div><button class="ghost-btn" data-action="close-modal" aria-label="${tr('Close dialog')}">${ic('close',21)}</button></div>${body}${footer}</section></div>`}
 function editor(g){const isEdit=!!g;const title=t(isEdit?'Edit game':'Add a game');const params=Array.isArray(g?.launch_args)?JSON.stringify(g.launch_args):'[]';
  const imgSection=(key,label)=>`<div class="image-upload"><div id="preview-${key}">${artwork(g?.[key])?`<img src="${artwork(g[key])}" alt="${tr('{label} preview',{label:t(label)})}" />`:key==='cover'&&artwork(g?.icon)?`<div class="auto-icon-preview"><img src="${artwork(g.icon)}" alt="${tr('Icon fallback')}" /></div>`:`<div class="image-placeholder">${ic('image',21)}</div>`}</div><div style="flex:1"><p>${tr(label)}</p><small>${tr(key==='icon'?'Used when no cover exists':'PNG, JPEG or WebP')}</small></div><button type="button" class="secondary-btn" data-action="choose-art" data-key="${key}">${tr('Choose')}</button><button type="button" class="small-link" data-action="clear-art" data-key="${key}" aria-label="${tr('Clear {label}',{label:t(label)})}">${tr('Clear')}</button></div>`;
@@ -623,6 +651,7 @@ function renderModal(){const modal=state.modal;if(!modal){el('modal-root').inner
  else if(modal.type==='detail')html=detail(state.games.find(g=>g.id===modal.id));
  else if(modal.type==='scan')html=dialogFrame(t('Scanning your games'),t('Looking through installed launchers and selected library folders.'),`<div class="dialog-body" style="display:grid;place-items:center;min-height:200px;text-align:center;color:var(--muted)"><div>${ic('refresh',42)}<p>${tr('Scanning local manifests and folders…')}</p></div></div>`);
  else if(modal.type==='import')html=importDialog();
+ else if(modal.type==='whats-new')html=whatsNewDialog();
  else if(modal.type==='remove'){const g=state.games.find(x=>x.id===modal.id);html=dialogFrame(t('Remove from library?'),t('Remove {name} from Orbit. Installed files will remain untouched.',{name:g?.name||t('this game')}),`<div class="dialog-body"><p style="color:var(--muted)">${tr('This removes the library entry, custom metadata and tracked play time. It does not uninstall the game.')}</p></div>`,`<div class="dialog-footer"><button class="secondary-btn" data-action="close-modal">${tr('Keep game')}</button><button class="danger-btn" data-action="remove" data-id="${esc(modal.id)}">${ic('trash',15)} ${tr('Remove game')}</button></div>`)}
  const root=el('modal-root'),active=document.activeElement;
  const previousFocus=root.contains(active)?{action:active.dataset.action,id:active.dataset.id}:null;
@@ -712,6 +741,7 @@ async function handleAction(button){const action=button.dataset.action,id=button
  switch(action){
   case 'game-actions':openGameActions(button);break;
   case 'controller-mode':await toggleControllerMode();break;
+   case 'whats-new':openModal('whats-new',{automatic:false});break;
    case 'check-update':{const status=await window.orbit.checkForUpdates();state.updateStatus=status;const element=el('update-status');if(element)element.textContent=t(status.message||'');break;}
    case 'install-update':try{await window.orbit.installUpdate()}catch(error){toast(error.message||t('Cannot install update.'),true)}break;
   case 'navigate':navigate(button.dataset.route);break;
@@ -827,7 +857,7 @@ document.addEventListener('keydown',event=>{
  if(event.key==='Enter'&&!event.isComposing&&event.target.id==='cover-search-title'){
   event.preventDefault();const search=el('modal-root')?.querySelector('[data-action="find-online-art"]');if(search&&!search.disabled)search.click();return;
  }
- if(event.key==='F11'&&!event.ctrlKey&&!event.metaKey&&!event.altKey){event.preventDefault();if(!event.repeat)Promise.resolve().then(toggleControllerMode).catch(error=>toast(error.message,true));return;}
+ if(event.key==='F11'&&!event.ctrlKey&&!event.metaKey&&!event.altKey){event.preventDefault();if(!event.repeat&&!state.modal)Promise.resolve().then(toggleControllerMode).catch(error=>toast(error.message,true));return;}
  if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();el('global-search')?.focus();el('global-search')?.select()}
  if(event.key==='Escape'&&state.modal){event.preventDefault();closeModal()}
  if((event.key==='Enter'||event.key===' ')&&event.target.matches('[role=button][data-action=detail]')){event.preventDefault();openModal('detail',{id:event.target.dataset.id})}
@@ -897,6 +927,7 @@ async function boot(){try{
  lastRenderedLocale=localeRenderKey();
  for(const event of buffered)handleOrbitEvent(event);
  if(typeof startDesktopPadEntry==='function')startDesktopPadEntry();
+ if(typeof showWhatsNewAfterBoot==='function')showWhatsNewAfterBoot();
  // Update-service availability must not delay or prevent library startup.
  if(window.orbit.getUpdateStatus)Promise.resolve().then(()=>window.orbit.getUpdateStatus()).then(status=>{
   if(status){state.updateStatus=status;const statusNode=el('update-status');if(statusNode)statusNode.textContent=typeof t==='function'?t(status.message||''):status.message||'';}

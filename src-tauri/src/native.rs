@@ -578,7 +578,12 @@ fn ignored_executable(file: &Path) -> bool {
     }
     // Installer/launcher helpers can remain alive after the real game exits.
     // Never treat their presence alone as proof of an active game session.
-    if stem == "launchgame" || stem.ends_with("launcher") || stem.ends_with("launcher64") {
+    if stem == "launchgame"
+        || stem.ends_with("launcher")
+        || stem.ends_with("launcher64")
+        || stem.ends_with("_eac")
+        || stem.ends_with("-eac")
+    {
         return true;
     }
     [
@@ -3565,10 +3570,56 @@ mod tests {
         assert!(ignored_executable(Path::new("C:/Games/CrashReporter.exe")));
         assert!(ignored_executable(Path::new("C:/Games/GameLauncher.exe")));
         assert!(ignored_executable(Path::new("C:/Games/Launcher64.exe")));
+        assert!(ignored_executable(Path::new(
+            "C:/Epic Games/rocketleague/Binaries/Win64/RocketLeague_EAC.exe"
+        )));
+        assert!(ignored_executable(Path::new(
+            "C:/Games/AnotherGame-EAC.exe"
+        )));
+        assert!(!ignored_executable(Path::new("C:/Games/RocketLeague.exe")));
         assert!(!ignored_executable(Path::new("C:/Games/HollowKnight.exe")));
         let root = std::env::temp_dir();
         assert!(contained_file(&root, "../outside.exe").is_none());
         assert!(contained_file(&root, "C:/Windows/System32/cmd.exe").is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rocket_league_eac_helper_alone_does_not_keep_epic_game_running() {
+        let install = r"C:\Program Files\Epic Games\rocketleague";
+        let main = PathBuf::from(format!(r"{install}\Binaries\Win64\RocketLeague.exe"));
+        let eac = PathBuf::from(format!(r"{install}\Binaries\Win64\RocketLeague_EAC.exe"));
+        let game = json!([{
+            "id": "rocket",
+            "source": "epic",
+            "name": "Rocket League",
+            "install_path": install,
+            "executable": main.to_string_lossy()
+        }]);
+        assert_eq!(
+            match_game_processes(&game, &[main.clone(), eac.clone()]),
+            HashSet::from(["rocket".to_string()]),
+            "the real game still owns a normal session"
+        );
+        assert!(
+            match_game_processes(&game, &[eac.clone()]).is_empty(),
+            "the anti-cheat wrapper alone must not extend playtime after exit"
+        );
+        assert!(
+            match_game_processes(
+                &json!([{"id": "rocket", "source": "epic", "install_path": install, "executable": eac.to_string_lossy()}]),
+                &[eac.clone()]
+            ).is_empty(),
+            "a storefront manifest's helper executable is not authoritative for activity"
+        );
+        assert_eq!(
+            match_game_processes(
+                &json!([{"id": "explicit", "source": "manual", "executable": eac.to_string_lossy()}]),
+                &[eac]
+            ),
+            HashSet::from(["explicit".to_string()]),
+            "an explicitly linked manual executable retains the existing direct-match contract"
+        );
     }
 
     #[cfg(windows)]

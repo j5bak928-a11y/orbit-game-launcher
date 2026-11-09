@@ -564,7 +564,7 @@ function openGameActions(trigger){
  menu.querySelector('[role=menuitem]')?.focus({preventScroll:true});
 }
 function openModal(type,meta={}){pauseDesktopPadEntry();closeGameActions();if(!state.modal){modalReturnFocus=document.activeElement;modalReturnFocusAction=modalReturnFocus?.dataset.action?{action:modalReturnFocus.dataset.action,id:modalReturnFocus.dataset.id,kind:['game-card','game-row','continue-card','game-menu'].find(name=>modalReturnFocus.classList.contains(name))}:null;}state.modal={type,...meta};renderModal()}
-const WHATS_NEW_VERSION='0.2.10';
+const WHATS_NEW_VERSION='0.2.11';
 const WHATS_NEW_KEY='orbit.whatsNew.lastAcknowledgedVersion';
 let whatsNewPending=false;
 function markWhatsNewSeen(){
@@ -586,9 +586,11 @@ function whatsNewDialog(){
  const points=(items)=>items.map(item=>`<li>${tr(item)}</li>`).join('');
  return `<div class="dialog-scrim" data-action="scrim"><section class="dialog wide whats-new-dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="whats-new-intro">
  <div class="whats-new-header"><span class="whats-new-eyebrow">${ic('sparkles',15)} ORBIT · v${WHATS_NEW_VERSION}</span><button class="ghost-btn whats-new-close" data-action="close-modal" aria-label="${tr('Close release notes')}">${ic('close',20)}</button>
- <h2 id="dialog-title">${tr("What's new in Orbit")}</h2><p id="whats-new-intro">${tr('Highlights from 0.2.7 through 0.2.10')}</p></div>
+ <h2 id="dialog-title">${tr("What's new in Orbit")}</h2><p id="whats-new-intro">${tr('Highlights from 0.2.7 through 0.2.11')}</p></div>
  <div class="whats-new-content">
- <section class="whats-new-version"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.2.10 — New')}</span><h3>${tr('A cleaner interface')}</h3></div>
+ <section class="whats-new-version"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.2.11 — New')}</span><h3>${tr('A cleaner interface')}</h3></div>
+ <ul>${points(["The What's New dialog no longer has a purple border around the whole window.",'The close button is aligned with the header and remains keyboard accessible.'])}</ul></section>
+ <section class="whats-new-version whats-new-history"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.2.10 — New')}</span><h3>${tr('A cleaner interface')}</h3></div>
  <ul>${points(['Selected favorite hearts remain visible; other hearts appear on hover or keyboard focus.','The release notes scrollbar is slim, rounded and uses your accent color.'])}</ul></section>
  <section class="whats-new-version whats-new-history"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.2.9 — New')}</span><h3>${tr('Your Orbit is ready')}</h3></div>
  <ul>${points(['Favorite hearts stay top-left and align with the actions menu on the right. Outlines and selected fills are purple.','Rocket League no longer stays Playing because of a leftover EAC helper process.','Xbox and Game Pass local game logos appear when a portrait cover is unavailable.','Release notes are always available from the sidebar and Settings.'])}</ul></section>

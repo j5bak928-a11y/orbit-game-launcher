@@ -103,7 +103,7 @@ test('controller right-stick scroll hint and F11/Menu tooltip translate exactly 
   }
 });
 
-test('Rust-primary 0.2.9 What\'s New dialog retains 0.2.7/0.2.8 history in all five languages', () => {
+test('Rust-primary 0.2.10 What\'s New dialog retains 0.2.7–0.2.9 history in all five languages', () => {
   const { i18n } = createRuntime();
   const keys = [
     "What's new", "What's new in Orbit", "See what's new", 'Release notes',
@@ -128,20 +128,25 @@ test('Rust-primary 0.2.9 What\'s New dialog retains 0.2.7/0.2.8 history in all f
     'Rocket League no longer stays Playing because of a leftover EAC helper process.',
     'Xbox and Game Pass local game logos appear when a portrait cover is unavailable.',
     'Release notes are always available from the sidebar and Settings.',
+    'Highlights from 0.2.7 through 0.2.10',
+    '0.2.10 — New',
+    'A cleaner interface',
+    'Selected favorite hearts remain visible; other hearts appear on hover or keyboard focus.',
+    'The release notes scrollbar is slim, rounded and uses your accent color.',
   ];
-  assert.equal(keys.length, 35);
+  assert.equal(keys.length, 40);
   const expectedHeadings = {
-    en: ["What's new", 'Release notes', '0.2.9 — New'],
-    nl: ['Wat is er nieuw', 'Versienotities', '0.2.9 — Nieuw'],
-    de: ['Neuigkeiten', 'Versionshinweise', '0.2.9 — Neu'],
-    fr: ['Nouveautés', 'Notes de version', '0.2.9 — Nouveautés'],
-    es: ['Novedades', 'Notas de la versión', '0.2.9 — Novedades'],
+    en: ["What's new", 'Release notes', '0.2.10 — New'],
+    nl: ['Wat is er nieuw', 'Versienotities', '0.2.10 — Nieuw'],
+    de: ['Neuigkeiten', 'Versionshinweise', '0.2.10 — Neu'],
+    fr: ['Nouveautés', 'Notes de version', '0.2.10 — Nouveautés'],
+    es: ['Novedades', 'Notas de la versión', '0.2.10 — Novedades'],
   };
   const placeholderNames = value => [...value.matchAll(/\{([A-Za-z][A-Za-z0-9_]*)\}/g)]
     .map(match => match[1]).sort();
   for (const code of ['en', 'nl', 'de', 'fr', 'es']) {
     i18n.setLanguage(code);
-    assert.deepEqual([i18n.t(keys[0]), i18n.t(keys[3]), i18n.t('0.2.9 — New')], expectedHeadings[code]);
+    assert.deepEqual([i18n.t(keys[0]), i18n.t(keys[3]), i18n.t('0.2.10 — New')], expectedHeadings[code]);
     for (const key of keys) {
       const translated = i18n.t(key);
       assert.ok(translated.length > 0, `${code}: empty release translation for ${key}`);

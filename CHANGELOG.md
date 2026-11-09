@@ -2,6 +2,12 @@
 
 This changelog covers the changes users receive with Orbit's Windows editions. **Rust/Tauri is the recommended direction starting with 0.2.8**, but its separately named download remains an **experimental, unsigned preview** while installed Windows acceptance is incomplete. Electron remains a supported fallback with separate application data. Release files appear on [GitHub Releases](https://github.com/j5bak928-a11y/orbit-game-launcher/releases); check the version on the download before installing.
 
+## 0.2.11 — Release-notes close button and neutral window frame (9 November 2026)
+
+- **Aligned X:** the What's New close button follows the right padding of the header at desktop and compact window sizes, and its icon stays centered without inherited padding or overlap.
+- **No purple outline around the entire dialog:** the temporary keyboard-focus ring around the modal's outer frame is suppressed. The window retains its subtle neutral border; the close button and other interactive controls retain visible keyboard focus states.
+- The first-run release notes preserve the full **0.2.7–0.2.11** history and remain manually accessible, localized in five languages. The purple scrollbar remains unchanged. Windows installers are unsigned; **Quit Orbit from the tray** before updating so the new process starts.
+
 ## 0.2.10 — Favorite visibility and themed release notes (9 November 2026)
 
 - **Poster favorite visibility:** unsaved hearts are hidden on idle desktop posters and appear when you hover over the card or focus it with a keyboard. **Selected favorites stay visible**, even when the pointer moves away. Touch controls remain visible, and the original left-heart/right-menu positions are unchanged.

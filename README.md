@@ -4,9 +4,9 @@
 
 Orbit is a local-first desktop game launcher for finding, organizing, and playing installed games. It brings games from different storefronts into one library without replacing their launchers or moving their files.
 
-**Orbit 0.2.10 is Rust-first on Windows:** the standalone **Rust + Tauri 2 preview** is the recommended edition to try, using Orbit's familiar interface with a native Rust backend. The Rust build is still **experimental and unsigned** while installed Windows acceptance is incomplete. **Electron remains available as the fallback** and is not being removed.
+**Orbit 0.2.11 is Rust-first on Windows:** the standalone **Rust + Tauri 2 preview** is the recommended edition to try, using Orbit's familiar interface with a native Rust backend. The Rust build is still **experimental and unsigned** while installed Windows acceptance is incomplete. **Electron remains available as the fallback** and is not being removed.
 
-**[Download the latest Windows release](https://github.com/j5bak928-a11y/orbit-game-launcher/releases/latest)** — look for the separately named **Orbit Rust Preview 0.2.10** NSIS installer (recommended Windows download), MSI or portable ZIP, and **Orbit Launcher 0.2.10** Electron setup/portable EXE as a fallback. Check the release tag and file version before installing. [Read the complete changelog](CHANGELOG.md), including the **0.2.7–0.2.9 history** carried into v0.2.10. **Important when upgrading:** choose **Quit Orbit** from the system tray before installing or relaunching; closing the window alone leaves the older Rust process alive and can prevent the newer UI and changelog from opening.
+**[Download the latest Windows release](https://github.com/j5bak928-a11y/orbit-game-launcher/releases/latest)** — look for the separately named **Orbit Rust Preview 0.2.11** NSIS installer (recommended Windows download), MSI or portable ZIP, and **Orbit Launcher 0.2.11** Electron setup/portable EXE as a fallback. Check the release tag and file version before installing. [Read the complete changelog](CHANGELOG.md), including the **0.2.7–0.2.10 history** carried into v0.2.11. **Important when upgrading:** choose **Quit Orbit** from the system tray before installing or relaunching; closing the window alone leaves the older Rust process alive and can prevent the newer UI and changelog from opening.
 
 ![Orbit library with game covers, filters, and search](docs/images/orbit-library-current.png)
 
@@ -22,7 +22,7 @@ Orbit is a local-first desktop game launcher for finding, organizing, and playin
 - **Show game artwork:** look for validated portrait artwork in bounded neighboring folders, use cached covers and icons offline, optionally look up online artwork, or select your own cover, banner, and icon.
 - **Play with a controller:** navigate the fullscreen library and game details with a standard-mapped Xbox or PlayStation controller, including page triggers, right-stick scrolling, reconnect handling and a Menu / Options entry shortcut; keyboard and mouse remain available.
 - **Choose your language:** use Orbit in English, Nederlands, Deutsch, Français or Español; follow the system language automatically or select one in Settings. Both desktop editions save this preference locally.
-- **See what's new:** the first start of v0.2.10 shows the release highlights for 0.2.10, 0.2.9, 0.2.8 and 0.2.7. Its narrow rounded scrollbar matches your accent color. Dismiss the dialog once per version, or reopen it from the sidebar or Settings. This uses local browser/WebView2 storage, not your game database; restart the actual new executable after fully quitting an older tray process.
+- **See what's new:** the first start of v0.2.11 shows the release highlights for 0.2.11 through 0.2.7. Its narrow rounded scrollbar matches your accent color. The close X aligns with the header; no purple outline surrounds the full window. Dismiss the dialog once per version, or reopen it from the sidebar or Settings. This uses local browser/WebView2 storage, not your game database; restart the actual new executable after fully quitting an older tray process.
 - **Review gaming statistics:** recorded-session totals for recent days and weeks, a daily activity chart, recent games and a period-best day. Overlapping records for a single game are deduplicated in reports without rewriting play history.
 - **Keep your data local:** store games, settings, and play history in SQLite; export and restore library backups.
 
@@ -34,7 +34,7 @@ Orbit is a local-first desktop game launcher for finding, organizing, and playin
 
 | | Rust / Tauri 2 preview | Electron desktop |
 | --- | --- | --- |
-| Version in this repository | **0.2.10** | **0.2.10** |
+| Version in this repository | **0.2.11** | **0.2.11** |
 | Status | **Rust-first recommended Windows preview**; experimental, installed native acceptance incomplete | **Established fallback**, maintained during the Rust transition |
 | UI | Familiar Orbit HTML/CSS/JavaScript in WebView2 | Familiar Orbit HTML/CSS/JavaScript in Electron |
 | Backend | Native Rust for library, discovery, tracking, artwork and backups | Node.js/Electron, with a native Windows process helper |
@@ -47,7 +47,7 @@ The editions have **different application IDs and data directories** (`com.orbit
 
 **Direction:** starting with **0.2.8**, make the fast, local-first Rust/Tauri preview the **recommended Windows download to try**, then strengthen native reliability and develop library organization, a console-quality controller experience, and optional offline intelligence. Keep Electron as the fallback during the transition; do not sacrifice libraries or playtime history to accelerate a version bump.
 
-These are **engineering milestones, not promises of public binary availability or dates**. Electron and Rust currently use version `0.2.10` in source. Rust-first is a **release/download preference**, not a claim that native Windows parity is proven. Rust `0.2.7` established the preceding reliability groundwork; see the [full changelog](CHANGELOG.md).
+These are **engineering milestones, not promises of public binary availability or dates**. Electron and Rust currently use version `0.2.11` in source. Rust-first is a **release/download preference**, not a claim that native Windows parity is proven. Rust `0.2.7` established the preceding reliability groundwork; see the [full changelog](CHANGELOG.md).
 
 | Milestone | Theme | Deliverable / exit criteria |
 | --- | --- | --- |
@@ -55,6 +55,7 @@ These are **engineering milestones, not promises of public binary availability o
 | **0.2.8 — Rust-first release direction** | Recommended Windows preview | Offer separately identified Rust NSIS/MSI/portable downloads as the first Windows choice, retain Electron setup/portable as a fallback, and keep unsigned-update and native acceptance limitations explicit. |
 | **0.2.9 — Tracking and UI fixes** | Reliable game sessions and visible updates | Rocket League anti-cheat helper cannot falsely keep a storefront session running; correct the existing top-left heart's height and accent-colored strokes/fills, keep What's New accessible and include Xbox local-logo recovery from PR #48. Portrait Xbox covers and packaged-only UWP remain future work. |
 | **0.2.10 — Focused interface polish** | Cleaner game posters and changelog | Keep selected favorites visible but show unsaved hearts only on hover/keyboard focus (always accessible on touch); restyle the release notes scrollbar with a rounded, accent-colored thumb without disabling scrolling. |
+| **0.2.11 — Changelog window polish** | Clear, accessible modal | Align the X control with the header and remove the purple focus ring around the full dialog without removing keyboard focus indicators from the actual controls. |
 | **0.3.0 — Native confidence** | Finish Windows parity | Prioritize physical-controller reliability, tray reopen and close behavior, crash/sleep recovery, artwork/discovery accuracy, backup restore and measured background performance. Actual game launches, session tracking and upgrades are already reported working by the user; retain them as regression checks, not unresolved baseline defects. Validate remaining behaviors on representative Windows installations before retiring Electron as the fallback. |
 | **0.4.0 — Your Gaming Library** | Organization and personalization | Smart collections (**Currently Playing**, **Backlog**, **Completed**), custom collections, advanced filtering, tags, favorites, per-game launch preferences, and responsive libraries with 5,000+ games. |
 | **0.5.0 — Console Experience** | Controller Mode 2.0 | A polished fullscreen/couch interface, immersive game details, robust controller ownership and focus recovery, plus efficient idle gamepad polling. |
@@ -94,8 +95,8 @@ This is a **comparison framework, not a claim that Orbit outperforms another lau
 
 | Launcher | Main UI technology / scope | Controlled idle RAM | Controlled idle CPU |
 | --- | --- | --- | --- |
-| **Orbit Electron 0.2.10** | Electron; unified local library and tracking | Not measured in common test | Not measured |
-| **Orbit Rust Preview 0.2.10** | Tauri 2, Rust, WebView2; native tracking; experimental | Not measured in common test | Not measured |
+| **Orbit Electron 0.2.11** | Electron; unified local library and tracking | Not measured in common test | Not measured |
+| **Orbit Rust Preview 0.2.11** | Tauri 2, Rust, WebView2; native tracking; experimental | Not measured in common test | Not measured |
 | [Steam](https://store.steampowered.com/about/) | Full storefront and social client with `steamwebhelper` processes | Not measured | Not measured |
 | [Epic Games Launcher](https://store.epicgames.com/download) | Storefront, social features and library | Not measured | Not measured |
 | [Playnite](https://github.com/JosefNemec/Playnite) | .NET / WPF; unified desktop library and controller mode | Not measured | Not measured |
@@ -112,7 +113,7 @@ It lists running processes, totals their **Working Set** (MiB) including known b
 
 ## Run the recommended Rust / Tauri preview on Windows
 
-For a standalone build, use the **Orbit Rust Preview** download listed for version 0.2.10 on [GitHub Releases](https://github.com/j5bak928-a11y/orbit-game-launcher/releases). The normal Windows choice is its NSIS setup; the MSI and portable ZIP are alternatives. **Before updating, select Quit Orbit in the system tray**, not just the window's X; an older single-instance process may otherwise keep running and display outdated UI. Start Orbit again and check the version. The portable ZIP must be extracted with `WebView2Loader.dll` and `libunwind.dll` alongside the EXE. These downloads do not need Node.js or a Rust compiler on the destination PC, but do require Microsoft Edge WebView2. This is still an unsigned preview; see [current limitations](CHANGELOG.md#updating-from-older-versions).
+For a standalone build, use the **Orbit Rust Preview** download listed for version 0.2.11 on [GitHub Releases](https://github.com/j5bak928-a11y/orbit-game-launcher/releases). The normal Windows choice is its NSIS setup; the MSI and portable ZIP are alternatives. **Before updating, select Quit Orbit in the system tray**, not just the window's X; an older single-instance process may otherwise keep running and display outdated UI. Start Orbit again and check the version. The portable ZIP must be extracted with `WebView2Loader.dll` and `libunwind.dll` alongside the EXE. These downloads do not need Node.js or a Rust compiler on the destination PC, but do require Microsoft Edge WebView2. This is still an unsigned preview; see [current limitations](CHANGELOG.md#updating-from-older-versions).
 
 To run or build the Rust source yourself:
 
@@ -181,6 +182,8 @@ The **poster grid** is artwork-first: covers fill a 2:3 card, with a favorite bu
 **Updated in 0.2.9:** unsaved hearts have a **transparent center and a purple/configured-accent outline**, while saved hearts have a **fully solid accent fill and matching outline** in poster cards, list rows and game details, even on hover or keyboard focus. The poster heart stays **top-left** and is moved upward to align with the existing **top-right** actions menu. **Rocket League's leftover EAC helper** no longer keeps a Steam/Epic game falsely marked Playing after the real game exits. Rust's verified Xbox GDK logos can appear as **square icon fallbacks** when portrait art is missing; this does not yet provide Xbox portrait covers or protected packaged-only UWP detection ([issue #47](https://github.com/j5bak928-a11y/orbit-game-launcher/issues/47)). See [the full 0.2.9, 0.2.8 and 0.2.7 changelog](CHANGELOG.md).
 
 **New in 0.2.10:** unsaved hearts on posters appear only when the card is hovered or focused; **selected favorite hearts stay visible when the pointer leaves**. Touch controls remain accessible. The What's New dialog has a slim rounded scrollbar that follows your chosen accent color, without losing mouse wheel, touchpad or keyboard scrolling.
+
+**New in 0.2.11:** the What's New close X is centered and aligned to the header padding at all supported widths. The bright purple outline around the dialog itself is removed while focus indicators remain visible on the actual buttons.
 
 ## Controller mode
 

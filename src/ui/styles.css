@@ -725,12 +725,16 @@ body:is([data-reduce-motion=true],[data-game-active=true]) #app .game-card.poste
 body:is([data-reduce-motion=true],[data-game-active=true]) #app .game-card.poster-card:hover .cover{transform:none}
 /* First launch / post-update release highlights share Orbit's existing modal
    focus trap and stay usable when the Rust WebView2 window is compact. */
-.whats-new-dialog{width:min(760px,100%);max-height:min(90vh,850px);display:flex;flex-direction:column;overflow:hidden}
+.whats-new-dialog{width:min(760px,100%);max-height:min(90vh,850px);display:flex;flex-direction:column;overflow:hidden;border-color:var(--border)}
+/* The dialog receives programmatic focus to trap the keyboard. Do not draw
+   the global 2px purple focus outline around the entire window. Interactive
+   controls inside retain their visible keyboard-focus indicators. */
+.whats-new-dialog:focus-visible{outline:none}
 .whats-new-header{flex:none;position:relative;padding:31px 36px 25px;border-bottom:1px solid var(--border);background:radial-gradient(ellipse at 90% 0%,rgba(var(--accent-rgb),.19),transparent 65%),var(--panel)}
 .whats-new-eyebrow{display:inline-flex;align-items:center;gap:8px;color:var(--accent);font-size:11px;font-weight:780;letter-spacing:.14em}
 #modal-root .whats-new-header h2{font-size:clamp(24px,3vw,34px);letter-spacing:-1.1px;line-height:1.15;margin:16px 0 8px}
 #modal-root .whats-new-header p{color:var(--muted);font-size:13px;line-height:1.5;margin:0}
-.whats-new-close{position:absolute;right:20px;top:20px;border:1px solid var(--border);border-radius:9px;display:grid;place-items:center;width:36px;height:36px}
+.whats-new-close{position:absolute;right:36px;top:20px;margin:0;padding:0;border:1px solid var(--border);border-radius:9px;display:grid;place-items:center;width:36px;height:36px}
 .whats-new-content{
   padding:25px 36px;overflow-y:auto;overscroll-behavior:contain;min-height:0;
   /* Firefox fallback: keep the handle subtle, but visible and accessible. */
@@ -770,7 +774,7 @@ body:is([data-reduce-motion=true],[data-game-active=true]) #app .game-card.poste
 #modal-root .whats-new-footer .primary-btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;min-height:40px;flex:none}
 @media(max-width:650px){
  .whats-new-header{padding:24px 19px 19px}.whats-new-header h2{margin-top:12px}
- .whats-new-close{right:12px;top:12px}
+ .whats-new-close{right:19px;top:13px}
  .whats-new-content{padding:18px}.whats-new-version{padding:16px}
  .whats-new-footer{padding:14px 18px;flex-wrap:wrap}
  .whats-new-footer .primary-btn{width:100%}

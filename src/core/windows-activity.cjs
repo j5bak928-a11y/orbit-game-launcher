@@ -6,7 +6,7 @@ const {promisify}=require('node:util');
 const {performance}=require('node:perf_hooks');
 const execFileAsync=promisify(execFile);
 const ACTIVE_POLL_MS=15000,IDLE_POLL_MS=60000,LAUNCH_POLL_MS=6000;
-const SKIP_EXECUTABLE=/^(?:unins\w*|uninstall\w*|setup\w*|install\w*|launcher\w*|\w+launcher(?:64|32)?|launchgame|updater|update\w*|patcher\w*|bootstrap\w*|crash(?:reporter|handler)?\w*|easyanticheat\w*|eac\w*|eanticheat\w*|easteam\w*|ue4prereq\w*|vcredist\w*|dxsetup\w*|epicgameslauncher\w*)\.exe$/i;
+const SKIP_EXECUTABLE=/^(?:unins\w*|uninstall\w*|setup\w*|install\w*|launcher\w*|\w+launcher(?:64|32)?|launchgame|updater|update\w*|patcher\w*|bootstrap\w*|crash(?:reporter|handler)?\w*|easyanticheat\w*|eac\w*|eanticheat\w*|easteam\w*|ue4prereq\w*|vcredist\w*|dxsetup\w*|epicgameslauncher\w*|[\w.-]+[_-]eac)\.exe$/i;
 function normalizeWindowsPath(input){return typeof input==='string'?path.win32.normalize(input).toLowerCase().replace(/[\\/]+$/,''):'';}
 function titleKey(value){return String(value||'').toLowerCase().replace(/[^a-z0-9]/g,'');}
 function storeAndManualAlias(store,alias){

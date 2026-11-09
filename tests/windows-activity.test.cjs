@@ -131,6 +131,32 @@ test('only actual game executables mark containing folders as running', () => {
  assert.deepEqual(matchRunningGames(library, [...ignored, 'C:\\Games\\Test\\Bin\\Game.exe']), ['game']);
  assert.deepEqual(matchRunningGames(library, []), []);
 });
+test('Rocket League does not stay Playing when only the EAC wrapper survives',async()=>{
+ const install='C:\\Program Files\\Epic Games\\rocketleague';
+ const main=install+'\\Binaries\\Win64\\RocketLeague.exe';
+ const eac=install+'\\Binaries\\Win64\\RocketLeague_EAC.exe';
+ const game={id:'rocket',name:'Rocket League',source:'epic',install_path:install,executable:main};
+ assert.deepEqual(matchRunningGames([game],[main,eac]),['rocket'],'real game process still counts');
+ assert.deepEqual(matchRunningGames([game],[eac]),[],'EAC alone is not the game');
+ assert.deepEqual(matchRunningGames([{...game,executable:eac}],[eac]),[],
+  'a storefront record pointing to EAC must not treat it as authoritative game activity');
+ assert.deepEqual(matchRunningGames([{...game,source:'manual',executable:eac}],[eac]),['rocket'],
+  'an explicitly registered manual executable still uses the direct-match contract');
+ let clock=1000,files=[main,eac];const starts=[],finishes=[];
+ const tracker=new WindowsActivityTracker({
+  listGames:()=>[game],isDirectSession:()=>false,now:()=>clock,
+  start:id=>{starts.push(id);return 'session-rocket';},
+  finish:(id,seconds)=>finishes.push([id,seconds]),
+  enumerate:async()=>files
+ });
+ await tracker.poll();assert.deepEqual(starts,['rocket']);
+ files=[eac];clock=61000;await tracker.poll();
+ assert.deepEqual(finishes,[],'first missed game observation must not finish prematurely');
+ clock=76000;await tracker.poll();
+ assert.deepEqual(finishes,[['session-rocket',60]],'playtime stops at first missing main game process');
+ await tracker.poll();assert.deepEqual(starts,['rocket'],'leftover helper must not restart the session');
+ tracker.stop();
+});
 test('a leftover game launcher does not keep recording after the real game exits',async()=>{
  const game={id:'game',source:'steam',install_path:'C:\\Games\\OrbitExample'};
  const helper='C:\\Games\\OrbitExample\\GameLauncher.exe';

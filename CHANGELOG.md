@@ -2,11 +2,25 @@
 
 This changelog covers the changes users receive with Orbit's Windows editions. **Rust/Tauri is the recommended direction starting with 0.2.8**, but its separately named download remains an **experimental, unsigned preview** while installed Windows acceptance is incomplete. Electron remains a supported fallback with separate application data. Release files appear on [GitHub Releases](https://github.com/j5bak928-a11y/orbit-game-launcher/releases); check the version on the download before installing.
 
-## Unreleased — Xbox / PC Game Pass artwork recovery
+## 0.2.9 — Favorite-heart and release-notes reliability (9 November 2026)
+
+### Interface and first-run release notes
+
+- **Correct favorite alignment:** poster-card hearts **remain top-left**, with the actions menu **still top-right**. The heart moves upward to match the original menu height on desktop and compact layouts; neither control swaps sides.
+- **Correct accent-colored hearts:** unfavorited hearts have a transparent center and purple/configured-accent **outline**. Favorited hearts have both a solid accent **fill and outline** in posters, list rows and game details, including hover, focus and custom-accent themes.
+- **Reliable What's New:** the v0.2.9 first-start dialog includes the full highlights from **0.2.9, 0.2.8 and 0.2.7**, reappears when the packaged release version changes, tolerates packaged version metadata, and waits for another startup dialog to close rather than silently abandoning the announcement. The release notes can also be reopened directly from the **sidebar** or **Settings**, in English, Dutch, German, French and Spanish. Same-version dismissal remains stored separately for each app profile.
+- **Rocket League exit detection:** a leftover `RocketLeague_EAC.exe` anti-cheat helper no longer keeps a Steam/Epic storefront game falsely marked **Playing** or extends playtime. Orbit requires a real recognized game executable and still uses two missed process observations to confirm exit. Applied to both Rust and Electron trackers; explicitly linked manual executables retain their existing behavior.
+
+### Xbox / PC Game Pass artwork recovery (merged in #48)
 
 - The Rust edition can read verified, local square logo assets from an installed Xbox GDK game's `MicrosoftGame.config` and use them as **icon fallbacks** when artwork is missing. Existing manually selected covers and icons are not replaced; automatic repair also works offline.
 - Xbox identities and the installed executable are checked before accessing bounded, package-contained PNG files. The Rust artwork repair no longer searches Steam by title alone for an Xbox/Game Pass entry, avoiding incorrect cross-store artwork.
-- **Still to do:** obtain actual *portrait* cover artwork through verified Microsoft Store/Xbox catalog identity, and support packaged-only Game Pass titles that do not expose the verified GDK executable/manifest. Square logos are not stretched into portrait covers. This change is **not part of the published 0.2.8 binaries**.
+- **Still to do:** obtain actual *portrait* cover artwork through verified Microsoft Store/Xbox catalog identity, and support packaged-only Game Pass titles that do not expose the verified GDK executable/manifest ([issue #47](https://github.com/j5bak928-a11y/orbit-game-launcher/issues/47)). Square logos are not stretched into portrait covers. This change is **newly included in v0.2.9**, not in the published 0.2.8 binaries.
+
+### Updating from older versions
+
+- **Fully quit Orbit from the Windows system tray before installing and launching 0.2.9.** Closing the window only keeps Rust's tray process alive for tracking. A running 0.2.7 process can retain control of the single-instance app even after downloading 0.2.8 or later, so neither a new heart UI nor the What's New dialog can appear until that old process exits and the new executable starts. Check the actual executable's version after restarting; downloading an installer alone does not upgrade the running process.
+- Rust remains the recommended **experimental, unsigned** Windows preview. Keep its separate `com.orbitlauncher.rustpreview` identity, Electron (`com.orbitlauncher.desktop`) fallback, independent data and backups. Unsigned automatic update installation stays disabled; the application does not silently alter running games or user libraries during an update.
 
 ## 0.2.8 — Rust-first Windows release (8 November 2026)
 

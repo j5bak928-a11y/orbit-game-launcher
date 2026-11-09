@@ -503,6 +503,11 @@
     ["Release highlights appear once per version and can be reopened in Settings.", "De releasehoogtepunten verschijnen één keer per versie en zijn opnieuw te openen via Instellingen.", "Release-Highlights erscheinen einmal pro Version und können in den Einstellungen erneut geöffnet werden.", "Les nouveautés de la version s’affichent une seule fois par version et restent accessibles depuis les paramètres.", "Las novedades destacadas aparecen una vez por versión y pueden volver a abrirse desde Configuración."],
     ["Orbit could not start", "Orbit kon niet starten", "Orbit konnte nicht starten", "Impossible de démarrer Orbit", "No se pudo iniciar Orbit"],
     ["Unknown error.", "Onbekende fout.", "Unbekannter Fehler.", "Erreur inconnue.", "Error desconocido."],
+    ["Highlights from 0.2.7 through 0.2.10", "Hoogtepunten van 0.2.7 tot en met 0.2.10", "Highlights von 0.2.7 bis 0.2.10", "Temps forts des versions 0.2.7 à 0.2.10", "Novedades desde la 0.2.7 hasta la 0.2.10"],
+    ["0.2.10 — New", "0.2.10 — Nieuw", "0.2.10 — Neu", "0.2.10 — Nouveautés", "0.2.10 — Novedades"],
+    ["A cleaner interface", "Een strakkere interface", "Eine aufgeräumtere Oberfläche", "Une interface plus épurée", "Una interfaz más limpia"],
+    ["Selected favorite hearts remain visible; other hearts appear on hover or keyboard focus.", "Geselecteerde favorietenhartjes blijven zichtbaar; andere hartjes verschijnen bij aanwijzen of toetsenbordfocus.", "Ausgewählte Favoritenherzen bleiben sichtbar; andere Herzen erscheinen beim Darüberfahren oder bei Tastaturfokus.", "Les cœurs favoris sélectionnés restent visibles ; les autres apparaissent au survol ou au focus clavier.", "Los corazones de favoritos seleccionados permanecen visibles; los demás aparecen al pasar el cursor o enfocar con el teclado."],
+    ["The release notes scrollbar is slim, rounded and uses your accent color.", "De scrollbar van de versienotities is smal, afgerond en gebruikt je accentkleur.", "Die Bildlaufleiste der Versionshinweise ist schmal, abgerundet und nutzt deine Akzentfarbe.", "La barre de défilement des notes de version est fine, arrondie et utilise votre couleur d’accent.", "La barra de desplazamiento de las notas de versión es fina, redondeada y usa tu color de acento."],
 ];
 
   const dictionaries = Object.freeze(

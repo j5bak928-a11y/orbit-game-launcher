@@ -58,6 +58,12 @@ test('poster cards keep the existing Orbit shell and expose working artwork acti
  assert(Math.abs(initial.rect.height-initial.cover.height)<2,'no labels appear below the poster');
  assert.equal(initial.play,'0','unselected poster does not obscure its artwork');
  assert.equal(initial.caption,'0','metadata is quiet until card selection');
+ assert.equal(await card.locator('.favorite-float').evaluate(x=>getComputedStyle(x).opacity),'0',
+  'unselected favorite stays hidden when the card is idle');
+ await card.focus();
+ await page.waitForFunction(()=>getComputedStyle(document.querySelector('.poster-card .favorite-float')).opacity==='1');
+ await page.locator('nav [data-route=library]').focus();
+ await page.waitForFunction(()=>getComputedStyle(document.querySelector('.poster-card .favorite-float')).opacity==='0');
  await card.hover();
  await page.waitForFunction(()=>getComputedStyle(document.querySelector('.poster-card .cover-play')).opacity==='1');
  await page.waitForFunction(()=>getComputedStyle(document.querySelector('.poster-card .game-label')).opacity==='1');
@@ -91,6 +97,11 @@ test('poster cards keep the existing Orbit shell and expose working artwork acti
  if(screenshotDir){fs.mkdirSync(screenshotDir,{recursive:true});await page.screenshot({path:path.join(screenshotDir,'orbit-posters-desktop.png')});}
  const heart=card.locator('.favorite-float');await heart.click();
  await card.locator('.favorite-float.active').waitFor({state:'attached'});
+ await page.mouse.move(0,0);
+ await page.locator('nav [data-route=library]').focus();
+ assert.equal(await card.locator('.favorite-float.active').evaluate(x=>getComputedStyle(x).opacity),'1',
+  'selected favorites stay visible without card hover or keyboard focus');
+ await card.hover();
  assert(await card.locator('.favorite-float.active').count(),'heart action updates favorite instead of opening details');
  assert.equal(await card.locator('.favorite-float').getAttribute('aria-pressed'),'true');
  assert.equal(await card.locator('.favorite-float svg').evaluate(x=>getComputedStyle(x).fill),'rgb(139, 122, 255)',
@@ -105,6 +116,10 @@ test('poster cards keep the existing Orbit shell and expose working artwork acti
  await page.evaluate(()=>window.orbit.saveSettings({accent:'#8b7aff'}));
  await heart.click();
  await page.waitForFunction(()=>document.querySelector('.poster-card .favorite-float')?.getAttribute('aria-pressed')==='false');
+ await page.mouse.move(0,0);
+ await page.locator('nav [data-route=library]').focus();
+ await page.waitForFunction(()=>getComputedStyle(document.querySelector('.poster-card .favorite-float')).opacity==='0');
+ await card.hover();
  assert.equal(await card.locator('.favorite-float svg').evaluate(x=>getComputedStyle(x).fill),'none',
   'removing a favorite restores the unfilled heart');
  assert.equal(await card.locator('.favorite-float svg').evaluate(x=>getComputedStyle(x).stroke),'rgb(139, 122, 255)',

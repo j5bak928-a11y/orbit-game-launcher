@@ -1972,6 +1972,116 @@ fn xbox_from_manifest(root: &Path, file: &Path) -> Option<Value> {
         "install_path":owner,"executable":executable,"tags":[]}))
 }
 
+/// Resolve official Microsoft GDK logo assets from the installed package's
+/// MicrosoftGame.config. These are *icons*, not portrait store covers.
+/// Resolve paths only after verifying the same package identity + executable
+/// that our Xbox discovery accepted, and never escape the package directory.
+pub(crate) fn xbox_logo_paths(game: &Value) -> Vec<PathBuf> {
+    if game["source"] != "xbox" {
+        return vec![];
+    }
+    let Some(source_id) = game["source_id"].as_str() else {
+        return vec![];
+    };
+    let Some(install_path) = game["install_path"].as_str() else {
+        return vec![];
+    };
+    let owner = Path::new(install_path);
+    if !owner.is_absolute() || owner.as_os_str().len() > 4_000 {
+        return vec![];
+    }
+    let Some(owner_canonical) = fs::canonicalize(owner).ok() else {
+        return vec![];
+    };
+    let mut images = Vec::new();
+    for root in [owner.to_path_buf(), owner.join("Content")] {
+        let manifest = root.join("MicrosoftGame.config");
+        if !manifest.is_file()
+            || !fs::canonicalize(&manifest).is_ok_and(|path| path.starts_with(&owner_canonical))
+        {
+            continue;
+        }
+        let Some(discovered) = xbox_from_manifest(&root, &manifest) else {
+            continue;
+        };
+        if discovered["source_id"] != source_id
+            || !discovered["install_path"]
+                .as_str()
+                .and_then(|path| fs::canonicalize(path).ok())
+                .is_some_and(|path| path == owner_canonical)
+        {
+            continue;
+        }
+        // A manually reassigned executable must not inherit artwork from a
+        // different game merely because the old Xbox identity was retained.
+        if let Some(saved) = game["executable"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+        {
+            let verified = discovered["executable"]
+                .as_str()
+                .and_then(|value| fs::canonicalize(value).ok());
+            if fs::canonicalize(saved).ok() != verified {
+                continue;
+            }
+        }
+        let Ok(document) = small_text(&manifest) else {
+            continue;
+        };
+        let Some(shell) = xbox_xml_tags(&document, "ShellVisuals")
+            .and_then(|items| (items.len() == 1).then_some(items))
+            .and_then(|mut items| items.pop())
+        else {
+            continue;
+        };
+        let executable = xbox_xml_tags(&document, "Executable")
+            .and_then(|items| (items.len() == 1).then_some(items))
+            .and_then(|mut items| items.pop())
+            .unwrap_or_default();
+        let visual_keys = [
+            ("OverrideSquare480x480Logo", true),
+            ("OverrideLogo", true),
+            ("OverrideSquare44x44Logo", true),
+            ("Square480x480Logo", false),
+            ("Square150x150Logo", false),
+            ("Square44x44Logo", false),
+            ("StoreLogo", false),
+        ];
+        for (key, override_asset) in visual_keys {
+            let relative = if override_asset {
+                executable.get(key)
+            } else {
+                shell.get(key)
+            };
+            let Some(relative) = relative else { continue };
+            if !relative.to_ascii_lowercase().ends_with(".png") {
+                continue;
+            }
+            let Some(path) = contained_file(&root, relative) else {
+                continue;
+            };
+            if !fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_file()) {
+                continue;
+            }
+            // Returning the already-resolved regular file rather than a path
+            // through a junction avoids re-traversing an untrusted path when
+            // the artwork layer reads and hashes the PNG.
+            let Some(canonical) = fs::canonicalize(path).ok() else {
+                continue;
+            };
+            if !canonical.starts_with(&owner_canonical) {
+                continue;
+            }
+            if !images.contains(&canonical) {
+                images.push(canonical);
+            }
+        }
+        // One verified config is sufficient; never mix identities or roots.
+        break;
+    }
+    images
+}
+
 fn discover_xbox_roots(roots: &[PathBuf]) -> (Vec<Value>, Vec<String>) {
     let mut games = Vec::new();
     let mut warnings = Vec::new();

@@ -1,5 +1,6 @@
-//! Native Steam artwork. The caller must gate every network-enabled entry point
-//! with the useSteamArtwork setting and Performance Guard state.
+//! Native local/store artwork. The caller must gate every network-enabled
+//! entry point with the useSteamArtwork setting and Performance Guard state.
+use crate::native;
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use reqwest::redirect::Policy;
@@ -497,6 +498,30 @@ fn local_nonsteam_portrait(game: &Value) -> Option<(Vec<u8>, &'static str)> {
                 }
             }
         }
+    }
+    None
+}
+
+// Xbox GDK packages provide official square logos rather than portrait covers.
+// Use these as a visible icon fallback, never stretch a square logo into a
+// portrait cover or borrow art from a similarly named Steam product.
+fn local_xbox_icon(game: &Value) -> Option<(Vec<u8>, &'static str)> {
+    for path in native::xbox_logo_paths(game).into_iter().take(7) {
+        let Some(bytes) = read_capped(&path, ICON_LIMIT).ok().flatten() else {
+            continue;
+        };
+        if image_ext(&bytes) != Some("png") {
+            continue;
+        }
+        let w = u32::from_be_bytes(bytes[16..20].try_into().ok()?);
+        let h = u32::from_be_bytes(bytes[20..24].try_into().ok()?);
+        if !(44..=4096).contains(&w)
+            || !(44..=4096).contains(&h)
+            || !(0.75..=1.35).contains(&(w as f64 / h as f64))
+        {
+            continue;
+        }
+        return Some((bytes, "png"));
     }
     None
 }
@@ -1166,7 +1191,16 @@ fn repair_artwork_impl(
         } else {
             None
         };
-        if steam_id.is_none() && local.is_none() && (!need_cover || http.is_none()) {
+        let local_xbox_icon = if need_icon {
+            local_xbox_icon(game)
+        } else {
+            None
+        };
+        if steam_id.is_none()
+            && local.is_none()
+            && local_xbox_icon.is_none()
+            && (!need_cover || http.is_none())
+        {
             continue;
         }
         attempted += 1;
@@ -1180,6 +1214,9 @@ fn repair_artwork_impl(
                     .map(|bytes| (bytes, "jpg"))
             });
             if selected.is_none()
+                // Xbox lacks a verified Steam ID. Never consume the shared
+                // eight-request online budget on a deliberate no-op.
+                && game["source"] != "xbox"
                 && http.is_some()
                 && online_count < ONLINE_LIMIT
                 && started.elapsed() < REPAIR_TIME
@@ -1239,7 +1276,9 @@ fn repair_artwork_impl(
             }
         }
         if need_icon {
-            if let Some((bytes, ext)) = steam_id.and_then(|s| local_icon(s, install)) {
+            if let Some((bytes, ext)) =
+                local_xbox_icon.or_else(|| steam_id.and_then(|s| local_icon(s, install)))
+            {
                 match store(&bytes, ext, artwork_dir) {
                     Ok(icon) => {
                         patch.insert("icon".into(), json!(icon));
@@ -1341,6 +1380,142 @@ mod tests {
         assert_eq!(result["onlineEnabled"], false);
         assert_eq!(result["attempted"], 0);
         assert_eq!(result["updates"], json!([]));
+        assert!(!dir.exists());
+    }
+    #[test]
+    fn xbox_gdk_manifest_logos_fill_icon_offline_without_replacing_a_cover() {
+        let root =
+            std::env::temp_dir().join(format!("orbit-xbox-logo-fixture-{}", uuid::Uuid::new_v4()));
+        // Real decodable PNG assets supplied with Orbit, not synthetic PNG
+        // headers that can never be rendered by WebView2.
+        let asset_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets");
+        let primary_logo = fs::read(asset_root.join("icon.png")).unwrap();
+        let override_logo = fs::read(asset_root.join("branding/orbit-mark-dark.png")).unwrap();
+        let install = root.join("Xbox Games").join("Example Game");
+        let content = install.join("Content");
+        let assets = content.join("Graphics");
+        let cache = root.join("orbit-cache");
+        fs::create_dir_all(&assets).unwrap();
+        fs::write(content.join("Example.exe"), b"not executed").unwrap();
+        fs::write(assets.join("Logo.png"), &primary_logo).unwrap();
+        fs::write(
+            content.join("MicrosoftGame.config"),
+            r#"<Game configVersion="1">
+                <Identity Name="ExamplePublisher.ExampleGame" Publisher="CN=Example"/>
+                <ExecutableList><Executable Name="Example.exe" Id="Game" TargetDeviceFamily="PC"/></ExecutableList>
+                <ShellVisuals DefaultDisplayName="Example Game" Square480x480Logo="Graphics\Logo.png"
+                    Square150x150Logo="Graphics\Logo.png" StoreLogo="Graphics\Logo.png"/>
+                </Game>"#,
+        )
+        .unwrap();
+        let original_cover = store(&png(600, 900), "png", &cache).unwrap();
+        let game = json!({"id":"xbox-1","source":"xbox",
+            "source_id":"ExamplePublisher.ExampleGame",
+            "name":"Example Game","install_path":install,
+            "executable":content.join("Example.exe"),
+            "cover":original_cover,"icon":""});
+        // Existing user art must remain untouched; icon-only repair must work
+        // with online artwork disabled and a preserved cover.
+        let result = repair_artwork(&[game.clone()], &cache).unwrap();
+        assert_eq!(result["found"], 0);
+        assert_eq!(result["icons"], 1);
+        assert_eq!(result["updates"][0]["id"], "xbox-1");
+        assert!(result["updates"][0].get("cover").is_none());
+        let token = result["updates"][0]["icon"].as_str().unwrap();
+        assert!(artwork_token(token));
+        assert_eq!(fs::read(cache.join(token)).unwrap(), primary_logo);
+
+        // Empty-cover Game Pass entries should show the package icon without
+        // pretending the square logo is a portrait game cover.
+        let mut blank = game.clone();
+        blank["id"] = json!("xbox-blank");
+        blank["cover"] = json!("");
+        let fallback = repair_artwork(&[blank], &cache).unwrap();
+        assert_eq!(fallback["found"], 0);
+        assert_eq!(fallback["icons"], 1);
+        assert!(fallback["updates"][0].get("cover").is_none());
+        assert_eq!(fallback["updates"][0]["icon"], token);
+
+        // A per-executable GDK override takes precedence over the shared
+        // package logo, even when the latter has greater pixel dimensions.
+        fs::write(assets.join("Override.png"), &override_logo).unwrap();
+        fs::write(
+            content.join("MicrosoftGame.config"),
+            r#"<Game configVersion="1">
+                <Identity Name="ExamplePublisher.ExampleGame" Publisher="CN=Example"/>
+                <ExecutableList><Executable Name="Example.exe" Id="Game"
+                    TargetDeviceFamily="PC" OverrideLogo="Graphics\Override.png"/></ExecutableList>
+                <ShellVisuals Square480x480Logo="Graphics\Logo.png"/>
+                </Game>"#,
+        )
+        .unwrap();
+        let override_result = repair_artwork(&[game.clone()], &cache).unwrap();
+        assert_eq!(override_result["icons"], 1);
+        let override_token = override_result["updates"][0]["icon"].as_str().unwrap();
+        assert_ne!(override_token, token);
+        assert_eq!(fs::read(cache.join(override_token)).unwrap(), override_logo);
+
+        // Existing custom icons always win, and replacing the executable
+        // with an unrelated one must not associate the old Xbox logo.
+        let mut custom = game.clone();
+        custom["icon"] = json!("user-custom-icon.png");
+        assert_eq!(
+            repair_artwork(&[custom], &cache).unwrap()["updates"],
+            json!([])
+        );
+        let mut reassigned = game.clone();
+        fs::write(content.join("Other.exe"), b"not executed").unwrap();
+        reassigned["executable"] = json!(content.join("Other.exe"));
+        assert_eq!(repair_artwork(&[reassigned], &cache).unwrap()["icons"], 0);
+
+        // Another Xbox product must never adopt this install's logo.
+        let mut wrong = game.clone();
+        wrong["source_id"] = json!("UnrelatedPublisher.OtherGame");
+        let rejected = repair_artwork(&[wrong], &cache).unwrap();
+        assert_eq!(rejected["icons"], 0);
+        assert_eq!(rejected["updates"], json!([]));
+
+        // Even if a manifest points outside the game, no logo is imported.
+        fs::write(
+            content.join("MicrosoftGame.config"),
+            r#"<Game configVersion="1">
+                <Identity Name="ExamplePublisher.ExampleGame" Publisher="CN=Example"/>
+                <ExecutableList><Executable Name="Example.exe" Id="Game" TargetDeviceFamily="PC"/></ExecutableList>
+                <ShellVisuals Square480x480Logo="../../OtherGame/Logo.png"/>
+                </Game>"#,
+        )
+        .unwrap();
+        assert!(native::xbox_logo_paths(&game).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn eight_missing_xbox_covers_do_not_starve_other_store_artwork_budget() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let mut games = (0..8)
+            .map(|i| {
+                json!({"id":format!("xbox-{i}"),"source":"xbox",
+                    "name":format!("Missing GDK Game {i}"),"source_id":format!("Unavailable.GDK.{i}"),
+                    "cover":"","icon":""})
+            })
+            .collect::<Vec<_>>();
+        // The final manual title is deliberately invalid so an attempted
+        // online lookup returns immediately without making HTTP requests.
+        games.push(json!({"id":"manual-last","source":"manual","name":"a","cover":"","icon":""}));
+        let calls = AtomicUsize::new(0);
+        let allowed = || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            true
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "orbit-xbox-budget-fixture-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let result = repair_artwork_guarded(&games, &dir, true, false, &allowed).unwrap();
+        assert_eq!(result["attempted"], 9);
+        assert_eq!(result["updates"], json!([]));
+        assert_eq!(calls.load(Ordering::SeqCst), 2,
+            "Xbox should use no online budget; the following manual title must still reach the online guard");
         assert!(!dir.exists());
     }
 

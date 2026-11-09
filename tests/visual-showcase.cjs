@@ -59,6 +59,17 @@ test('cinematic showcase preserves launch, favorite, focus and responsive artwor
  assert.match(await showcase.locator('#dialog-title').textContent(),/Aether/);
  assert.equal(await showcase.locator('.showcase-play').count(),1);
  assert.equal(await showcase.locator('.showcase-favorite').getAttribute('aria-pressed'),'false');
+ const showcaseHeart=showcase.locator('.showcase-favorite svg');
+ assert.equal(await showcaseHeart.evaluate(x=>getComputedStyle(x).fill),'none','unsaved details heart has transparent center');
+ assert.equal(await showcaseHeart.evaluate(x=>getComputedStyle(x).stroke),'rgb(139, 122, 255)',
+  'unsaved details heart outline is purple, not the modal text color');
+ await showcase.locator('.showcase-favorite').hover();
+ assert.equal(await showcaseHeart.evaluate(x=>getComputedStyle(x).stroke),'rgb(139, 122, 255)',
+  'unsaved details outline remains purple on hover');
+ await page.evaluate(()=>window.orbit.saveSettings({accent:'#fc8ca8'}));
+ assert.equal(await showcaseHeart.evaluate(x=>getComputedStyle(x).stroke),'rgb(252, 140, 168)',
+  'unsaved details outline follows the selected accent in the modal root');
+ await page.evaluate(()=>window.orbit.saveSettings({accent:'#8b7aff'}));
  assert.match(await showcase.locator('.detail-playtime-value').textContent(),/3h 0m played/);
  assert.match(await showcase.locator('.showcase-last-played strong').textContent(),/2026/);
  assert.equal(await showcase.locator('[data-action=edit],[data-action=remove-confirm]').count(),0,'management stays in the game-card dropdown');
@@ -82,6 +93,10 @@ test('cinematic showcase preserves launch, favorite, focus and responsive artwor
  await showcase.locator('.showcase-favorite').click();
  await page.waitForFunction(()=>document.querySelector('.showcase-favorite')?.getAttribute('aria-pressed')==='true');
  assert.equal(await showcase.locator('.showcase-favorite').getAttribute('aria-pressed'),'true');
+ assert.equal(await showcaseHeart.evaluate(x=>getComputedStyle(x).fill),'rgb(139, 122, 255)',
+  'selected details heart has a fully purple fill');
+ assert.equal(await showcaseHeart.evaluate(x=>getComputedStyle(x).stroke),'rgb(139, 122, 255)',
+  'selected details outline matches the fill');
  assert(await showcase.locator('.showcase-favorite').evaluate(node=>document.activeElement===node),'favorite update retains focused control');
  await page.keyboard.press('Escape');
  assert.equal(await showcase.count(),0);

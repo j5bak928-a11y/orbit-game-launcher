@@ -642,16 +642,26 @@ body[data-game-active=true] .home-page .continue-card:hover{transform:none}
   opacity:0;transform:translateY(-3px);
   transition:opacity .15s ease,background-color .15s ease,transform .15s ease;
 }
-.game-card.poster-card .favorite-float{left:11px;right:auto}
+.game-card.poster-card .favorite-float{left:11px;right:auto;top:5px;opacity:1;transform:none;border-color:rgba(var(--accent-rgb),.55)}
 .game-card.poster-card .card-menu-float{right:11px;left:auto}
-.game-card.poster-card .favorite-float.active{color:var(--accent)}
+.game-card.poster-card .favorite-float.active{color:var(--accent);border-color:var(--accent)}
 .game-card.poster-card .favorite-float:hover,.game-card.poster-card .card-menu-float:hover,
 .game-card.poster-card .favorite-float:focus-visible,.game-card.poster-card .card-menu-float:focus-visible{
   background:rgba(58,62,72,.96);color:#fff;
 }
-/* A saved heart is solid accent-purple everywhere, including hover/focus.
-   Unselected hearts remain outlines, and custom accents still apply. */
-#app button[data-action="favorite"][aria-pressed="true"] svg{
+/* Favorite hearts are always clearly outlined in the chosen accent.
+   Selected hearts become solid accent-purple; neither their hover nor their
+   keyboard-focus styles may turn the outline white or leave a pale center. */
+#app button[data-action="favorite"] svg,
+#modal-root button[data-action="favorite"] svg{
+  fill:none;
+  stroke:var(--accent);
+  stroke-width:2.2;
+  stroke-linejoin:round;
+  stroke-linecap:round;
+}
+#app button[data-action="favorite"][aria-pressed="true"] svg,
+#modal-root button[data-action="favorite"][aria-pressed="true"] svg{
   fill:var(--accent);
   stroke:var(--accent);
 }
@@ -691,8 +701,8 @@ body[data-game-active=true] .home-page .continue-card:hover{transform:none}
 }
 @media(max-width:500px){
   .game-card.poster-card .favorite-float,.game-card.poster-card .card-menu-float{width:36px;height:36px;top:7px;border-radius:8px}
-  .game-card.poster-card .favorite-float{left:7px}
-  .game-card.poster-card .card-menu-float{right:7px}
+  .game-card.poster-card .favorite-float{left:7px;right:auto;top:1px}
+  .game-card.poster-card .card-menu-float{right:7px;left:auto}
   .game-card.poster-card .cover-play{left:7px;right:7px;bottom:7px;width:calc(100% - 14px);height:38px;gap:5px;font-size:11px;border-radius:8px}
   .game-card.poster-card .cover-play svg{width:14px;height:14px}
   .game-card.poster-card .game-label{bottom:46px;padding:20px 8px 3px}

@@ -68,9 +68,15 @@ test('poster cards keep the existing Orbit shell and expose working artwork acti
   return {cover:rect(node.querySelector('.cover')),heart:rect(node.querySelector('.favorite-float')),
    menu:rect(node.querySelector('.card-menu-float')),play:rect(node.querySelector('.cover-play'))};
  });
- assert(buttons.heart.x<buttons.cover.x+buttons.cover.width/2,'favorite is top-left');
- assert(buttons.menu.x>buttons.cover.x+buttons.cover.width/2,'menu is top-right');
+ assert(buttons.heart.x<buttons.cover.x+buttons.cover.width/2,'favorite stays top-left');
+ assert(buttons.menu.x>buttons.cover.x+buttons.cover.width/2,'menu stays top-right');
  assert(buttons.heart.right<buttons.menu.x,'upper corner actions do not overlap');
+ assert(Math.abs(buttons.heart.y-buttons.menu.y)<=1,
+  'favorite and actions menu align on the same top row instead of a 6px vertical offset');
+ assert.equal(await card.locator('.favorite-float svg').evaluate(x=>getComputedStyle(x).stroke),'rgb(139, 122, 255)',
+  'unselected heart outline is purple, not white or gold');
+ assert.equal(await card.locator('.favorite-float svg').evaluate(x=>getComputedStyle(x).fill),'none',
+  'unselected heart remains an outlined shape');
  assert(buttons.play.width>buttons.cover.width*.7,'wide accent-colored Play button sits on the poster');
  assert(buttons.play.bottom<buttons.cover.bottom+1,'Play stays inside the poster');
  assert.equal(await card.locator('.cover-play').textContent(),'Spelen');
@@ -94,11 +100,15 @@ test('poster cards keep the existing Orbit shell and expose working artwork acti
  await page.evaluate(()=>window.orbit.saveSettings({accent:'#fc8ca8'}));
  assert.equal(await card.locator('.favorite-float svg').evaluate(x=>getComputedStyle(x).fill),'rgb(252, 140, 168)',
   'selected heart follows a customized accent');
+ assert.equal(await card.locator('.favorite-float svg').evaluate(x=>getComputedStyle(x).stroke),'rgb(252, 140, 168)',
+  'selected heart stroke follows the customized accent too');
  await page.evaluate(()=>window.orbit.saveSettings({accent:'#8b7aff'}));
  await heart.click();
  await page.waitForFunction(()=>document.querySelector('.poster-card .favorite-float')?.getAttribute('aria-pressed')==='false');
  assert.equal(await card.locator('.favorite-float svg').evaluate(x=>getComputedStyle(x).fill),'none',
   'removing a favorite restores the unfilled heart');
+ assert.equal(await card.locator('.favorite-float svg').evaluate(x=>getComputedStyle(x).stroke),'rgb(139, 122, 255)',
+  'removed favorite keeps the purple outline');
  await heart.click();
  await page.waitForFunction(()=>document.querySelector('.poster-card .favorite-float')?.getAttribute('aria-pressed')==='true');
  await card.locator('.card-menu-float').click();
@@ -126,6 +136,8 @@ test('poster cards keep the existing Orbit shell and expose working artwork acti
  await page.waitForFunction(()=>document.querySelector('.game-row [data-action=favorite]')?.getAttribute('aria-pressed')==='false');
  assert.equal(await listFavorite.locator('svg').evaluate(x=>getComputedStyle(x).fill),'none',
   'unfavorited list row restores the outline');
+ assert.equal(await listFavorite.locator('svg').evaluate(x=>getComputedStyle(x).stroke),'rgb(139, 122, 255)',
+  'unfavorited list row retains purple outline');
  await page.locator('[data-action=view][data-view=grid]').click();
  await card.waitFor();
  await page.setViewportSize({width:390,height:780});await page.locator('.poster-card').first().hover();
@@ -134,9 +146,12 @@ test('poster cards keep the existing Orbit shell and expose working artwork acti
   const heart=node.querySelector('.favorite-float').getBoundingClientRect();
   const menu=node.querySelector('.card-menu-float').getBoundingClientRect();
   const play=node.querySelector('.cover-play').getBoundingClientRect();
-  return {coverWidth:cover.width,playWidth:play.width,heartRight:heart.right,menuLeft:menu.left,buttonHeight:play.height};
+  return {coverWidth:cover.width,playWidth:play.width,heartLeft:heart.left,
+   heartRight:heart.right,heartTop:heart.top,menuLeft:menu.left,menuRight:menu.right,
+   menuTop:menu.top,buttonHeight:play.height};
  });
- assert(narrow.heartRight<narrow.menuLeft,'corner buttons do not overlap on narrow screens');
+ assert(narrow.heartRight<narrow.menuLeft,'corner controls do not overlap on narrow screens');
+ assert(Math.abs(narrow.heartTop-narrow.menuTop)<=1,'narrow controls share an aligned top edge');
  assert(narrow.playWidth>narrow.coverWidth*.7,'narrow Play button remains wide');
  assert(narrow.buttonHeight>=38,'Play action stays consistent with other primary controls on narrow layouts');
  assert(await page.locator('.poster-card').first().evaluate(node=>{

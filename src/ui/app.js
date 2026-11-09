@@ -175,7 +175,7 @@ function rowGame(g){return `<article class="game-row" data-action="detail" data-
 function sidebar(){const links=[['home','home','Overview'],['library','library','All games'],['favorites','heart','Favorites'],['recent','clock','Recently played'],['statistics','chart','Statistics']];return `<aside class="sidebar">
  <div class="brand" role="img" aria-label="Orbit Launcher"><img class="orbit-brand-mark" src="../../assets/branding/orbit-generated-mark.png" alt="" /><span class="orbit-brand-word" aria-hidden="true">orbit</span></div>
  <div class="side-label">${tr('LIBRARY')}</div><nav class="nav" aria-label="${tr('Main navigation')}">${links.map(([id,icon,name])=>`<button class="nav-item ${state.route===id?'active':''}" data-action="navigate" data-route="${id}" title="${tr(name)}" ${state.route===id?'aria-current="page"':''}>${ic(icon,18)}<span>${tr(name)}</span>${id==='library'?`<span class="count">${formatNumber(state.games.length)}</span>`:''}</button>`).join('')}</nav>
- <div class="side-divider"></div><nav class="nav"><button class="nav-item" data-action="shuffle" title="${tr('Choose a game')}" ${state.games.length?'':'disabled'}>${ic('sparkles',18)}<span>${tr('Choose a game')}</span></button><button class="nav-item ${state.route==='settings'?'active':''}" data-action="navigate" data-route="settings" title="${tr('Settings')}">${ic('settings',18)}<span>${tr('Settings')}</span></button></nav>
+ <div class="side-divider"></div><nav class="nav"><button class="nav-item" data-action="shuffle" title="${tr('Choose a game')}" ${state.games.length?'':'disabled'}>${ic('sparkles',18)}<span>${tr('Choose a game')}</span></button><button class="nav-item" data-action="whats-new" title="${tr('See what\'s new')}" aria-label="${tr('See what\'s new')}">${ic('info',18)}<span>${tr("What's new")}</span></button><button class="nav-item ${state.route==='settings'?'active':''}" data-action="navigate" data-route="settings" title="${tr('Settings')}">${ic('settings',18)}<span>${tr('Settings')}</span></button></nav>
  <div class="side-bottom"><div class="side-version"><span class="status-dot"></span><span>${tr(state.scanning?'Scanning your games…':'Local library')} <span class="version-number">v${esc(state.version)}</span></span></div></div></aside>`}
 function topbar(){const name={home:'Overview',library:'My library',favorites:'Favorites',recent:'Recently played',statistics:'Gaming statistics',settings:'Settings'}[state.route]||'Overview';return `<header class="topbar"><div class="breadcrumb">${tr(name)}</div>
  <div class="topbar-right"><label class="searchbox">${ic('search',18)}<input id="global-search" type="search" placeholder="${tr('Search your library')}" value="${esc(state.query)}" autocomplete="off" aria-label="${tr('Search games')}"/><kbd>Ctrl K</kbd></label>
@@ -564,25 +564,34 @@ function openGameActions(trigger){
  menu.querySelector('[role=menuitem]')?.focus({preventScroll:true});
 }
 function openModal(type,meta={}){pauseDesktopPadEntry();closeGameActions();if(!state.modal){modalReturnFocus=document.activeElement;modalReturnFocusAction=modalReturnFocus?.dataset.action?{action:modalReturnFocus.dataset.action,id:modalReturnFocus.dataset.id,kind:['game-card','game-row','continue-card','game-menu'].find(name=>modalReturnFocus.classList.contains(name))}:null;}state.modal={type,...meta};renderModal()}
-const WHATS_NEW_VERSION='0.2.8';
+const WHATS_NEW_VERSION='0.2.9';
 const WHATS_NEW_KEY='orbit.whatsNew.lastAcknowledgedVersion';
+let whatsNewPending=false;
 function markWhatsNewSeen(){
  try{window.localStorage?.setItem(WHATS_NEW_KEY,WHATS_NEW_VERSION)}catch{/* Denied storage must not break the launcher. */}
 }
 function showWhatsNewAfterBoot(){
- // Test fixtures and development sessions do not claim to be a packaged release.
- if(state.version!==WHATS_NEW_VERSION||state.modal)return;
+ // Only show the notes for a corresponding packaged app. Windows packaging
+ // may append build metadata or a fourth zero segment.
+ const reported=String(state.version||'');
+ const suffix=reported.startsWith(WHATS_NEW_VERSION)?reported.slice(WHATS_NEW_VERSION.length):null;
+ if(suffix===null||(suffix&&!/^(?:\.0)?(?:[.+-].*)?$/.test(suffix)))return;
  try{if(window.localStorage?.getItem(WHATS_NEW_KEY)===WHATS_NEW_VERSION)return}catch{/* Show once per running session if storage is denied. */}
+ // A startup scan/other modal must not swallow the update notes forever.
+ if(state.modal){whatsNewPending=true;return;}
+ whatsNewPending=false;
  openModal('whats-new',{automatic:true});
 }
 function whatsNewDialog(){
  const points=(items)=>items.map(item=>`<li>${tr(item)}</li>`).join('');
  return `<div class="dialog-scrim" data-action="scrim"><section class="dialog wide whats-new-dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="whats-new-intro">
  <div class="whats-new-header"><span class="whats-new-eyebrow">${ic('sparkles',15)} ORBIT · v${WHATS_NEW_VERSION}</span><button class="ghost-btn whats-new-close" data-action="close-modal" aria-label="${tr('Close release notes')}">${ic('close',20)}</button>
- <h2 id="dialog-title">${tr("What's new in Orbit")}</h2><p id="whats-new-intro">${tr('Highlights from 0.2.7 and 0.2.8')}</p></div>
+ <h2 id="dialog-title">${tr("What's new in Orbit")}</h2><p id="whats-new-intro">${tr('Highlights from 0.2.7, 0.2.8 and 0.2.9')}</p></div>
  <div class="whats-new-content">
- <section class="whats-new-version"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.2.8 — New')}</span><h3>${tr('Your Orbit is ready')}</h3></div>
- <ul>${points(['Rust is now the primary Windows edition','Fully purple favorite hearts','Show what\'s new after installing or updating.','Electron remains available as a fallback.'])}</ul></section>
+ <section class="whats-new-version"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.2.9 — New')}</span><h3>${tr('Your Orbit is ready')}</h3></div>
+ <ul>${points(['Favorite hearts stay top-left and align with the actions menu on the right. Outlines and selected fills are purple.','Rocket League no longer stays Playing because of a leftover EAC helper process.','Xbox and Game Pass local game logos appear when a portrait cover is unavailable.','Release notes are always available from the sidebar and Settings.'])}</ul></section>
+ <section class="whats-new-version whats-new-history"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.2.8 — New')}</span><h3>${tr('Rust is now the primary Windows edition')}</h3></div>
+ <ul>${points(['Fully purple favorite hearts','Show what\'s new after installing or updating.','Electron remains available as a fallback.'])}</ul></section>
  <section class="whats-new-version whats-new-history"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.2.7 — Included improvements')}</span><h3>${tr('A cleaner library')}</h3></div>
  <ul>${points(['Poster cards, purple Play buttons and responsive layouts.'])}</ul>
  <h3>${tr('Controller experience')}</h3><ul>${points(['Standard gamepads: Menu/Options entry, safer focus, triggers and right-stick scrolling.'])}</ul>
@@ -591,7 +600,7 @@ function whatsNewDialog(){
  <p class="whats-new-warning">${ic('info',15)} ${tr('Rust and Electron keep separate profiles. Back up before switching.')} ${tr('Windows builds are unsigned; automatic update installation remains disabled.')}</p>
  </div><div class="whats-new-footer"><span>${tr('You can reopen this screen in Settings.')}</span><button class="primary-btn" data-action="close-modal">${tr('Continue to your library')} ${ic('arrow',16)}</button></div></section></div>`;
 }
-function closeModal(){if(state.modal?.type==='whats-new')markWhatsNewSeen();state.modal=null;el('modal-root').innerHTML='';const candidates=modalReturnFocusAction?[...document.querySelectorAll('[data-action]')].filter(node=>node.dataset.action===modalReturnFocusAction.action&&node.dataset.id===modalReturnFocusAction.id):[];const target=modalReturnFocus?.isConnected?modalReturnFocus:candidates.find(node=>modalReturnFocusAction.kind&&node.classList.contains(modalReturnFocusAction.kind))||candidates[0];target?.focus({preventScroll:true});modalReturnFocus=null;modalReturnFocusAction=null;wakeDesktopPadEntry();}
+function closeModal(){if(state.modal?.type==='whats-new')markWhatsNewSeen();state.modal=null;el('modal-root').innerHTML='';const candidates=modalReturnFocusAction?[...document.querySelectorAll('[data-action]')].filter(node=>node.dataset.action===modalReturnFocusAction.action&&node.dataset.id===modalReturnFocusAction.id):[];const target=modalReturnFocus?.isConnected?modalReturnFocus:candidates.find(node=>modalReturnFocusAction.kind&&node.classList.contains(modalReturnFocusAction.kind))||candidates[0];target?.focus({preventScroll:true});modalReturnFocus=null;modalReturnFocusAction=null;wakeDesktopPadEntry();if(whatsNewPending){whatsNewPending=false;Promise.resolve().then(showWhatsNewAfterBoot);}}
 function dialogFrame(title,description,body,footer='',wide=false){return `<div class="dialog-scrim" data-action="scrim"><section class="dialog ${wide?'wide':''}" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div class="dialog-header"><div><h2 id="dialog-title">${esc(title)}</h2><p>${esc(description)}</p></div><button class="ghost-btn" data-action="close-modal" aria-label="${tr('Close dialog')}">${ic('close',21)}</button></div>${body}${footer}</section></div>`}
 function editor(g){const isEdit=!!g;const title=t(isEdit?'Edit game':'Add a game');const params=Array.isArray(g?.launch_args)?JSON.stringify(g.launch_args):'[]';
  const imgSection=(key,label)=>`<div class="image-upload"><div id="preview-${key}">${artwork(g?.[key])?`<img src="${artwork(g[key])}" alt="${tr('{label} preview',{label:t(label)})}" />`:key==='cover'&&artwork(g?.icon)?`<div class="auto-icon-preview"><img src="${artwork(g.icon)}" alt="${tr('Icon fallback')}" /></div>`:`<div class="image-placeholder">${ic('image',21)}</div>`}</div><div style="flex:1"><p>${tr(label)}</p><small>${tr(key==='icon'?'Used when no cover exists':'PNG, JPEG or WebP')}</small></div><button type="button" class="secondary-btn" data-action="choose-art" data-key="${key}">${tr('Choose')}</button><button type="button" class="small-link" data-action="clear-art" data-key="${key}" aria-label="${tr('Clear {label}',{label:t(label)})}">${tr('Clear')}</button></div>`;

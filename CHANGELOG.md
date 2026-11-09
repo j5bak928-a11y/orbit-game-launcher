@@ -2,6 +2,13 @@
 
 This changelog covers the changes users receive with Orbit's Windows editions. **Rust/Tauri is the recommended direction starting with 0.2.8**, but its separately named download remains an **experimental, unsigned preview** while installed Windows acceptance is incomplete. Electron remains a supported fallback with separate application data. Release files appear on [GitHub Releases](https://github.com/j5bak928-a11y/orbit-game-launcher/releases); check the version on the download before installing.
 
+## 0.2.10 — Favorite visibility and themed release notes (9 November 2026)
+
+- **Poster favorite visibility:** unsaved hearts are hidden on idle desktop posters and appear when you hover over the card or focus it with a keyboard. **Selected favorites stay visible**, even when the pointer moves away. Touch controls remain visible, and the original left-heart/right-menu positions are unchanged.
+- **Orbit-themed scrollbar:** the What's New dialog has a narrow, rounded scrollbar with an accent-colored thumb and subtle dark track, replacing the stark white Windows design. Custom accent colors, mouse wheel, touchpad, keyboard scroll and a Firefox fallback are preserved.
+- The first-start release notes retain all four versions (**0.2.7 through 0.2.10**) in five languages. Dismissal remains version-specific, with manual reopening from the sidebar and Settings.
+- Rust remains the recommended unsigned preview, Electron remains a fallback with a separate profile. Fully **Quit Orbit from the system tray** before updating; closing the window alone keeps its tracker active.
+
 ## 0.2.9 — Favorite-heart and release-notes reliability (9 November 2026)
 
 ### Interface and first-run release notes

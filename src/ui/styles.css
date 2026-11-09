@@ -642,9 +642,12 @@ body[data-game-active=true] .home-page .continue-card:hover{transform:none}
   opacity:0;transform:translateY(-3px);
   transition:opacity .15s ease,background-color .15s ease,transform .15s ease;
 }
-.game-card.poster-card .favorite-float{left:11px;right:auto;top:5px;opacity:1;transform:none;border-color:rgba(var(--accent-rgb),.55)}
+.game-card.poster-card .favorite-float{left:11px;right:auto;top:5px;border-color:rgba(var(--accent-rgb),.55)}
 .game-card.poster-card .card-menu-float{right:11px;left:auto}
-.game-card.poster-card .favorite-float.active{color:var(--accent);border-color:var(--accent)}
+.game-card.poster-card .favorite-float.active{
+  opacity:1;transform:none;
+  color:var(--accent);border-color:var(--accent);
+}
 .game-card.poster-card .favorite-float:hover,.game-card.poster-card .card-menu-float:hover,
 .game-card.poster-card .favorite-float:focus-visible,.game-card.poster-card .card-menu-float:focus-visible{
   background:rgba(58,62,72,.96);color:#fff;
@@ -680,7 +683,6 @@ body[data-game-active=true] .home-page .continue-card:hover{transform:none}
 .game-card.poster-card:is(:hover,:focus-within,:focus-visible) .favorite-float,
 .game-card.poster-card:is(:hover,:focus-within,:focus-visible) .card-menu-float,
 .game-card.poster-card:is(:hover,:focus-within,:focus-visible) .cover-play,
-.game-card.poster-card .favorite-float.active,
 .game-card.poster-card .card-menu-float[aria-expanded=true],
 .game-card.poster-card .cover-play[aria-busy=true]{opacity:1;transform:none}
 /* Poster artwork is not always recognizable: show the game name and playtime
@@ -729,7 +731,29 @@ body:is([data-reduce-motion=true],[data-game-active=true]) #app .game-card.poste
 #modal-root .whats-new-header h2{font-size:clamp(24px,3vw,34px);letter-spacing:-1.1px;line-height:1.15;margin:16px 0 8px}
 #modal-root .whats-new-header p{color:var(--muted);font-size:13px;line-height:1.5;margin:0}
 .whats-new-close{position:absolute;right:20px;top:20px;border:1px solid var(--border);border-radius:9px;display:grid;place-items:center;width:36px;height:36px}
-.whats-new-content{padding:25px 36px;overflow-y:auto;overscroll-behavior:contain;min-height:0}
+.whats-new-content{
+  padding:25px 36px;overflow-y:auto;overscroll-behavior:contain;min-height:0;
+  /* Firefox fallback: keep the handle subtle, but visible and accessible. */
+  scrollbar-width:thin;scrollbar-color:rgba(var(--accent-rgb),.7) transparent;
+}
+/* Orbit's WebView2/Chromium scrollbar: no Windows-white track or square thumb. */
+@supports selector(::-webkit-scrollbar){
+  .whats-new-content{scrollbar-width:auto;scrollbar-color:auto}
+  .whats-new-content::-webkit-scrollbar{width:10px}
+  .whats-new-content::-webkit-scrollbar-track{
+    background:rgba(var(--accent-rgb),.045);border-radius:999px;margin:10px 0;
+  }
+  .whats-new-content::-webkit-scrollbar-thumb{
+    border-radius:999px;border:2px solid var(--panel);
+    background:rgba(var(--accent-rgb),.58);
+    background-clip:padding-box;
+  }
+  .whats-new-content::-webkit-scrollbar-thumb:hover{
+    background:var(--accent);background-clip:padding-box;
+  }
+  .whats-new-content::-webkit-scrollbar-corner{background:transparent}
+  .whats-new-content::-webkit-scrollbar-button{display:none}
+}
 .whats-new-version{padding:19px 22px;margin:0 0 18px;border:1px solid rgba(var(--accent-rgb),.3);border-radius:14px;background:rgba(var(--accent-rgb),.07)}
 .whats-new-history{background:var(--panel2);border-color:var(--border)}
 .whats-new-section-head{display:flex;align-items:center;gap:13px;flex-wrap:wrap;margin-bottom:10px}

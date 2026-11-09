@@ -26,20 +26,51 @@ const server=http.createServer((request,response)=>{
   const context=await browser.newContext({viewport:{width:910,height:610},locale:'nl-NL'});
   const page=await context.newPage(),errors=[];
   page.on('pageerror',error=>errors.push(error.message));
-  await page.addInitScript({content:`(${installFixture.toString()})({count:7});const bootstrap=window.orbit.bootstrap;window.orbit.bootstrap=async()=>({...await bootstrap(),version:'0.2.10'});window.fixtureLaunches=0;const launch=window.orbit.launchGame;window.orbit.launchGame=(...args)=>{window.fixtureLaunches++;return launch(...args)};`});
+  await page.addInitScript({content:`(${installFixture.toString()})({count:7});const bootstrap=window.orbit.bootstrap;window.orbit.bootstrap=async()=>({...await bootstrap(),version:'0.2.11'});window.fixtureLaunches=0;const launch=window.orbit.launchGame;window.orbit.launchGame=(...args)=>{window.fixtureLaunches++;return launch(...args)};`});
   const url=`http://127.0.0.1:${server.address().port}/src/ui/index.html`;
   await page.goto(url);
   const dialog=page.locator('.whats-new-dialog');
   await dialog.waitFor();
+  const closePlacement=()=>dialog.evaluate(node=>{
+   const header=node.querySelector('.whats-new-header');
+   const eyebrow=node.querySelector('.whats-new-eyebrow');
+   const close=node.querySelector('.whats-new-close');
+   const icon=close.querySelector('svg');
+   const h=header.getBoundingClientRect();
+   const e=eyebrow.getBoundingClientRect();
+   const c=close.getBoundingClientRect();
+   const i=icon.getBoundingClientRect();
+   return {
+    rightInset:h.right-c.right,
+    rightPadding:parseFloat(getComputedStyle(header).paddingRight),
+    centerOffset:Math.abs((c.top+c.height/2)-(e.top+e.height/2)),
+    iconOffset:Math.abs((c.left+c.width/2)-(i.left+i.width/2)),
+    overlap:c.left<e.right,
+    dialogOutline:getComputedStyle(node).outlineStyle,
+    dialogFocused:document.activeElement===node
+   };
+  });
+  const desktopClose=await closePlacement();
+  assert(desktopClose.dialogFocused,'release dialog retains its initial programmatic focus');
+  assert.equal(desktopClose.dialogOutline,'none','no purple keyboard-focus ring around the entire dialog');
+  assert(Math.abs(desktopClose.rightInset-desktopClose.rightPadding)<=2,'X aligns with the header right padding');
+  assert(desktopClose.centerOffset<=2,'X aligns vertically with the Orbit version eyebrow');
+  assert(desktopClose.iconOffset<=1,'the X icon is centered inside its button');
+  assert(!desktopClose.overlap,'the close button does not overlap the header label');
+  await page.keyboard.press('Tab');
+  assert.equal(await dialog.locator('.whats-new-close').evaluate(x=>x===document.activeElement),true,
+   'keyboard Tab reaches the top-right close button');
+  assert.equal(await dialog.locator('.whats-new-close').evaluate(x=>getComputedStyle(x).outlineStyle),'solid',
+   'only the focused close button retains a visible keyboard outline');
   if(process.env.ORBIT_WHATS_NEW_SCREENSHOT){
    fs.mkdirSync(path.dirname(process.env.ORBIT_WHATS_NEW_SCREENSHOT),{recursive:true});
    await dialog.screenshot({path:process.env.ORBIT_WHATS_NEW_SCREENSHOT});
   }
   assert.equal(await dialog.getAttribute('aria-modal'),'true');
   assert.match(await dialog.locator('#dialog-title').textContent(),/nieuw|neu|new/i);
-  assert.equal(await page.locator('.whats-new-version').count(),4,'0.2.10, 0.2.9, 0.2.8 and 0.2.7 changes are visible');
+  assert.equal(await page.locator('.whats-new-version').count(),5,'0.2.11 through 0.2.7 changes are visible');
   const allText=await dialog.textContent();
-  for(const phrase of ['0.2.10','0.2.9','0.2.8','0.2.7','Rust','Electron','Menu/Options','Nederlands']){
+  for(const phrase of ['0.2.11','0.2.10','0.2.9','0.2.8','0.2.7','Rust','Electron','Menu/Options','Nederlands']){
    assert(allText.includes(phrase),`changelog includes ${phrase}`);
   }
   assert.equal(await page.evaluate(()=>window.fixtureLaunches),0,'onboarding never starts a game');
@@ -81,7 +112,7 @@ const server=http.createServer((request,response)=>{
   assert(await dialog.evaluate(el=>el.contains(document.activeElement)),'keyboard focus remains in dialog');
   await dialog.locator('[data-action=close-modal].primary-btn').click();
   await dialog.waitFor({state:'detached'});
-  assert.equal(await page.evaluate(()=>localStorage.getItem('orbit.whatsNew.lastAcknowledgedVersion')),'0.2.10');
+  assert.equal(await page.evaluate(()=>localStorage.getItem('orbit.whatsNew.lastAcknowledgedVersion')),'0.2.11');
   await page.reload();
   await page.locator('[data-route=settings]').waitFor();
   assert.equal(await dialog.count(),0,'already seen notes are not shown on each start');
@@ -99,22 +130,35 @@ const server=http.createServer((request,response)=>{
   await page.keyboard.press('Escape');
   await dialog.waitFor({state:'detached'});
   assert.equal(await reopen.evaluate(x=>x===document.activeElement),true,'Escape restores Settings button focus');
-  await page.evaluate(()=>localStorage.setItem('orbit.whatsNew.lastAcknowledgedVersion','0.2.9'));
+  await page.evaluate(()=>localStorage.setItem('orbit.whatsNew.lastAcknowledgedVersion','0.2.10'));
   await page.reload();
   await dialog.waitFor();
   assert.equal(await page.evaluate(()=>window.fixtureLaunches),0);
   await page.setViewportSize({width:390,height:700});
   assert(await dialog.evaluate(el=>el.getBoundingClientRect().width<=innerWidth),'modal fits narrow screens');
+  const mobileClose=await closePlacement();
+  assert(Math.abs(mobileClose.rightInset-mobileClose.rightPadding)<=2,'compact X aligns with header padding');
+  assert(mobileClose.centerOffset<=2,'compact X aligns with the eyebrow');
+  assert(mobileClose.iconOffset<=1,'compact X icon is centered');
+  assert(!mobileClose.overlap,'compact X never overlaps the Orbit label');
+  assert.equal(mobileClose.dialogOutline,'none','compact dialog has no purple outline');
+  await page.setViewportSize({width:320,height:620});
+  const narrowClose=await closePlacement();
+  assert(Math.abs(narrowClose.rightInset-narrowClose.rightPadding)<=2,'320px X stays within header padding');
+  assert(narrowClose.centerOffset<=2,'320px X stays aligned with the eyebrow');
+  assert(!narrowClose.overlap,'320px header label and close button do not collide');
+  await page.evaluate(()=>document.body.dataset.theme='light');
+  assert.equal((await closePlacement()).dialogOutline,'none','light theme has no purple dialog outline');
   await page.keyboard.press('Escape');
   // Real app starts with the persisted acknowledgment already present in WebView2.
   // Each scenario uses its own isolated browser context; no live profile is opened.
   for(const {version,acknowledged,denied,visible} of [
-   {version:'0.2.10',acknowledged:'0.2.10',visible:false},
-   {version:'0.2.10',acknowledged:'0.2.9',visible:true},
-   {version:'0.2.10+build.1',visible:true},
-   {version:'0.2.10.0',visible:true},
-   {version:'0.2.9',visible:false},
-   {version:'0.2.10',denied:true,visible:true},
+   {version:'0.2.11',acknowledged:'0.2.11',visible:false},
+   {version:'0.2.11',acknowledged:'0.2.10',visible:true},
+   {version:'0.2.11+build.1',visible:true},
+   {version:'0.2.11.0',visible:true},
+   {version:'0.2.10',visible:false},
+   {version:'0.2.11',denied:true,visible:true},
   ]){
    const isolated=await browser.newContext({viewport:{width:910,height:610},locale:'en-US'});
    try{

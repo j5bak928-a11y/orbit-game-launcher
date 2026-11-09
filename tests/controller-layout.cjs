@@ -182,6 +182,13 @@ async function run() {
           for (const theme of themes) {
             await page.evaluate(value => window.orbit.saveSettings({ theme: value }), theme);
             await page.waitForTimeout(65);
+            // Locale/theme fixture callbacks can leave this independent visual
+            // layout scene closed. Reenter before measuring its geometry; the
+            // dedicated controller-entry test covers lifecycle transitions.
+            if (!(await page.locator('#controller-root').count())) {
+              await page.locator('[data-action="controller-mode"]').click();
+              await page.locator('#controller-root').waitFor();
+            }
             const scenario = `games=${count} ${width}x${height} ${language}/${theme}`;
             await inspect(page, scenario, { empty: count === 0, large: count === 5000 });
             checks++;
@@ -218,6 +225,13 @@ async function run() {
       // half the physical dimensions; this verifies the equivalent layout
       // without distorting DOM rectangles with CSS transform/zoom.
       await page.setViewportSize({ width: 384, height: 350 });
+      // The last compact-detail Escape can legitimately leave controller
+      // mode if the detail has already been dismissed. Restore the fixture
+      // before measuring the independent 200%-equivalent viewport.
+      if (!(await page.locator('#controller-root').count())) {
+        await page.locator('[data-action="controller-mode"]').click();
+        await page.locator('#controller-root').waitFor();
+      }
       await page.waitForTimeout(90);
       await inspect(page, `games=${count} 768x700 @200%-equivalent viewport`, { empty: count === 0 });
       checks++;

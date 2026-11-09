@@ -2,6 +2,12 @@
 
 This changelog covers the changes users receive with Orbit's Windows editions. **Rust/Tauri is the recommended direction starting with 0.2.8**, but its separately named download remains an **experimental, unsigned preview** while installed Windows acceptance is incomplete. Electron remains a supported fallback with separate application data. Release files appear on [GitHub Releases](https://github.com/j5bak928-a11y/orbit-game-launcher/releases); check the version on the download before installing.
 
+## Unreleased — Xbox / PC Game Pass artwork recovery
+
+- The Rust edition can read verified, local square logo assets from an installed Xbox GDK game's `MicrosoftGame.config` and use them as **icon fallbacks** when artwork is missing. Existing manually selected covers and icons are not replaced; automatic repair also works offline.
+- Xbox identities and the installed executable are checked before accessing bounded, package-contained PNG files. The Rust artwork repair no longer searches Steam by title alone for an Xbox/Game Pass entry, avoiding incorrect cross-store artwork.
+- **Still to do:** obtain actual *portrait* cover artwork through verified Microsoft Store/Xbox catalog identity, and support packaged-only Game Pass titles that do not expose the verified GDK executable/manifest. Square logos are not stretched into portrait covers. This change is **not part of the published 0.2.8 binaries**.
+
 ## 0.2.8 — Rust-first Windows release (8 November 2026)
 
 ### What's new

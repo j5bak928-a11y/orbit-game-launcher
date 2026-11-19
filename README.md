@@ -245,7 +245,7 @@ Windows installers are currently unsigned and may trigger Windows SmartScreen wa
 
 On Windows, **Settings → Performance & updates** can check GitHub at startup or when you select **Check now**. **Download update** opens the matching release in your browser, where you can choose the installer for your current edition. Quit Orbit from the tray before running an installer.
 
-For a private repository, automatic checks need repository access. In GitHub, create a fine-grained token scoped to this repository with **Contents: Read-only**. In Orbit, open **Settings → Open app data**, and save the token as the only line in `github-update-token.txt` in that folder. This is a local credential file outside the library database and backups. Keep it private. **Open Releases** works through your signed-in browser and needs no credential file.
+For a private repository, automatic checks need repository access. In GitHub, create a fine-grained token scoped to this repository with **Contents: Read-only**. In Orbit, select **Open folder** under **Settings → Application data**, and save the token as the only line in `github-update-token.txt` in that folder. This is a local credential file outside the library database and backups. Keep it private. **Open Releases** works through your signed-in browser and needs no credential file.
 
 
 For detailed validation and limits, see [controller-mode verification](docs/VERIFICATION-controller-mode.md), [Tauri migration](docs/TAURI-MIGRATION.md), and [Windows tray lifecycle tests](docs/VERIFICATION-TAURI-TRAY-WEBVIEW.md).

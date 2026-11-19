@@ -10,6 +10,23 @@ const {installFixture}=require('./fixtures/renderer.cjs');
 const root=path.resolve(__dirname,'..');
 const screenshotDir=process.env.ORBIT_POSTER_CARD_SCREENSHOTS;
 
+async function assertContinuousCaption(card){
+ const layout=await card.evaluate(node=>{
+  const bounds=selector=>node.querySelector(selector).getBoundingClientRect();
+  const label=node.querySelector('.game-label');
+  return {
+   gradient:getComputedStyle(label).backgroundImage,
+   captionBottom:label.getBoundingClientRect().bottom,
+   coverBottom:bounds('.cover').bottom,
+   textBottom:bounds('.game-meta').bottom,
+   playTop:bounds('.cover-play').top
+  };
+ });
+ assert.match(layout.gradient,/^linear-gradient/,'caption keeps a contrast gradient');
+ assert(Math.abs(layout.captionBottom-layout.coverBottom)<=2,'gradient continues behind Play to the poster bottom');
+ assert(layout.textBottom<=layout.playTop,'metadata stays above Play');
+}
+
 test('poster cards keep the existing Orbit shell and expose working artwork actions',async t=>{
  const browser=await chromium.launch(process.env.ORBIT_BROWSER_EXECUTABLE
   ?{headless:true,executablePath:process.env.ORBIT_BROWSER_EXECUTABLE,args:['--no-sandbox','--disable-dev-shm-usage']}
@@ -69,6 +86,7 @@ test('poster cards keep the existing Orbit shell and expose working artwork acti
  await page.waitForFunction(()=>getComputedStyle(document.querySelector('.poster-card .game-label')).opacity==='1');
  assert.equal(await card.locator('.game-name').textContent(),'Game 00000',
   'poster reveals the game title when actions become visible');
+ await assertContinuousCaption(card);
  const buttons=await card.evaluate(node=>{
   const rect=el=>{const b=el.getBoundingClientRect();return {x:b.x,y:b.y,width:b.width,height:b.height,right:b.right,bottom:b.bottom};};
   return {cover:rect(node.querySelector('.cover')),heart:rect(node.querySelector('.favorite-float')),
@@ -156,6 +174,7 @@ test('poster cards keep the existing Orbit shell and expose working artwork acti
  await page.locator('[data-action=view][data-view=grid]').click();
  await card.waitFor();
  await page.setViewportSize({width:390,height:780});await page.locator('.poster-card').first().hover();
+ await assertContinuousCaption(card);
  const narrow=await page.locator('.poster-card').first().evaluate(node=>{
   const cover=node.querySelector('.cover').getBoundingClientRect();
   const heart=node.querySelector('.favorite-float').getBoundingClientRect();

@@ -356,6 +356,7 @@ function handlers(){
   bind('getUpdateStatus',()=>updateService?.getStatus()||{state:'idle'});
   bind('checkForUpdates',()=>updateService?.check({manual:true})||{state:'unsupported'});
   bind('installUpdate',()=>updateService?.install());
+  bind('openUpdateDownload',tag=>updateService.openDownload(tag));
   bind('setFullscreen',enabled=>fullscreenController.set(enabled));
   bind('bootstrap',()=>({...librarySnapshot(),settings:db.getSettings(),platform:process.platform,version:displayVersion()}));
   bind('librarySnapshot',librarySnapshot);
@@ -543,8 +544,10 @@ app.whenReady().then(async()=>{
     }catch{return new Response('Not found',{status:404})}
   });
   handlers();nativeTheme.themeSource=db.getSettings().theme;
-  updateService=createUpdateService({app,emit:broadcast,getSettings:()=>db.getSettings(),hasRunningGames:()=>runningGameIds().length>0});
-  updateService.initialize();
+  updateService=createUpdateService({
+    app,openExternal:url=>shell.openExternal(url),
+    tokenPath:path.join(app.getPath('userData'),'github-update-token.txt')
+  });
   if(process.platform==='win32'&&typeof Tray==='function'&&Menu){
     try{tray=new Tray(path.join(__dirname,'../assets/icon.ico'));tray.setToolTip('Orbit — tracking playtime');tray.setContextMenu(Menu.buildFromTemplate([{label:'Open Orbit',click:()=>background.open()},{label:'Quit Orbit',click:()=>{background.quit();app.quit();}}]));tray.on('click',()=>background.open());}
     catch{tray=null;}
@@ -560,7 +563,6 @@ app.whenReady().then(async()=>{
     });
     activityTracker.start();
   }
-  setTimeout(()=>{if(db?.getSettings().autoUpdates)updateService?.check().catch(()=>{});},20000).unref?.();
   if(typeof setInterval==='function'){checkpointTimer=setInterval(checkpointPlaytime,60000);checkpointTimer.unref?.();}
   powerMonitor?.on?.('suspend',()=>{checkpointPlaytime();for(const clock of sessionClocks.values())clock.pause();activityTracker?.suspend();});
   powerMonitor?.on?.('resume',()=>{for(const clock of sessionClocks.values())clock.resume();activityTracker?.resume();});
@@ -585,7 +587,6 @@ app.whenReady().then(async()=>{
 });
 app.on('before-quit',()=>{
   background.quit();
-  updateService?.dispose();
   if(checkpointTimer)clearInterval(checkpointTimer);
   if(guardTimer)clearTimeout(guardTimer);
   checkpointPlaytime();

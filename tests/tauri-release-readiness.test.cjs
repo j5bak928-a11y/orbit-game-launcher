@@ -77,8 +77,8 @@ test('release-contract validator rejects accidental promotion and updater/remote
 test('source integration contract keeps signed-update gate closed', () => {
   const src = read('src-tauri/src/lib.rs');
   const getStatus = src.slice(src.indexOf('"getUpdateStatus" =>'), src.indexOf('"findOnlineCover" =>'));
-  assert.match(getStatus, /"getUpdateStatus"[\s\S]*"state":"unsupported"/);
-  assert.match(getStatus, /"checkForUpdates"[\s\S]*"state":"unsupported"/);
+  assert.match(getStatus, /"checkForUpdates" => Ok\(updates::check/);
+  assert.match(getStatus, /"openUpdateDownload"[\s\S]*native::open_external\(&updates::release_page/);
   assert.match(getStatus, /"installUpdate"[\s\S]*Err\("Automatic updates require a signed release and trusted update feed"/);
   assert.doesNotMatch(read('src-tauri/Cargo.toml'), /tauri-plugin-updater|tauri-plugin-shell/);
   assert.doesNotMatch(src, /tauri_plugin_updater|UpdaterExt|download_and_install/i);

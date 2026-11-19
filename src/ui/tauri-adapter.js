@@ -22,7 +22,7 @@
     'inspectGameFile', 'findOnlineCover', 'chooseArtwork', 'chooseFolder',
     'discoverGames', 'repairSteamArtwork', 'importGames', 'launchGame',
     'openGameFolder', 'openAppData', 'getAppInfo', 'exportLibrary',
-    'restoreLibrary', 'getUpdateStatus', 'checkForUpdates', 'installUpdate'
+    'restoreLibrary', 'getUpdateStatus', 'checkForUpdates', 'installUpdate', 'openUpdateDownload'
   ];
   const subscribers = new Set();
   const api = {};

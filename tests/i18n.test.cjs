@@ -161,43 +161,23 @@ test('Rust-primary 0.2.11 What\'s New dialog retains 0.2.7–0.2.10 history in a
   }
 });
 
-test('known Electron and Rust update-status messages are translated without changing unknown backend errors', () => {
+test('update availability interpolates the release version in every supported language', async () => {
   const { i18n } = createRuntime();
-  const electron = createUpdateService({ app: { isPackaged: true }, platform: 'win32', env: {} });
-  const idle = electron.getStatus().message;
-  electron.initialize();
-  const unsigned = electron.getStatus().message;
-  const portable = createUpdateService({
-    app: { isPackaged: false }, platform: 'win32', env: { PORTABLE_EXECUTABLE_FILE: 'Orbit-Portable.exe' },
+  const electron = createUpdateService({
+    app:{isPackaged:true,getVersion:()=>'0.2.10'},platform:'win32',
+    fetchRelease:async()=>new Response(JSON.stringify({tag_name:'v0.2.11',draft:false,prerelease:false})),
   });
-  portable.initialize();
-  const unsupported = portable.getStatus().message;
-  assert.equal(idle, 'Update checks have not started.');
-  assert.equal(unsigned, 'Automatic updates are unavailable until signed releases are configured.');
-  assert.equal(unsupported, 'Automatic installation is unavailable for source and portable builds.');
-  const rustSource = fs.readFileSync(path.join(renderer, '../../src-tauri/src/lib.rs'), 'utf8');
-  const rustStatus = 'Update installation is unavailable in this unsigned Rust preview.';
-  const rustInstallError = 'Automatic updates require a signed release and trusted update feed';
-  assert.ok(rustSource.includes(rustStatus), 'Rust status is still the expected fixed message');
-  assert.ok(rustSource.includes(rustInstallError), 'Rust updater error remains a known fixed message');
-  const statuses = ['Update check not started.', idle, unsigned, unsupported, rustStatus, rustInstallError];
+  const status = await electron.check();
   const expected = {
-    nl: 'Automatische updates zijn niet beschikbaar totdat ondertekende releases zijn ingesteld.',
-    de: 'Automatische Updates sind erst verfügbar, wenn signierte Versionen eingerichtet sind.',
-    fr: 'Les mises à jour automatiques sont indisponibles tant que les versions signées ne sont pas configurées.',
-    es: 'Las actualizaciones automáticas no están disponibles hasta que se configuren versiones firmadas.',
+    en:'Orbit 0.2.11 is available.', nl:'Orbit 0.2.11 is beschikbaar.',
+    de:'Orbit 0.2.11 ist verfügbar.', fr:'Orbit 0.2.11 est disponible.',
+    es:'Orbit 0.2.11 está disponible.'
   };
-  const unexpectedBackendError = 'Updater request failed: HTTP 418 <retry in 30s>';
-  for (const code of ['en', 'nl', 'de', 'fr', 'es']) {
+  for (const [code, message] of Object.entries(expected)) {
     i18n.setLanguage(code);
-    assert.equal(i18n.t(unsigned), code === 'en' ? unsigned : expected[code]);
-    for (const message of statuses) {
-      const translated = i18n.t(message);
-      assert.ok(translated.length, code + ': ' + message);
-      if (code !== 'en') assert.notEqual(translated, message, 'missing known status translation: ' + code + ': ' + message);
-    }
-    assert.equal(i18n.t(unexpectedBackendError), unexpectedBackendError,
-      'unexpected backend failures must remain opaque');
+    assert.equal(i18n.t(status.message, {version:status.version}), message);
+    const unknown = 'Updater request failed: HTTP 418 <retry in 30s>';
+    assert.equal(i18n.t(unknown), unknown);
   }
 });
 

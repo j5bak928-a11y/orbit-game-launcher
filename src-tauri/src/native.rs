@@ -2762,11 +2762,11 @@ fn shell_open(target: &std::ffi::OsStr) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn open_external(uri: &str) -> Result<(), String> {
+pub(crate) fn open_external(uri: &str) -> Result<(), String> {
     shell_open(std::ffi::OsStr::new(uri))
 }
 #[cfg(not(windows))]
-fn open_external(_uri: &str) -> Result<(), String> {
+pub(crate) fn open_external(_uri: &str) -> Result<(), String> {
     Err("Opening linked launcher protocols is unsupported on this platform.".into())
 }
 #[cfg(windows)]

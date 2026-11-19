@@ -143,6 +143,7 @@ test('renderer boot waits for the event bridge but does not wait for optional up
     localeRenderKey:()=>null,
     lastRenderedLocale:null,
     setupTheme:()=>{},
+    applyUpdateStatus:status=>{state.updateStatus=status;},
     renderShell:()=>{rendered=true;},
     el:id=>id==='app'?uiRoot:{textContent:''},
     esc:value=>String(value)

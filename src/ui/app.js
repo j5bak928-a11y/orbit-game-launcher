@@ -368,8 +368,8 @@ function settingsView(){const s=state.settings,folders=s.libraryFolders||[];retu
  <div class="setting-row"><div><div class="setting-name">${tr('Library density')}</div><div class="setting-help">${tr('Choose comfortable or compact game cards.')}</div></div><div class="select-wrap setting-control"><select id="density-select" aria-label="${tr('Library density')}"><option value="comfortable" ${s.libraryDensity!=='compact'?'selected':''}>${tr('Comfortable')}</option><option value="compact" ${s.libraryDensity==='compact'?'selected':''}>${tr('Compact')}</option></select></div></div></div>
  <div class="settings-card"><h2>${tr('Performance & updates')}</h2><p>${tr('Keep game performance first. Orbit remains available in the tray for playtime tracking.')}</p>
  <div class="setting-row"><div><div class="setting-name">${tr('Performance Guard')}</div><div class="setting-help">${tr("Hide Orbit's window after a confirmed game start on Windows, keeping your edits open.")}</div></div><button class="switch ${s.performanceGuard?'on':''}" data-action="setting-toggle" data-key="performanceGuard" role="switch" aria-checked="${!!s.performanceGuard}" aria-label="${tr('Performance Guard')}"></button></div>
- <div class="setting-row"><div><div class="setting-name">${tr('Automatic updates')}</div><div class="setting-help">${tr('Unavailable until signed releases are configured. Your preference is saved for later.')}</div></div><button class="switch ${s.autoUpdates?'on':''}" data-action="setting-toggle" data-key="autoUpdates" role="switch" aria-checked="${!!s.autoUpdates}" aria-label="${tr('Automatic updates')}"></button></div>
- <div class="setting-row"><div><div class="setting-name">${tr('Update status')}</div><div class="setting-help" id="update-status" role="status" aria-live="polite">${tr(state.updateStatus?.message||'Checking availability…')}</div></div><div class="setting-control" style="display:flex;gap:8px"><button class="secondary-btn" data-action="check-update">${tr('Check now')}</button>${state.updateStatus?.state==='ready'?`<button class="primary-btn" data-action="install-update">${tr('Install update')}</button>`:''}</div></div>
+ <div class="setting-row"><div><div class="setting-name">${tr('Automatic update checks')}</div><div class="setting-help">${tr('Check GitHub when Orbit opens. Download and install updates manually.')}</div></div><button class="switch ${s.autoUpdates?'on':''}" data-action="setting-toggle" data-key="autoUpdates" role="switch" aria-checked="${!!s.autoUpdates}" aria-label="${tr('Automatic update checks')}"></button></div>
+ <div class="setting-row"><div><div class="setting-name">${tr('Update status')}</div><div class="setting-help" id="update-status" role="status" aria-live="polite">${esc(updateStatusText(state.updateStatus))}</div></div><div class="setting-control" style="display:flex;flex-wrap:wrap;gap:8px"><button class="secondary-btn" data-action="check-update" ${state.updateStatus?.state==='checking'?'disabled':''}>${tr('Check now')}</button><button class="secondary-btn" data-action="download-update">${tr(state.updateStatus?.state==='available'?'Download update':'Open Releases')}</button></div></div>
  <div class="setting-row"><div><div class="setting-name">${tr("What's new")}</div><div class="setting-help">${tr('Release highlights appear once per version and can be reopened in Settings.')}</div></div><button class="secondary-btn" data-action="whats-new">${ic('sparkles',15)} ${tr("See what's new")}</button></div></div>
  <div class="settings-card"><h2>${tr('Library discovery')}</h2><p>${tr('Orbit searches installed game stores and folders you select. Downloads is never scanned automatically.')}</p>
  <div class="setting-row"><div><div class="setting-name">${tr('Scan at startup')}</div><div class="setting-help">${tr('Look for new games whenever Orbit starts.')}</div></div><button class="switch ${s.autoScan?'on':''}" data-action="setting-toggle" data-key="autoScan" role="switch" aria-checked="${s.autoScan}" aria-label="${tr('Scan at startup')}"></button></div>
@@ -432,6 +432,32 @@ function applyLibraryUpdate(change){
  syncActivity();
  if(state.modal?.type==='detail'&&(change.reset||runningChanged||change.changedIds.includes(state.modal.id)||change.removedIds.includes(state.modal.id)))renderModal();
 }
+function updateStatusText(status){
+ return t(status?.message||'Update check not started.',{version:status?.version||''});
+}
+function applyUpdateStatus(status){
+ if(!status)return;
+ state.updateStatus=status;
+ const message=el('update-status');
+ if(!message)return;
+ message.textContent=updateStatusText(status);
+ const row=message.closest('.setting-row');
+ row.querySelector('[data-action="check-update"]').disabled=status.state==='checking';
+ row.querySelector('[data-action="download-update"]').textContent=t(status.state==='available'?'Download update':'Open Releases');
+}
+async function checkForUpdates(automatic=false){
+ if(state.updateStatus?.state==='checking')return;
+ applyUpdateStatus({state:'checking',message:'Checking GitHub for updates…'});
+ try{
+  const status=await window.orbit.checkForUpdates();
+  applyUpdateStatus(status);
+  if(automatic&&status.state==='available'){
+   toast(t('Orbit {version} is available. Open Settings to download it.',{version:status.version}));
+  }
+ }catch{
+  applyUpdateStatus({state:'error',message:'Could not check GitHub for updates.'});
+ }
+}
 function handleOrbitEvent(event){
  if(event.type==='gamesChanged')libraryUpdates.receive(event);
  if(event.type==='settingsChanged'){
@@ -439,7 +465,7 @@ function handleOrbitEvent(event){
   state.settings=event.settings;setupTheme();
   if((event.settings?.language||'system')!==oldLanguage){applyLanguage(event.settings.language);if(!window.OrbitI18n)redrawForLanguage();}
  }
- if(event.type==='updateStatus'){state.updateStatus=event.status;const status=el('update-status');if(status)status.textContent=t(event.status.message||'');if(state.route==='settings'&&event.status.state==='ready')renderPage({keepScroll:true});}
+ if(event.type==='updateStatus')applyUpdateStatus(event.status);
  if(event.type==='windowState')controllerMode?.windowState(event);
  if(event.type==='toggleControllerMode')Promise.resolve().then(toggleControllerMode).catch(error=>toast(error.message,true));
  if(event.type==='error')toast(event.message,true);
@@ -755,8 +781,10 @@ async function handleAction(button){const action=button.dataset.action,id=button
   case 'game-actions':openGameActions(button);break;
   case 'controller-mode':await toggleControllerMode();break;
    case 'whats-new':openModal('whats-new',{automatic:false});break;
-   case 'check-update':{const status=await window.orbit.checkForUpdates();state.updateStatus=status;const element=el('update-status');if(element)element.textContent=t(status.message||'');break;}
-   case 'install-update':try{await window.orbit.installUpdate()}catch(error){toast(error.message||t('Cannot install update.'),true)}break;
+   case 'check-update':await checkForUpdates();break;
+   case 'download-update':try{
+    await window.orbit.openUpdateDownload(state.updateStatus.state==='available'?state.updateStatus.tag:null);
+   }catch{toast(t('Could not open GitHub Releases.'),true)}break;
   case 'navigate':navigate(button.dataset.route);break;
   case 'refresh-statistics':await loadStatistics();break;
   case 'shuffle':{if(state.games.length){const game=state.games[Math.floor(Math.random()*state.games.length)];openModal('detail',{id:game.id});}else toast(t('Add a game to your library first.'));break;}
@@ -816,7 +844,11 @@ async function handleAction(button){const action=button.dataset.action,id=button
   case 'clear-filters':{state.query='';state.filter='all';state.tag='all';state.genre='all';const search=el('global-search');if(search)search.value='';renderPage();break;}
   case 'view':state.view=button.dataset.view;await saveSettings({view:state.view});renderPage({keepScroll:true});break;
   case 'accent':await saveSettings({accent:button.dataset.color});break;
-  case 'setting-toggle':{const key=button.dataset.key;await saveSettings({[key]:!state.settings[key]});break;}
+  case 'setting-toggle':{
+   const key=button.dataset.key;await saveSettings({[key]:!state.settings[key]});
+   if(key==='autoUpdates'&&state.settings.autoUpdates&&state.platform==='win32')void checkForUpdates(true);
+   break;
+  }
   case 'add-folder':{try{const dir=await window.orbit.chooseFolder();if(dir){const folders=[...new Set([...state.settings.libraryFolders,dir])];await saveSettings({libraryFolders:folders});toast(t('Scan location added.'))}}catch(e){toast(e.message,true)}break;}
   case 'remove-folder':{const folders=state.settings.libraryFolders.filter((_,i)=>i!==Number(button.dataset.index));await saveSettings({libraryFolders:folders});break;}
   case 'export':try{const res=await window.orbit.exportLibrary();if(res?.path){toast(t(res.portable?'Portable library, artwork and completed play history exported.':'Library and completed play history exported as JSON (artwork not embedded).'));if(res.missingArtwork)toast(t('{count} missing or invalid artwork file(s) were not included.',{count:formatNumber(res.missingArtwork)}),true)}}catch(e){toast(e.message,true)}break;
@@ -943,12 +975,14 @@ async function boot(){try{
  if(typeof showWhatsNewAfterBoot==='function')showWhatsNewAfterBoot();
  // Update-service availability must not delay or prevent library startup.
  if(window.orbit.getUpdateStatus)Promise.resolve().then(()=>window.orbit.getUpdateStatus()).then(status=>{
-  if(status){state.updateStatus=status;const statusNode=el('update-status');if(statusNode)statusNode.textContent=typeof t==='function'?t(status.message||''):status.message||'';}
+  if(status&&(!state.updateStatus||state.updateStatus.state==='idle'))applyUpdateStatus(status);
  }).catch(error=>{
-  state.updateStatus={state:'error',message:typeof t==='function'?t('Update status is unavailable.'):'Update status is unavailable.'};
-  const statusNode=el('update-status');if(statusNode)statusNode.textContent=state.updateStatus.message;
+  if(!state.updateStatus||state.updateStatus.state==='idle')applyUpdateStatus({state:'error',message:'Update status is unavailable.'});
   console.warn('Could not load update status:',error);
  });
+ if(state.platform==='win32'&&state.settings.autoUpdates&&window.orbit.checkForUpdates){
+  setTimeout(()=>{if(state.settings?.autoUpdates&&state.updateStatus?.state==='idle')void checkForUpdates(true);},20000);
+ }
  }catch(e){el('app').innerHTML=`<div class="boot"><div class="boot-logo">!</div><h2>${typeof tr==='function'?tr('Orbit could not start'):'Orbit could not start'}</h2><p>${esc(e.message||(typeof t==='function'?t('Unknown error.'):'Unknown error.'))}</p></div>`;}}
 
 boot();

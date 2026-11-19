@@ -3,6 +3,7 @@ mod backup;
 mod database;
 mod native;
 mod tray;
+mod updates;
 
 #[cfg(test)]
 mod migration_reliability_tests;
@@ -1029,12 +1030,20 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             }
             Ok(result)
         }
-        "getUpdateStatus" => Ok(
-            json!({"state":"unsupported","message":"Update installation is unavailable in this unsigned Rust preview."}),
-        ),
-        "checkForUpdates" => Ok(
-            json!({"state":"unsupported","message":"Update installation is unavailable in this unsigned Rust preview."}),
-        ),
+        "getUpdateStatus" => Ok(json!({"state":"idle","message":"Update check not started."})),
+        "checkForUpdates" => Ok(updates::check(
+            &app.package_info().version.to_string(),
+            &state.data_dir,
+        )),
+        "openUpdateDownload" => {
+            let tag = match args.first() {
+                None | Some(Value::Null) => None,
+                Some(Value::String(tag)) => Some(tag.as_str()),
+                _ => return Err("Invalid Orbit release.".into()),
+            };
+            native::open_external(&updates::release_page(tag)?)?;
+            Ok(json!(true))
+        }
         "installUpdate" => {
             Err("Automatic updates require a signed release and trusted update feed".into())
         }

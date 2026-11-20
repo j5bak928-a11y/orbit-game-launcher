@@ -2,6 +2,10 @@
 
 This changelog covers the changes users receive with Orbit's Windows editions. **Rust/Tauri is the recommended direction starting with 0.2.8**, but its separately named download remains an **experimental, unsigned preview** while installed Windows acceptance is incomplete. Electron remains a supported fallback with separate application data. Release files appear on [GitHub Releases](https://github.com/j5bak928-a11y/orbit-game-launcher/releases); check the version on the download before installing.
 
+## 0.3.1 — Play button contrast
+
+- Restored the Play button’s accent color on poster cards. The artwork shading stays behind the button, keeping the label and icon readable.
+
 ## 0.3.0 — Library, launches and playtime
 
 - Browse the full collection in Overview. Poster shading now continues smoothly behind the Play button.

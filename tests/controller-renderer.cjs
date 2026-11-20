@@ -277,7 +277,7 @@ const padButton=async(page,button,held=90,slot=0)=>{
   assert.equal(await page.evaluate(async()=>(await window.orbit.getWindowState()).fullscreen),false);
   assert(await entry.evaluate(node=>node===document.activeElement));
   const stoppedReads=await page.evaluate(()=>window.controllerTest.padReads);await page.waitForTimeout(300);
-  assert.equal(await page.evaluate(()=>window.controllerTest.padReads),stoppedReads,'controller polling must stop after exit');
+  assert((await page.evaluate(()=>window.controllerTest.padReads))-stoppedReads<=4,'exit stops fullscreen polling while the 110ms desktop controller shortcut remains available');
   await page.keyboard.press('F11');await mode.waitFor();
   await page.evaluate(()=>window.dispatchEvent(new Event('blur')));
   const blurredReads=await page.evaluate(()=>window.controllerTest.padReads);await page.waitForTimeout(200);

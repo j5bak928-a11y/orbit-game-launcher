@@ -621,9 +621,9 @@ body[data-game-active=true] .home-page .continue-card:hover{transform:none}
 }
 .game-card.poster-card .cover-image{border-radius:inherit}
 .game-card.poster-card .game-label{
-  /* Keep the text above Play while the shading continues behind the button. */
+  /* Keep the caption and Play in the same cover stacking context. */
   --poster-play-space:59px;
-  position:absolute;z-index:4;left:1px;right:1px;bottom:1px;
+  position:absolute;z-index:4;left:0;right:0;bottom:0;
   height:auto;min-height:0;margin:0;padding:32px 13px calc(5px + var(--poster-play-space));
   border-radius:0 0 10px 10px;
   color:#fff;pointer-events:none;opacity:0;

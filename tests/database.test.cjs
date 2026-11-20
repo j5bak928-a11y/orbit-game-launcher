@@ -179,3 +179,12 @@ test('tracking projection includes identifiable games and omits unrelated metada
  db.remove(steam.id);
  assert.deepEqual(db.listActivityGames(),[]);
 }));
+test('discovery ignore preferences round-trip and invalid keys preserve the previous list',()=>withDb(db=>{
+ const key='a'.repeat(64);
+ assert.deepEqual(db.getSettings().discoveryIgnored,[]);
+ assert.deepEqual(db.saveSettings({discoveryIgnored:[key]}).discoveryIgnored,[key]);
+ assert.deepEqual(db.getSettings().discoveryIgnored,[key]);
+ assert.throws(()=>db.saveSettings({discoveryIgnored:['unvalidated']}),/invalid ignored discovery entries/i);
+ assert.throws(()=>db.saveSettings({discoveryIgnored:Array(1001).fill(key)}),/invalid ignored discovery entries/i);
+ assert.deepEqual(db.saveSettings({discoveryIgnored:[]}).discoveryIgnored,[]);
+}));

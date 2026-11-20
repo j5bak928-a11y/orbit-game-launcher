@@ -1,0 +1,7 @@
+{
+  "en": {"open":"Open Orbit","quit":"Quit Orbit","favorites":"Favorites","recent":"Recently played","inactive":"No active playtime session","tracking":"Tracking playtime since {time}"},
+  "nl": {"open":"Orbit openen","quit":"Orbit afsluiten","favorites":"Favorieten","recent":"Recent gespeeld","inactive":"Geen actieve speelsessie","tracking":"Speeltijd bijgehouden sinds {time}"},
+  "de": {"open":"Orbit öffnen","quit":"Orbit beenden","favorites":"Favoriten","recent":"Zuletzt gespielt","inactive":"Keine aktive Spielsitzung","tracking":"Spielzeit erfasst seit {time}"},
+  "fr": {"open":"Ouvrir Orbit","quit":"Quitter Orbit","favorites":"Favoris","recent":"Joués récemment","inactive":"Aucune session de jeu active","tracking":"Temps de jeu suivi depuis {time}"},
+  "es": {"open":"Abrir Orbit","quit":"Salir de Orbit","favorites":"Favoritos","recent":"Jugados recientemente","inactive":"No hay una sesión de juego activa","tracking":"Tiempo de juego registrado desde {time}"}
+}

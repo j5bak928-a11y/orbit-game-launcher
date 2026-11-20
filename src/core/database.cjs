@@ -3,11 +3,11 @@ const { DatabaseSync } = require('node:sqlite');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const {validateSessionHistory} = require('./backup.cjs');
+const {validateSessionHistory,validHistoryId} = require('./backup.cjs');
 
 const DEFAULT_SETTINGS = Object.freeze({
   theme: 'dark', accent: '#8b7aff', reduceMotion: false,
-  autoScan: false, useSteamArtwork: true, scanDownloads: false, libraryFolders: [],
+  autoScan: false, useSteamArtwork: true, scanDownloads: false, libraryFolders: [], discoveryIgnored: [],
   view: 'grid', sort: 'name', onboardingDone: false,
   performanceGuard: true, autoUpdates: true, libraryDensity: 'comfortable', language: 'system',
 });
@@ -15,6 +15,7 @@ const LANGUAGES = ['system','en','nl','de','fr','es'];
 const SORTS = {name: 'name COLLATE NOCASE ASC', recent: 'last_played_at DESC, name COLLATE NOCASE ASC', added: 'created_at DESC', time: 'total_play_seconds DESC, name COLLATE NOCASE ASC'};
 const COLUMNS = ['id','name','source','source_id','executable','launch_uri','install_path','cover','banner','icon','genre','tags','favorite','total_play_seconds','last_played_at','created_at','updated_at','launch_args','working_dir','cover_fit','cover_position'];
 const STATS_MAX_ROWS=100000,STATS_MAX_SESSION_SECONDS=7*86400;
+const SESSION_PAGE_SIZE=40;
 function statisticsDays(options){
   if(options===undefined||options===null)return 30;
   if(typeof options!=='object'||Array.isArray(options))throw Error('Statistics options must be an object.');
@@ -102,6 +103,9 @@ const json = (value, fallback) => { try {return JSON.parse(value)} catch {return
 const encode = x => JSON.stringify(x);
 const now = () => new Date().toISOString();
 function assertString(v,max=2000){return typeof v==='string' && v.length<=max;}
+function validDiscoveryIgnored(value){
+  return Array.isArray(value)&&value.length<=1000&&value.every(key=>typeof key==='string'&&/^[a-f0-9]{64}$/.test(key));
+}
 function cleanGame(raw, previous = {}) {
   if (!raw || typeof raw !== 'object') throw new Error('Invalid game data.');
   const name = String(raw.name ?? previous.name ?? '').trim();
@@ -187,6 +191,7 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
     const sessionColumns=new Set(this.db.prepare('PRAGMA table_info(sessions)').all().map(c=>c.name));
     if(!sessionColumns.has('heartbeat_seconds'))this.db.exec('ALTER TABLE sessions ADD COLUMN heartbeat_seconds INTEGER NOT NULL DEFAULT 0');
     if(!sessionColumns.has('last_seen_at'))this.db.exec('ALTER TABLE sessions ADD COLUMN last_seen_at TEXT');
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_game ON sessions(game_id)');
   }
   close(){this.db.close();}
   getSettings(){
@@ -201,6 +206,7 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
       if(key==='libraryDensity'&&!['comfortable','compact'].includes(parsed))continue;
       if(key==='language'&&!LANGUAGES.includes(parsed))continue;
       if(key==='libraryFolders'&&(!Array.isArray(parsed)||parsed.length>60||parsed.some(p=>!assertString(p,4000))))continue;
+      if(key==='discoveryIgnored'&&!validDiscoveryIgnored(parsed))continue;
       if(['reduceMotion','autoScan','useSteamArtwork','scanDownloads','onboardingDone','performanceGuard','autoUpdates'].includes(key)&&typeof parsed!=='boolean')continue;
       settings[key]=parsed;
     }
@@ -208,7 +214,7 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
     return settings;
   }
   saveSettings(input){
-    const allowed=['theme','accent','reduceMotion','autoScan','useSteamArtwork','libraryFolders','view','sort','onboardingDone','performanceGuard','autoUpdates','libraryDensity','language'];
+    const allowed=['theme','accent','reduceMotion','autoScan','useSteamArtwork','libraryFolders','discoveryIgnored','view','sort','onboardingDone','performanceGuard','autoUpdates','libraryDensity','language'];
     const current=this.getSettings();const next={...current};
     for(const key of allowed)if(Object.hasOwn(input,key))next[key]=input[key];
     if(!['dark','light','system'].includes(next.theme))throw Error('Invalid theme.');
@@ -216,6 +222,7 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
     if(!/^#[0-9a-fA-F]{6}$/.test(next.accent))throw Error('Invalid accent color.');
     if(!['grid','list'].includes(next.view)||!Object.hasOwn(SORTS,next.sort)||!['comfortable','compact'].includes(next.libraryDensity))throw Error('Invalid library preferences.');
     if(!Array.isArray(next.libraryFolders)||next.libraryFolders.length>60||next.libraryFolders.some(x=>!assertString(x,4000)))throw Error('Invalid library folders.');
+    if(!validDiscoveryIgnored(next.discoveryIgnored))throw Error('Invalid ignored discovery entries.');
     for(const key of ['reduceMotion','autoScan','useSteamArtwork','onboardingDone','performanceGuard','autoUpdates'])next[key]=!!next[key];
     const changes=allowed.filter(key=>encode(current[key])!==encode(next[key]));
     if(!changes.length)return current;
@@ -228,6 +235,17 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
     this.activityList ??= this.db.prepare("SELECT id,name,source,install_path,executable,launch_uri FROM games WHERE executable != '' OR (install_path != '' AND (source IN ('steam','epic') OR launch_uri != ''))");
     return this.activityList.all();
   }
+  getTrayGames(activeSessionIds){
+    const launchable=this.db.prepare(`SELECT id,name FROM games
+      WHERE favorite = ? AND (? = 1 OR last_played_at IS NOT NULL)
+        AND (executable != '' OR launch_uri != '')
+      ORDER BY last_played_at DESC,name COLLATE NOCASE,id LIMIT 5`);
+    const session=this.db.prepare(`SELECT g.id,g.name,s.started_at FROM sessions s
+      JOIN games g ON g.id=s.game_id WHERE s.id=? AND s.finished_at IS NULL`);
+    const active=activeSessionIds.map(id=>session.get(id)).filter(Boolean)
+      .sort((a,b)=>a.started_at.localeCompare(b.started_at)||a.id.localeCompare(b.id));
+    return {active,favorites:launchable.all(1,1),recent:launchable.all(0,0)};
+  }
   getStatistics(options={},asOf=new Date()){
     const days=statisticsDays(options);
     const openSessions=this.db.prepare('SELECT COUNT(*) AS count FROM sessions WHERE finished_at IS NULL').get().count;
@@ -236,6 +254,34 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
       ORDER BY s.game_id,s.started_at,s.id LIMIT ?`).all(STATS_MAX_ROWS+1);
     if(rows.length>STATS_MAX_ROWS)throw Error('Statistics history exceeds the safe 100000-session read limit.');
     return statisticsFromRows(rows,openSessions,days,asOf);
+  }
+  listSessions(gameId,page=0){
+    if(!validHistoryId(gameId))throw Error('Invalid game identifier.');
+    if(!Number.isSafeInteger(page)||page<0||page>Math.floor(STATS_MAX_ROWS/SESSION_PAGE_SIZE))throw Error('Invalid session page.');
+    const rows=this.db.prepare(`SELECT id,started_at,finished_at,seconds FROM sessions
+      WHERE game_id=? AND finished_at IS NOT NULL ORDER BY julianday(started_at) DESC,id DESC LIMIT ? OFFSET ?`)
+      .all(gameId,SESSION_PAGE_SIZE+1,page*SESSION_PAGE_SIZE).map(row=>({...row}));
+    return {rows:rows.slice(0,SESSION_PAGE_SIZE),hasMore:rows.length>SESSION_PAGE_SIZE};
+  }
+  correctSession(gameId,sessionId,seconds){
+    if(!validHistoryId(gameId)||!validHistoryId(sessionId))throw Error('Invalid session identifier.');
+    if(!Number.isSafeInteger(seconds)||seconds<0||seconds>STATS_MAX_SESSION_SECONDS)throw Error('Invalid session duration.');
+    this.db.exec('BEGIN IMMEDIATE');
+    try{
+      const session=this.db.prepare('SELECT started_at,finished_at,seconds FROM sessions WHERE game_id=? AND id=? AND finished_at IS NOT NULL').get(gameId,sessionId);
+      if(!session)throw Error('Completed session not found.');
+      const elapsed=(statisticsDate(session.finished_at)-statisticsDate(session.started_at))/1000;
+      if(!Number.isFinite(elapsed)||seconds>elapsed)throw Error('Session duration exceeds the recorded interval.');
+      if(!Number.isSafeInteger(session.seconds)||session.seconds<0)throw Error('Invalid recorded session duration.');
+      if(seconds!==session.seconds){
+        this.db.prepare('UPDATE sessions SET seconds=? WHERE id=?').run(seconds,sessionId);
+        this.db.prepare('UPDATE games SET total_play_seconds=MAX(0,total_play_seconds+?),updated_at=? WHERE id=?')
+          .run(seconds-session.seconds,now(),gameId);
+      }
+      const result=this.get(gameId);
+      this.db.exec('COMMIT');
+      return result;
+    }catch(error){this.db.exec('ROLLBACK');throw error;}
   }
   get(id){return deserialize(this.db.prepare(`SELECT ${COLUMNS.join(',')} FROM games WHERE id=?`).get(id));}
   count(){return this.db.prepare('SELECT COUNT(*) as count FROM games').get().count;}

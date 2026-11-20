@@ -16,8 +16,8 @@
     return `${scheme}://orbit-art.localhost/file/${token}`;
   };
   const methods = [
-    'bootstrap', 'getWindowState', 'setFullscreen', 'librarySnapshot',
-    'listGames', 'getStatistics', 'runningGames', 'getGame', 'addGame', 'updateGame',
+    'bootstrap', 'getWindowState', 'setFullscreen', 'saveControllerReturn', 'librarySnapshot',
+    'listGames', 'getStatistics', 'listSessions', 'correctSession', 'runningGames', 'getGame', 'addGame', 'updateGame',
     'removeGame', 'favoriteGame', 'saveSettings', 'chooseExecutable',
     'inspectGameFile', 'findOnlineCover', 'chooseArtwork', 'chooseFolder',
     'discoverGames', 'repairSteamArtwork', 'importGames', 'launchGame',

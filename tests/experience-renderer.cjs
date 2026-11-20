@@ -26,6 +26,12 @@ const settle=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
   });
   for(const file of ['library-updates.js','app.js'])await page.addScriptTag({content:fs.readFileSync(path.join(root,'src/ui',file),'utf8')});
   await page.locator('.hero').waitFor();assert.match(await page.title(),/Orbit/);
+  const lastPoster=page.locator('.home-games .poster-card[data-id="00000000-0000-4000-8000-000000005000"]');
+  assert.equal(await lastPoster.count(),0,'Overview keeps far-away rows virtualized');
+  await page.locator('#main-scroll').evaluate(el=>{el.scrollTop=el.scrollHeight;});
+  await lastPoster.waitFor({state:'attached'});
+  await page.locator('#main-scroll').evaluate(el=>{el.scrollTop=0;});
+  await settle(page);
   assert.equal(await page.locator('.sidebar .orbit-brand-mark').getAttribute('src'),'../../assets/branding/orbit-generated-mark.png','the existing Orbit logo must remain unchanged');
   assert(await page.locator('.hero [data-action=launch]').evaluate(el=>el.getBoundingClientRect().height>=44),'hero Play control must be comfortably sized');
   await page.locator('.shuffle-btn').click();await page.locator('[role=dialog]').waitFor();

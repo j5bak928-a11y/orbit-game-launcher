@@ -23,13 +23,14 @@ const GAME_FIELDS: [&str; 9] = [
     "genre",
     "working_dir",
 ];
-const SETTING_KEYS: [&str; 13] = [
+const SETTING_KEYS: [&str; 14] = [
     "theme",
     "accent",
     "reduceMotion",
     "autoScan",
     "useSteamArtwork",
     "libraryFolders",
+    "discoveryIgnored",
     "view",
     "sort",
     "onboardingDone",
@@ -50,6 +51,7 @@ const SOURCES: [&str; 9] = [
     "folder",
 ];
 const MAX_SESSION_SECONDS: i64 = 7 * 86_400;
+const SESSION_PAGE_SIZE: i64 = 40;
 const STATS_MAX_ROWS: i64 = 100_000;
 const BACKUP_MAX_GAMES: usize = 100_000;
 const BACKUP_MAX_SESSIONS: usize = 100_000;
@@ -428,7 +430,7 @@ fn default_settings() -> Value {
     json!({
         "theme": "dark", "accent": "#8b7aff", "reduceMotion": false,
         "autoScan": false, "useSteamArtwork": true, "scanDownloads": false,
-        "libraryFolders": [], "view": "grid", "sort": "name",
+        "libraryFolders": [], "discoveryIgnored": [], "view": "grid", "sort": "name",
         "onboardingDone": false, "performanceGuard": true,
         "autoUpdates": true, "libraryDensity": "comfortable", "language": "system"
     })
@@ -770,7 +772,8 @@ fn migrate(conn: &mut Connection) -> DbResult<()> {
             id TEXT PRIMARY KEY, game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
             started_at TEXT NOT NULL, finished_at TEXT, seconds INTEGER NOT NULL DEFAULT 0,
             heartbeat_seconds INTEGER NOT NULL DEFAULT 0, last_seen_at TEXT
-        );",
+        );
+        CREATE INDEX IF NOT EXISTS idx_sessions_game ON sessions(game_id);",
     )
     .map_err(error)?;
     let columns = column_names(&tx, "games")?;
@@ -961,6 +964,9 @@ impl LibraryDatabase {
         if !valid_folders(&next["libraryFolders"]) {
             return Err("Invalid library folders.".into());
         }
+        if !valid_discovery_ignored(&next["discoveryIgnored"]) {
+            return Err("Invalid ignored discovery entries.".into());
+        }
         for key in [
             "reduceMotion",
             "autoScan",
@@ -1049,6 +1055,47 @@ impl LibraryDatabase {
         statistics_from_rows(rows, open_sessions, days, as_of)
     }
 
+    #[cfg(any(target_os = "windows", test))]
+    pub fn tray_games(&self, active_session_ids: &[String]) -> DbResult<Value> {
+        let mut launchable = self.conn.prepare(
+            "SELECT id,name FROM games WHERE favorite = ?1 AND (?1 = 1 OR last_played_at IS NOT NULL)
+             AND (executable != '' OR launch_uri != '')
+             ORDER BY last_played_at DESC,name COLLATE NOCASE,id LIMIT 5",
+        ).map_err(error)?;
+        let mut quick_games = |favorite: bool| {
+            launchable
+                .query_map([favorite], |row| {
+                    Ok(json!({
+                        "id":row.get::<_, String>(0)?,
+                        "name":row.get::<_, String>(1)?
+                    }))
+                })
+                .map_err(error)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(error)
+        };
+        let mut session = self.conn.prepare(
+            "SELECT g.id,g.name,s.started_at FROM sessions s
+             JOIN games g ON g.id=s.game_id WHERE s.id=?1 AND s.finished_at IS NULL",
+        ).map_err(error)?;
+        let mut active = Vec::new();
+        for id in active_session_ids {
+            let item = session
+                .query_row([id], |row| {
+                    Ok((row.get::<_, String>(2)?, row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .optional()
+                .map_err(error)?;
+            active.extend(item);
+        }
+        active.sort();
+        let active: Vec<Value> = active
+            .into_iter()
+            .map(|(started_at, id, name)| json!({"id":id,"name":name,"started_at":started_at}))
+            .collect();
+        Ok(json!({"active":active,"favorites":quick_games(true)?,"recent":quick_games(false)?}))
+    }
+
     pub fn list_activity_games(&self) -> DbResult<Value> {
         let mut stmt = self.conn.prepare(
             "SELECT id,name,source,install_path,executable,launch_uri FROM games
@@ -1118,6 +1165,20 @@ fn valid_preferences(v: &Value) -> bool {
         && ["comfortable", "compact"].contains(&v["libraryDensity"].as_str().unwrap_or(""))
 }
 
+fn valid_discovery_ignored(value: &Value) -> bool {
+    value.as_array().is_some_and(|items| {
+        items.len() <= 1000
+            && items.iter().all(|item| {
+                item.as_str().is_some_and(|key| {
+                    key.len() == 64
+                        && key
+                            .bytes()
+                            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+                })
+            })
+    })
+}
+
 fn valid_setting(key: &str, value: &Value) -> bool {
     match key {
         "theme" => ["dark", "light", "system"].contains(&value.as_str().unwrap_or("")),
@@ -1127,6 +1188,7 @@ fn valid_setting(key: &str, value: &Value) -> bool {
         "sort" => ["name", "recent", "added", "time"].contains(&value.as_str().unwrap_or("")),
         "libraryDensity" => ["comfortable", "compact"].contains(&value.as_str().unwrap_or("")),
         "libraryFolders" => valid_folders(value),
+        "discoveryIgnored" => valid_discovery_ignored(value),
         "reduceMotion" | "autoScan" | "useSteamArtwork" | "scanDownloads" | "onboardingDone"
         | "performanceGuard" | "autoUpdates" => value.is_boolean(),
         _ => false,
@@ -1718,6 +1780,91 @@ impl LibraryDatabase {
         Ok(true)
     }
 
+    pub fn list_sessions(&self, game_id: &str, page: i64) -> DbResult<Value> {
+        if !valid_backup_id(game_id) {
+            return Err("Invalid game identifier.".into());
+        }
+        if !(0..=STATS_MAX_ROWS / SESSION_PAGE_SIZE).contains(&page) {
+            return Err("Invalid session page.".into());
+        }
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id,started_at,finished_at,seconds FROM sessions
+                 WHERE game_id=?1 AND finished_at IS NOT NULL
+                 ORDER BY julianday(started_at) DESC,id DESC LIMIT ?2 OFFSET ?3",
+            )
+            .map_err(error)?;
+        let mut rows = stmt
+            .query_map(params![game_id, SESSION_PAGE_SIZE + 1, page * SESSION_PAGE_SIZE], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "started_at": row.get::<_, String>(1)?,
+                    "finished_at": row.get::<_, String>(2)?,
+                    "seconds": row.get::<_, i64>(3)?,
+                }))
+            })
+            .map_err(error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(error)?;
+        let has_more = rows.len() > SESSION_PAGE_SIZE as usize;
+        rows.truncate(SESSION_PAGE_SIZE as usize);
+        Ok(json!({"rows":rows,"hasMore":has_more}))
+    }
+
+    pub fn correct_session(
+        &mut self,
+        game_id: &str,
+        session_id: &str,
+        seconds: i64,
+    ) -> DbResult<Value> {
+        if !valid_backup_id(game_id) || !valid_backup_id(session_id) {
+            return Err("Invalid session identifier.".into());
+        }
+        if !(0..=MAX_SESSION_SECONDS).contains(&seconds) {
+            return Err("Invalid session duration.".into());
+        }
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(error)?;
+        let (start, finish, previous): (String, String, i64) = tx
+            .query_row(
+                "SELECT started_at,finished_at,seconds FROM sessions WHERE game_id=?1 AND id=?2 AND finished_at IS NOT NULL",
+                params![game_id, session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(error)?
+            .ok_or("Completed session not found.")?;
+        let elapsed = DateTime::parse_from_rfc3339(&start)
+            .and_then(|start| {
+                DateTime::parse_from_rfc3339(&finish)
+                    .map(|end| end.timestamp_millis() - start.timestamp_millis())
+            })
+            .map_err(|_| "Invalid recorded session interval.")?;
+        if seconds * 1000 > elapsed {
+            return Err("Session duration exceeds the recorded interval.".into());
+        }
+        if previous < 0 {
+            return Err("Invalid recorded session duration.".into());
+        }
+        if previous != seconds {
+            tx.execute(
+                "UPDATE sessions SET seconds=?1 WHERE id=?2",
+                params![seconds, session_id],
+            )
+            .map_err(error)?;
+            tx.execute(
+                "UPDATE games SET total_play_seconds=MAX(0,total_play_seconds+?1),updated_at=?2 WHERE id=?3",
+                params![seconds - previous, stamp(), game_id],
+            )
+            .map_err(error)?;
+        }
+        tx.commit().map_err(error)?;
+        self.get(game_id)
+    }
+
     /// Metadata and complete historical sessions. The .orbit gzip archive and
     /// safe artwork installation are handled by the backup/packaging layer.
     /// Unfinished or invalid sessions make a full-history export impossible;
@@ -2045,6 +2192,31 @@ mod tests {
         test(&mut db, &file);
         drop(db);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn tray_games_reports_only_owned_sessions_and_separate_launch_groups() {
+        with_database(|db, _| {
+            let first = db.upsert(&json!({
+                "name":"Pinned game","source":"steam","source_id":"101","launch_uri":"steam://rungameid/101"
+            })).unwrap();
+            let recent = db.upsert(&json!({
+                "name":"Recent game","source":"steam","source_id":"202","launch_uri":"steam://rungameid/202"
+            })).unwrap();
+            let first_id = field(&first["game"], "id");
+            let recent_id = field(&recent["game"], "id");
+            db.toggle_favorite(first_id).unwrap();
+            let active = db.start_session(first_id).unwrap();
+            let finished = db.start_session(recent_id).unwrap();
+            db.finish_session(&finished, 25).unwrap();
+            let tray = db.tray_games(&[active, finished]).unwrap();
+            assert_eq!(tray["active"].as_array().unwrap().len(), 1);
+            assert_eq!(tray["active"][0]["id"], first_id);
+            assert!(DateTime::parse_from_rfc3339(tray["active"][0]["started_at"].as_str().unwrap()).is_ok());
+            assert_eq!(tray["favorites"][0]["id"], first_id);
+            assert_eq!(tray["recent"][0]["id"], recent_id);
+            assert!(db.tray_games(&[]).unwrap()["active"].as_array().unwrap().is_empty());
+        });
     }
 
     #[test]
@@ -2381,6 +2553,59 @@ mod tests {
                 .query_row("PRAGMA integrity_check", [], |r| r.get(0))
                 .unwrap();
             assert_eq!(integrity, "ok");
+        });
+    }
+
+    #[test]
+    fn correct_session_preserves_unrelated_playtime_and_backup_dates() {
+        with_database(|db, _| {
+            let game = db.upsert(&json!({"name":"History"})).unwrap();
+            let id = game["game"]["id"].as_str().unwrap();
+            let start = "2026-11-10T18:00:00Z";
+            let finish = "2026-11-10T18:05:00Z";
+            db.conn
+                .execute(
+                    "INSERT INTO sessions(id,game_id,started_at,finished_at,seconds)
+                     VALUES ('saved-session',?1,?2,?3,137)",
+                    params![id, start, finish],
+                )
+                .unwrap();
+            db.conn
+                .execute(
+                    "UPDATE games SET total_play_seconds=437 WHERE id=?1",
+                    [id],
+                )
+                .unwrap();
+            let active = db.start_session(id).unwrap();
+            assert_eq!(
+                db.list_sessions(id, 0).unwrap(),
+                json!({
+                    "rows":[{"id":"saved-session","started_at":start,"finished_at":finish,"seconds":137}],
+                    "hasMore":false
+                })
+            );
+            assert!(db.correct_session(id, &active, 30).is_err());
+            assert!(db.correct_session(id, "saved-session", 301).is_err());
+            assert_eq!(
+                db.correct_session(id, "saved-session", 80).unwrap()["total_play_seconds"],
+                380
+            );
+            assert_eq!(
+                db.correct_session(id, "saved-session", 80).unwrap()["total_play_seconds"],
+                380
+            );
+            assert!(db.finish_session(&active, 0).unwrap());
+            let exported = db.export_json().unwrap();
+            let row = exported["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["id"] == "saved-session")
+                .unwrap();
+            assert_eq!(
+                row,
+                &json!({"id":"saved-session","game_id":id,"started_at":start,"finished_at":finish,"seconds":80})
+            );
         });
     }
 

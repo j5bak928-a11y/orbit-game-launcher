@@ -27,6 +27,9 @@ const padButton=async(page,button,held=90,slot=0)=>{
   // The production UI defaults to the OS language. Keep historical English
   // label assertions deterministic regardless of the Windows test PC locale.
   const page=await browser.newPage({viewport:{width:1440,height:900},locale:'en-US'}),errors=[];
+  let controllerReturn=null;
+  await page.exposeFunction('persistControllerReturn',position=>{controllerReturn=position;});
+  await page.exposeFunction('readControllerReturn',()=>controllerReturn);
   page.on('pageerror',error=>errors.push(error.message));
   await page.addInitScript(installFixture,{count:5000});
   await page.addInitScript(()=>{
@@ -48,6 +51,9 @@ const padButton=async(page,button,held=90,slot=0)=>{
    window.fixture.patch(window.fixture.id(1),{banner:token(994)});
    window.controllerTest={launches:0,favoriteCalls:0,requests:[],failFullscreen:false,padReads:0,deferEntry:false};
    const set=window.orbit.setFullscreen,launch=window.orbit.launchGame,favorite=window.orbit.favoriteGame;
+   const bootstrap=window.orbit.bootstrap;
+   window.orbit.bootstrap=async()=>({...await bootstrap(),controllerReturn:await window.readControllerReturn()});
+   window.orbit.saveControllerReturn=window.persistControllerReturn;
    window.orbit.setFullscreen=async enabled=>{window.controllerTest.requests.push(enabled);if(window.controllerTest.failFullscreen)throw Error('Fullscreen fixture failure');if(window.controllerTest.deferEntry&&enabled){window.controllerTest.deferEntry=false;await new Promise(resolve=>window.controllerTest.releaseEntry=resolve);}return set(enabled);};
    window.orbit.launchGame=id=>{window.controllerTest.launches++;return new Promise(resolve=>{window.controllerTest.finishLaunch=()=>resolve(launch(id));});};
    window.orbit.favoriteGame=id=>{window.controllerTest.favoriteCalls++;return favorite(id);};
@@ -248,7 +254,24 @@ const padButton=async(page,button,held=90,slot=0)=>{
   const runningReads=await page.evaluate(()=>window.controllerTest.padReads);
   await page.waitForTimeout(350);
   assert((await page.evaluate(()=>window.controllerTest.padReads))-runningReads<=11,'a game running while the launcher remains focused must not trigger a continuous RAF polling loop');
-  await padButton(page,1);assert.equal(await mode.locator('.tv-sheet').count(),0);
+  await page.evaluate(()=>window.fixture.setRunning([]));
+  await mode.locator('.tv-sheet').waitFor({state:'detached'});
+  assert.equal(await focused(),'recent:00000000-0000-4000-8000-000000000009','ending play restores the original card');
+  await page.waitForFunction(async()=>!await window.readControllerReturn());
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(()=>window.controllerTest.launches===2);
+  await page.evaluate(()=>window.controllerTest.finishLaunch());
+  await page.waitForFunction(()=>document.querySelector('.tv-play')?.textContent==='Playing now');
+  await page.reload();
+  await mode.waitFor();
+  assert.equal(await focused(),'recent:00000000-0000-4000-8000-000000000009','recreated renderer resumes fullscreen on the original card');
+  assert.equal(await mode.locator('.tv-sheet').count(),0);
+  await page.evaluate(()=>{
+   window.mockPads=[{id:'Standard test controller',index:0,connected:true,mapping:'standard',axes:[0,0,0,0],buttons:Array.from({length:17},()=>({pressed:false,value:0,touched:false}))}];
+   window.dispatchEvent(new Event('gamepadconnected'));
+  });
+  await page.getByText('Controller connected',{exact:true}).waitFor();
   await padButton(page,1);await mode.waitFor({state:'detached'});
   assert.equal(await page.locator('#app').evaluate(node=>node.inert),false);
   assert.equal(await page.evaluate(async()=>(await window.orbit.getWindowState()).fullscreen),false);

@@ -18,9 +18,15 @@ use tauri::{App, AppHandle, Manager, Runtime, Window, WindowEvent};
 
 #[cfg(target_os = "windows")]
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
+
+#[cfg(target_os = "windows")]
+use tauri_plugin_dialog::DialogExt;
+
+#[cfg(target_os = "windows")]
+const LAUNCH_PREFIX: &str = "orbit-tray-launch:";
 
 #[cfg(target_os = "windows")]
 const TRAY_ID: &str = "orbit-main-tray";
@@ -37,6 +43,10 @@ pub struct TrayState {
     opening: AtomicBool,
     reopen_requested: AtomicBool,
     placement: Mutex<Option<WindowPlacement>>,
+    #[cfg(target_os = "windows")]
+    menu_refresh_queued: AtomicBool,
+    #[cfg(target_os = "windows")]
+    menu_key: Mutex<String>,
 }
 
 struct WindowPlacement {
@@ -52,7 +62,7 @@ struct WindowPlacement {
 /// Integration: add mod tray; then call tray::install_tray(app) from
 /// Builder::setup. See handle_window_event and hide_for_performance_guard.
 #[cfg(target_os = "windows")]
-pub fn install_tray<R: Runtime>(app: &mut App<R>) -> Result<(), String> {
+pub fn install_tray(app: &mut App) -> Result<(), String> {
     if app.try_state::<TrayState>().is_some() {
         return Err("Orbit tray is already installed.".into());
     }
@@ -72,7 +82,7 @@ pub fn install_tray<R: Runtime>(app: &mut App<R>) -> Result<(), String> {
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
-        .tooltip("Orbit — tracking playtime")
+        .tooltip("Orbit Launcher")
         .menu(&menu)
         // Left click restores the window; right click opens the context menu.
         .show_menu_on_left_click(false)
@@ -93,7 +103,23 @@ pub fn install_tray<R: Runtime>(app: &mut App<R>) -> Result<(), String> {
                 // The app's Exit hook must flush SQLite playtime sessions.
                 app.exit(0);
             }
-            _ => {}
+            menu_id => {
+                let Some(id) = menu_id.strip_prefix(LAUNCH_PREFIX) else {
+                    return;
+                };
+                if app.try_state::<TrayState>()
+                    .is_some_and(|state| state.quitting.load(Ordering::SeqCst))
+                {
+                    return;
+                }
+                let id = id.to_string();
+                let app = app.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    if let Err(error) = crate::launch_game(&app, &id) {
+                        app.dialog().message(error).title("Orbit Launcher").show(|_| {});
+                    }
+                });
+            }
         })
         .on_tray_icon_event(|tray, event| {
             if matches!(
@@ -119,15 +145,144 @@ pub fn install_tray<R: Runtime>(app: &mut App<R>) -> Result<(), String> {
         opening: AtomicBool::new(false),
         reopen_requested: AtomicBool::new(false),
         placement: Mutex::new(None),
+        menu_refresh_queued: AtomicBool::new(false),
+        menu_key: Mutex::new(String::new()),
     }) {
         return Err("Orbit tray state already exists.".into());
     }
+    request_menu_refresh(app.handle());
     Ok(())
 }
 
 #[cfg(not(target_os = "windows"))]
 pub fn install_tray<R: Runtime>(_app: &mut App<R>) -> Result<(), String> {
     Err("Orbit system tray is currently supported on Windows only.".into())
+}
+
+#[cfg(target_os = "windows")]
+pub fn request_menu_refresh(app: &AppHandle) {
+    let Some(state) = app.try_state::<TrayState>() else {
+        return;
+    };
+    if state.quitting.load(Ordering::SeqCst)
+        || state.menu_refresh_queued.swap(true, Ordering::SeqCst)
+    {
+        return;
+    }
+
+    let menu_app = app.clone();
+    if app.run_on_main_thread(move || {
+        let state = menu_app.state::<TrayState>();
+        state.menu_refresh_queued.store(false, Ordering::SeqCst);
+        if !state.quitting.load(Ordering::SeqCst) {
+            if let Err(error) = refresh_menu(&menu_app, &state) {
+                eprintln!("Orbit tray: cannot refresh menu: {error}");
+            }
+        }
+    }).is_err() {
+        state.menu_refresh_queued.store(false, Ordering::SeqCst);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn request_menu_refresh(_app: &AppHandle) {}
+
+#[cfg(target_os = "windows")]
+fn windows_language() -> Option<String> {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetUserDefaultLocaleName(name: *mut u16, name_len: i32) -> i32;
+    }
+    // LOCALE_NAME_MAX_LENGTH includes the trailing terminator.
+    let mut name = [0u16; 85];
+    let len = unsafe { GetUserDefaultLocaleName(name.as_mut_ptr(), name.len() as i32) };
+    if (2..=85).contains(&len) {
+        String::from_utf16(&name[..len as usize - 1]).ok()
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn native_label(text: &str) -> String {
+    let cleaned: String = text.chars().map(|ch| if ch.is_control() { ' ' } else { ch }).collect();
+    // Win32 treats one ampersand as a mnemonic rather than display text.
+    cleaned.replace('&', "&&")
+}
+
+#[cfg(target_os = "windows")]
+fn refresh_menu(app: &AppHandle, state: &TrayState) -> Result<(), String> {
+    let orbit = app.state::<crate::OrbitState>();
+    // Drop active before acquiring the SQLite lock. Launch/poll can need both.
+    let active_ids: Vec<String> = orbit.active.lock().map_err(|e| e.to_string())?
+        .values().map(|(session_id, _)| session_id.clone()).collect();
+    let (games, mut language) = {
+        let db = orbit.db.lock().map_err(|e| e.to_string())?;
+        (db.tray_games(&active_ids)?,
+         db.get_settings()?["language"].as_str().unwrap_or("en").to_string())
+    };
+    if language == "system" {
+        language = windows_language().unwrap_or_else(|| "en".into());
+    }
+    let language = language.split('-').next().unwrap_or("en").to_ascii_lowercase();
+    let key = format!("{language}/{games}");
+    let mut previous = state.menu_key.lock().map_err(|e| e.to_string())?;
+    if *previous == key {
+        return Ok(());
+    }
+    let translations: serde_json::Value = serde_json::from_str(include_str!("../../src/core/tray-labels.json"))
+        .map_err(|e| e.to_string())?;
+    let labels = translations.get(language.as_str()).unwrap_or(&translations["en"]);
+    let label = |key: &str| labels[key].as_str().unwrap_or("");
+    let menu = Menu::new(app).map_err(|e| e.to_string())?;
+    let open = MenuItem::with_id(app, OPEN_ID, label("open"), true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    menu.append(&open).map_err(|e| e.to_string())?;
+
+    let active = games["active"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    if active.is_empty() {
+        let idle = MenuItem::new(app, label("inactive"), false, None::<&str>)
+            .map_err(|e| e.to_string())?;
+        menu.append(&idle).map_err(|e| e.to_string())?;
+    }
+    for game in active {
+        let name = game["name"].as_str().unwrap_or("");
+        let time = game["started_at"].as_str()
+            .and_then(|start| chrono::DateTime::parse_from_rfc3339(start).ok());
+        let text = if let Some(time) = time {
+            let local = time.with_timezone(&chrono::Local).format("%d/%m %H:%M").to_string();
+            format!("{name} · {}", label("tracking").replace("{time}", &local))
+        } else {
+            name.into()
+        };
+        let entry = MenuItem::new(app, native_label(&text), false, None::<&str>)
+            .map_err(|e| e.to_string())?;
+        menu.append(&entry).map_err(|e| e.to_string())?;
+    }
+
+    for group in ["favorites", "recent"] {
+        let Some(entries) = games[group].as_array().filter(|entries| !entries.is_empty()) else {
+            continue;
+        };
+        let submenu = Submenu::new(app, label(group), true).map_err(|e| e.to_string())?;
+        for game in entries {
+            let id = game["id"].as_str().unwrap_or("");
+            let name = game["name"].as_str().unwrap_or("");
+            let enabled = !active.iter().any(|entry| entry["id"] == id);
+            let entry = MenuItem::with_id(app, format!("{LAUNCH_PREFIX}{id}"),
+                native_label(name), enabled, None::<&str>).map_err(|e| e.to_string())?;
+            submenu.append(&entry).map_err(|e| e.to_string())?;
+        }
+        menu.append(&submenu).map_err(|e| e.to_string())?;
+    }
+    let separator = PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?;
+    let quit = MenuItem::with_id(app, QUIT_ID, label("quit"), true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    menu.append_items(&[&separator, &quit]).map_err(|e| e.to_string())?;
+    app.tray_by_id(TRAY_ID).ok_or("Orbit tray is unavailable.")?
+        .set_menu(Some(menu)).map_err(|e| e.to_string())?;
+    *previous = key;
+    Ok(())
 }
 
 /// Returns true only when the main-window close was handled by the tray.

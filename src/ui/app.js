@@ -128,7 +128,7 @@ function startDesktopPadEntry(){
  document.addEventListener('visibilitychange',()=>{if(document.hidden)pauseDesktopPadEntry();else wakeDesktopPadEntry();});
  wakeDesktopPadEntry();
 }
-function toggleControllerMode(){
+function openControllerMode(returnPosition){
  pauseDesktopPadEntry();
  if(state.modal)closeModal();
  if(!controllerMode){
@@ -139,7 +139,15 @@ function toggleControllerMode(){
    onExit:()=>{refreshNavigation(true);document.querySelector('[data-action="controller-mode"]')?.focus();wakeDesktopPadEntry();}
   });
  }
- return controllerMode.toggle();
+ return returnPosition?controllerMode.enter(returnPosition):controllerMode.toggle();
+}
+function toggleControllerMode(){return openControllerMode();}
+async function restoreControllerReturn(position){
+ if(!position||typeof position.gameId!=='string')return;
+ try{
+  if(state.games.some(game=>game.id===position.gameId))await openControllerMode(position);
+  else await window.orbit.saveControllerReturn?.(null);
+ }catch(error){toast(error.message,true);}
 }
 const sourceNames={steam:'Steam',epic:'Epic Games',gog:'GOG',ea:'EA app',ubisoft:'Ubisoft Connect',battlenet:'Battle.net',xbox:'Xbox / PC Game Pass',folder:'Local',manual:'Manual'};
 const palette=['#8b7aff','#5bafef','#fc8ca8','#53c5b3','#f3a65c','#bf87f5'];
@@ -176,6 +184,7 @@ function sidebar(){const links=[['home','home','Overview'],['library','library',
  <div class="brand" role="img" aria-label="Orbit Launcher"><img class="orbit-brand-mark" src="../../assets/branding/orbit-generated-mark.png" alt="" /><span class="orbit-brand-word" aria-hidden="true">orbit</span></div>
  <div class="side-label">${tr('LIBRARY')}</div><nav class="nav" aria-label="${tr('Main navigation')}">${links.map(([id,icon,name])=>`<button class="nav-item ${state.route===id?'active':''}" data-action="navigate" data-route="${id}" title="${tr(name)}" ${state.route===id?'aria-current="page"':''}>${ic(icon,18)}<span>${tr(name)}</span>${id==='library'?`<span class="count">${formatNumber(state.games.length)}</span>`:''}</button>`).join('')}</nav>
  <div class="side-divider"></div><nav class="nav"><button class="nav-item" data-action="shuffle" title="${tr('Choose a game')}" ${state.games.length?'':'disabled'}>${ic('sparkles',18)}<span>${tr('Choose a game')}</span></button><button class="nav-item" data-action="whats-new" title="${tr('See what\'s new')}" aria-label="${tr('See what\'s new')}">${ic('info',18)}<span>${tr("What's new")}</span></button><button class="nav-item ${state.route==='settings'?'active':''}" data-action="navigate" data-route="settings" title="${tr('Settings')}">${ic('settings',18)}<span>${tr('Settings')}</span></button></nav>
+ <div class="nav" id="discovery-shortcut">${discoveryShortcut()}</div>
  <div class="side-bottom"><div class="side-version"><span class="status-dot"></span><span>${tr(state.scanning?'Scanning your games…':'Local library')} <span class="version-number">v${esc(state.version)}</span></span></div></div></aside>`}
 function topbar(){const name={home:'Overview',library:'My library',favorites:'Favorites',recent:'Recently played',statistics:'Gaming statistics',settings:'Settings'}[state.route]||'Overview';return `<header class="topbar"><div class="breadcrumb">${tr(name)}</div>
  <div class="topbar-right"><label class="searchbox">${ic('search',18)}<input id="global-search" type="search" placeholder="${tr('Search your library')}" value="${esc(state.query)}" autocomplete="off" aria-label="${tr('Search games')}"/><kbd>Ctrl K</kbd></label>
@@ -192,7 +201,7 @@ function continueCard(g){return `<article class="continue-card cinematic-continu
 function home(){
  const played=state.games.filter(g=>g.last_played_at).sort((a,b)=>(Date.parse(b.last_played_at)||0)-(Date.parse(a.last_played_at)||0));
  const feature=played[0]||state.games.find(g=>artwork(g.banner))||state.games[0];
- const recent=played.slice(0,3),collection=sortedGames(state.games).slice(0,6);
+ const recent=played.slice(0,3);
  const banner=feature&&artwork(feature.banner);
  const featureCover=feature&&artwork(feature.cover);
  return `<section class="page home-page">${headline('',t('Overview'),'',state.games.length?`<button class="secondary-btn shuffle-btn" data-action="shuffle">${ic('sparkles',16)} ${tr('Choose for me')}</button>`:'')}
@@ -209,7 +218,7 @@ function home(){
  ${recent.length?`<div class="subheading"><h2>${tr('Continue playing')}</h2><button class="small-link" data-action="navigate" data-route="recent">${tr('Recently played')} ${ic('arrow',14)}</button></div><div class="continue-grid">${recent.map(continueCard).join('')}</div>`:''}
  <div class="subheading collection-heading"><div><h2>${tr('Your collection')}</h2></div>${state.games.length?`<button class="small-link" data-action="navigate" data-route="library">${tr('View all')} ${formatNumber(state.games.length)} ${ic('arrow',14)}</button>`:''}</div>
  <div id="platform-filter-slot">${platformFilters()}</div>
- ${state.games.length?`<div class="games-grid home-games">${collection.map(card).join('')}</div>`:emptyState(t('Your next favorite belongs here.'),t('Find games from Steam, Epic, GOG, and other installed launchers, or add your own.'))}</section>`;
+ ${state.games.length?'<div id="virtual-games"></div>':emptyState(t('Your next favorite belongs here.'),t('Find games from Steam, Epic, GOG, and other installed launchers, or add your own.'))}</section>`;
 }
 const nonnegativeSeconds=value=>Number.isFinite(value)&&value>=0?Math.floor(value):0;
 function statisticsTime(value){const seconds=nonnegativeSeconds(value),minutes=Math.floor(seconds/60),hours=Math.floor(minutes/60);return seconds>0&&minutes===0?t('Less than 1 minute'):hours?t('{hours}h {minutes}m',{hours:formatNumber(hours),minutes:formatNumber(minutes%60)}):t('{minutes}m',{minutes:formatNumber(minutes)});}
@@ -318,7 +327,8 @@ function renderVirtual(){
   restoreGameFocus(host,focus);return;
  }
  const scroll=el('main-scroll');if(!scroll)return;
- const isGrid=state.view==='grid',layout=getComputedStyle(host);
+ const view=state.route==='home'?'grid':state.view;
+ const isGrid=view==='grid',layout=getComputedStyle(host);
  const gap=parseFloat(layout.getPropertyValue(isGrid?'--grid-gap':'--list-gap'))||0;
  const minimum=parseFloat(layout.getPropertyValue('--card-min'));
  const cols=isGrid?Math.max(1,Math.floor((host.clientWidth+gap)/(minimum+gap))):1;
@@ -329,15 +339,15 @@ function renderVirtual(){
  const listTop=host.getBoundingClientRect().top-scroll.getBoundingClientRect().top+scroll.scrollTop;
  const totalRows=Math.ceil(games.length/cols),visible=Math.ceil(scroll.clientHeight/rowHeight)+7;
  const first=Math.min(Math.max(0,totalRows-visible),Math.max(0,Math.floor(Math.max(0,scroll.scrollTop-listTop)/rowHeight)-3));
- const last=Math.min(totalRows,first+visible),key=`${state.view}:${cols}:${rowHeight}:${first}:${last}`;
+ const last=Math.min(totalRows,first+visible),key=`${view}:${cols}:${rowHeight}:${first}:${last}`;
  if(virtualGamesRef===games&&virtualRangeKey===key&&virtualRunningRef===state.runningIds)return;
  virtualGamesRef=games;virtualRangeKey=key;virtualRunningRef=state.runningIds;
  let container=host.querySelector('[data-virtual-items]');
- if(!container||container.dataset.view!==state.view){
+ if(!container||container.dataset.view!==view){
   host.innerHTML='<div data-virtual-before></div><div data-virtual-items></div><div data-virtual-after></div>';
-  container=host.querySelector('[data-virtual-items]');container.dataset.view=state.view;virtualItems=new Map();
+  container=host.querySelector('[data-virtual-items]');container.dataset.view=view;virtualItems=new Map();
  }
- container.className=isGrid?'games-grid':'game-list';
+ container.className=isGrid?(state.route==='home'?'games-grid home-games':'games-grid'):'game-list';
  container.style.gridTemplateColumns=isGrid?`repeat(${cols},minmax(0,1fr))`:'';
  container.style.gridAutoRows=isGrid?`${rowHeight-gap}px`:'';
  host.firstElementChild.style.height=`${first*rowHeight}px`;
@@ -382,14 +392,17 @@ function settingsView(){const s=state.settings,folders=s.libraryFolders||[];retu
  <div class="setting-row"><div><div class="setting-name">${tr('Library backup')}</div><div class="setting-help">${tr('Portable .orbit backups include artwork and metadata. JSON exports contain metadata only.')}</div></div><div class="setting-control" style="display:flex;gap:7px"><button class="secondary-btn" data-action="export">${ic('download',15)} ${tr('Export')}</button><button class="secondary-btn" data-action="restore">${ic('upload',15)} ${tr('Restore')}</button></div></div></div>
  </div></div></section>`;
 }
-function renderShell(){el('app').innerHTML=`<div class="app-shell"><div id="side-slot">${sidebar()}</div><div class="workspace"><div id="top-slot">${topbar()}</div><main class="content-scroll" id="main-scroll" tabindex="-1"><div id="page-slot"></div></main></div></div>`;el('main-scroll').addEventListener('scroll',()=>{if(['library','favorites','recent'].includes(state.route)&&!scrollFrame){scrollFrame=requestAnimationFrame(()=>{scrollFrame=null;renderVirtual()})}},{passive:true});renderPage()}
+function renderShell(){el('app').innerHTML=`<div class="app-shell"><div id="side-slot">${sidebar()}</div><div class="workspace"><div id="top-slot">${topbar()}</div><main class="content-scroll" id="main-scroll" tabindex="-1"><div id="page-slot"></div></main></div></div>`;el('main-scroll').addEventListener('scroll',()=>{if(el('virtual-games')&&!scrollFrame){scrollFrame=requestAnimationFrame(()=>{scrollFrame=null;renderVirtual()})}},{passive:true});renderPage()}
 let scrollFrame=null,previousRenderedRoute=null;
 function renderPage({keepScroll=false}={}){closeGameActions();const slot=el('page-slot'),scroller=el('main-scroll');if(!slot)return;const old=keepScroll?scroller.scrollTop:0;
  virtualRangeKey=null;virtualGamesRef=null;virtualRunningRef=null;virtualItems=new Map();
- slot.innerHTML=state.route==='home'?home():state.route==='settings'?settingsView():state.route==='statistics'?statisticsView():libraryView();scroller.scrollTop=old;
+ slot.innerHTML=state.route==='home'?home():state.route==='settings'?settingsView():state.route==='statistics'?statisticsView():libraryView();
  if(previousRenderedRoute!==state.route)slot.firstElementChild?.classList.add('page-enter');
  previousRenderedRoute=state.route;
- if(['library','favorites','recent'].includes(state.route))renderVirtual();syncActivity();}
+ scroller.scrollTop=0;
+ renderVirtual();
+ if(old){scroller.scrollTop=old;renderVirtual();}
+ syncActivity();}
 function refreshNavigation(keepScroll=false){el('side-slot').innerHTML=sidebar();el('top-slot').innerHTML=topbar();renderPage({keepScroll});}
 function navigate(route){if(!['home','library','favorites','recent','statistics','settings'].includes(route))return;state.route=route;state.query='';state.filter='all';state.tag='all';state.genre='all';refreshNavigation();if(route==='statistics')void loadStatistics();}
 function toast(message,error=false){const item=document.createElement('div');item.className=`toast ${error?'error':''}`;item.innerHTML=ic(error?'alert':'check',19)+`<p>${tr(message)}</p>`;const root=el('toast-root');root.appendChild(item);while(root.children.length>3)root.firstElementChild.remove();setTimeout(()=>item.remove(),4600)}
@@ -413,6 +426,7 @@ function refreshFilterOptions(id,values,label,active){
 function applyLibraryUpdate(change){
  const runningChanged=state.runningIds!==change.runningIds;
  state.games=change.games;state.runningIds=change.runningIds;
+ for(const id of [...change.runningIds,...change.removedIds])clearLaunchPending(id);
  wakeDesktopPadEntry();
  if(controllerMode?.active){controllerMode.update();return;}
  const count=el('side-slot')?.querySelector('[data-route="library"] .count');
@@ -434,6 +448,7 @@ function applyLibraryUpdate(change){
 }
 function handleOrbitEvent(event){
  if(event.type==='gamesChanged')libraryUpdates.receive(event);
+ if(event.type==='launchPending')waitForLaunchConfirmation(event.id,event.waitMs);
  if(event.type==='settingsChanged'){
   const oldLanguage=state.settings?.language||'system';
   state.settings=event.settings;setupTheme();
@@ -638,30 +653,129 @@ function detail(g){if(!g)return dialogFrame(t('Game unavailable'),t('This game n
     <div class="showcase-stats"><div class="detail-playtime"><div class="detail-playtime-label">${ic('clock',15)} ${tr('PLAYTIME')}${playing?`<span class="detail-live">${tr('● Playing now')}</span>`:''}</div><strong class="detail-playtime-value">${esc(playing&&!g.total_play_seconds?t('First session in progress'):timeLabel(g.total_play_seconds))}</strong><span class="detail-playtime-caption">${tr(playing?'Session time will be added when the game closes':'Recorded game time')}</span></div>
      <div class="showcase-last-played"><span class="showcase-stat-label">${ic('clock',15)} ${tr('LAST PLAYED')}</span><strong>${esc(formatDate(g.last_played_at))}</strong><span>${tr(g.last_played_at?'Last recorded session':'Ready for your first session')}</span></div></div>
     <div class="showcase-actions"><button class="primary-btn showcase-play" data-action="launch" data-id="${esc(g.id)}">${ic('play',20)} <span>${tr('Play game')}</span>${ic('arrow',19)}</button><button class="secondary-btn showcase-favorite ${g.favorite?'is-favorite':''}" data-action="favorite" data-id="${esc(g.id)}" aria-pressed="${!!g.favorite}">${ic('heart',18)} ${tr(g.favorite?'Favorited':'Add to favorites')}</button></div>
+    <button class="secondary-btn" data-action="session-history" data-id="${esc(g.id)}">${ic('clock',15)} ${tr('Play sessions')}</button>
     <p class="showcase-note">${esc(launchNote)}</p>
     <div class="showcase-foot"><span title="${esc(g.install_path||g.executable||'')}">${ic('folder',14)} ${esc(g.install_path||g.executable||t('Location unavailable'))}</span></div>
    </div></div>
  </section></div>`;
 }
+function sessionDate(value){
+ const date=new Date(value);
+ if(!value||Number.isNaN(date.getTime()))return t('Unknown date');
+ const options={dateStyle:'medium',timeStyle:'short'};
+ return window.OrbitI18n?.formatDate?.(date,options)??new Intl.DateTimeFormat(undefined,options).format(date);
+}
+function sessionLimit(row){
+ const elapsed=Math.floor((Date.parse(row.finished_at)-Date.parse(row.started_at))/1000);
+ return Math.min(7*86400,elapsed);
+}
+function sessionHistoryDialog(modal){
+ const game=state.games.find(game=>game.id===modal.id);
+ const rows=modal.result?.rows||[];
+ const editing=rows.find(row=>row.id===modal.editId);
+ const body=editing?`<form id="session-correction-form" class="dialog-body">
+  <p>${tr('Started {date}',{date:sessionDate(editing.started_at)})} · ${tr('Ended {date}',{date:sessionDate(editing.finished_at)})}</p>
+  <div class="field"><label for="session-seconds">${tr('Recorded duration (seconds)')}</label><input id="session-seconds" name="seconds" type="number" min="0" max="${sessionLimit(editing)}" step="1" value="${esc(editing.seconds)}" required /></div>
+  <p class="setting-help">${tr('Enter up to {seconds} seconds. The original start and end times are kept.',{seconds:formatNumber(sessionLimit(editing))})}</p>
+  <div class="file-field"><button type="button" class="secondary-btn" data-action="session-cancel">${tr('Cancel')}</button><button type="submit" class="primary-btn">${tr('Save changes')}</button></div>
+ </form>`: `<div class="dialog-body">
+  ${modal.error?`<p role="alert">${esc(modal.error)}</p>`:!modal.result?`<p role="status">${tr('Reading your play sessions…')}</p>`:!rows.length?`<p>${tr('No completed game sessions have been recorded yet.')}</p>`:`<div class="import-list">${rows.map(row=>`<div class="import-item">
+   <span style="flex:1;min-width:0"><strong>${tr('{seconds} seconds recorded',{seconds:formatNumber(row.seconds)})}</strong><small>${tr('Started {date}',{date:sessionDate(row.started_at)})} · ${tr('Ended {date}',{date:sessionDate(row.finished_at)})}</small></span>
+   ${sessionLimit(row)>=0?`<button class="secondary-btn" data-action="session-edit" data-id="${esc(row.id)}">${tr('Correct duration')}</button>`:''}
+  </div>`).join('')}</div>`}
+  ${modal.result&&(modal.page>0||modal.result.hasMore)?`<div class="import-toolbar"><button class="secondary-btn" data-action="session-page" data-id="previous" ${modal.page===0?'disabled':''}>${tr('Previous')}</button><button class="secondary-btn" data-action="session-page" data-id="next" ${modal.result.hasMore?'':'disabled'}>${tr('Next')}</button></div>`:''}
+ </div>`;
+ return dialogFrame(t('Play sessions'),game?.name||'',body,`<div class="dialog-footer"><button class="secondary-btn" data-action="detail" data-id="${esc(modal.id)}">${tr('Game details')}</button></div>`,true);
+}
+async function showSessionHistory(id,page=0){
+ openModal('sessions',{id,page});
+ const modal=state.modal;
+ try{modal.result=await window.orbit.listSessions(id,page);}
+ catch(error){modal.error=error.message||t('Could not retrieve recorded sessions.');}
+ if(state.modal===modal)renderModal();
+}
+async function saveSessionCorrection(form){
+ const modal=state.modal;
+ if(modal?.type!=='sessions'||!modal.editId)return;
+ const button=form.querySelector('[type=submit]');
+ if(button.disabled)return;
+ button.disabled=true;
+ const sessionId=modal.editId;
+ const seconds=form.elements.seconds.valueAsNumber;
+ try{
+  await window.orbit.correctSession(modal.id,sessionId,seconds);
+  if(state.modal===modal){
+   modal.result.rows.find(row=>row.id===sessionId).seconds=seconds;
+   if(modal.editId===sessionId)modal.editId=null;
+   if(!modal.editId)renderModal();
+  }
+  if(state.route==='statistics')void loadStatistics();
+ }catch(error){toast(error.message||t('Could not correct the session.'),true);button.disabled=false;}
+}
 const IMPORT_PAGE_SIZE=100;
 const MAX_IMPORT_SELECTION=10000;
+let discoveryView='available',hiddenDiscoveries=new Set(),savingDiscoveryIgnore=false,importingDiscovery=false;
+function discoveryGroups(){
+ const ignored=new Set(state.settings?.discoveryIgnored||[]);
+ const groups={available:[],hidden:[],ignored:[]};
+ for(const [index,game] of state.imports.entries()){
+  const view=!game.alreadyAdded&&ignored.has(game.discoveryKey)?'ignored':hiddenDiscoveries.has(index)?'hidden':'available';
+  groups[view].push({game,index});
+ }
+ return groups;
+}
+function importableDiscoveryIndices(){
+ return discoveryGroups().available.filter(({game})=>!game.alreadyAdded).map(({index})=>index);
+}
+function discoveryShortcut(){
+ if(!state.imports.some(game=>!game.alreadyAdded))return '';
+ return `<button class="nav-item" data-action="review-discoveries" title="${tr('Review discoveries')}" aria-label="${tr('Review discoveries')}">${ic('refresh',18)}<span>${tr('Review discoveries')}</span></button>`;
+}
+function updateDiscoveryShortcut(){
+ const slot=el('discovery-shortcut');if(slot)slot.innerHTML=discoveryShortcut();
+}
+async function changeDiscoveryIgnore(index){
+ const game=state.imports[index];
+ if(savingDiscoveryIgnore||importingDiscovery||!game||game.alreadyAdded||!game.discoveryKey)return;
+ const ignored=new Set(state.settings?.discoveryIgnored||[]);
+ if(ignored.has(game.discoveryKey))ignored.delete(game.discoveryKey);else ignored.add(game.discoveryKey);
+ if(ignored.size>1000){toast(t('The ignored entries list is full.'),true);return;}
+ const review=state.imports;
+ savingDiscoveryIgnore=true;
+ try{
+  await saveSettings({discoveryIgnored:[...ignored]});
+  if(state.imports===review){
+   for(const [i,candidate] of review.entries())if(candidate.discoveryKey===game.discoveryKey){
+    state.selectedImports.delete(i);hiddenDiscoveries.delete(i);
+   }
+  }
+ }finally{savingDiscoveryIgnore=false;if(state.modal?.type==='import')renderModal();}
+}
 function importDialog(){
- const games=state.imports,addable=games.filter(g=>!g.alreadyAdded),selected=state.selectedImports.size;
+ const groups=discoveryGroups(),games=groups[discoveryView],addable=groups.available.filter(({game})=>!game.alreadyAdded),selected=state.selectedImports.size;
  const pageCount=Math.max(1,Math.ceil(games.length/IMPORT_PAGE_SIZE));
  state.importPage=Math.min(state.importPage,pageCount-1);
  const first=state.importPage*IMPORT_PAGE_SIZE;
- const description=t('Found {total} installed games. {new} new entries can be imported.',{total:formatNumber(games.length),new:formatNumber(addable.length)});
+ const description=t('Found {total} installed games. {new} new entries can be imported.',{total:formatNumber(state.imports.length),new:formatNumber(addable.length)});
  const diagnostics=scanDiagnostics();
  const warnings=state.scanWarnings.length?`<div class="warning-line">${ic('alert',15)} ${esc(state.scanWarnings.slice(0,3).join(' • '))}${state.scanWarnings.length>3?` · ${tr('{count} more warnings',{count:formatNumber(state.scanWarnings.length-3)})}`:''}</div>`:'';
- const xboxNotice=games.some(game=>game.source==='xbox')?`<div class="warning-line">${ic('info',15)} ${tr('Some PC Game Pass games require the Xbox app to start, even when an installed executable is found.')}</div>`:'';
- const rows=games.slice(first,first+IMPORT_PAGE_SIZE).map((g,offset)=>{const i=first+offset;return `<label class="import-item ${g.alreadyAdded?'added':''}"><input type="checkbox" data-import-index="${i}" ${state.selectedImports.has(i)?'checked':''} ${g.alreadyAdded?'disabled':''}/><div class="icon-box">${ic(g.source==='steam'?'gamepad':'folder',18)}</div><span style="min-width:0;flex:1"><strong>${esc(g.name)}</strong><small>${esc(sourceLabel(g))} · ${esc(g.install_path||g.executable||t('Launcher entry'))}${g.alreadyAdded?` · ${tr('Already in library')}`:''}</small></span></label>`}).join('');
+ const xboxNotice=games.some(({game})=>game.source==='xbox')?`<div class="warning-line">${ic('info',15)} ${tr('Some PC Game Pass games require the Xbox app to start, even when an installed executable is found.')}</div>`:'';
+ const views=`<div class="import-toolbar import-review-controls" role="group" aria-label="${tr('Discovery results')}">${[['available','Available to review'],['hidden','Hidden this scan'],['ignored','Ignored discoveries']].map(([view,label])=>view==='available'||groups[view].length||discoveryView===view?`<button type="button" class="secondary-btn" data-action="discovery-view" data-id="${view}" data-view="${view}" aria-pressed="${discoveryView===view}">${tr(label)} (${formatNumber(groups[view].length)})</button>`:'').join('')}</div>`;
+ const rows=games.slice(first,first+IMPORT_PAGE_SIZE).map(({game:g,index:i})=>{
+  const action=(kind,label)=>`<button type="button" class="small-link" data-action="${kind}" data-id="${i}" aria-label="${esc(t('{action}: {name}',{action:t(label),name:g.name}))}">${tr(label)}</button>`;
+  const hide=discoveryView==='ignored'?'':action('hide-discovery',discoveryView==='hidden'?'Show game':'Hide this scan');
+  const ignore=g.discoveryKey?action('ignore-discovery',discoveryView==='ignored'?'Stop ignoring':'Ignore in future scans'):'';
+  return `<div class="import-item import-review-item ${g.alreadyAdded?'added':''}"><label class="import-review-label">${discoveryView==='available'?`<input type="checkbox" data-import-index="${i}" ${state.selectedImports.has(i)?'checked':''} ${g.alreadyAdded?'disabled':''}/>`:''}<span class="icon-box">${ic(g.source==='steam'?'gamepad':'folder',18)}</span><span style="min-width:0;flex:1"><strong>${esc(g.name)}</strong><small>${esc(sourceLabel(g))} · ${esc(g.install_path||g.executable||t('Launcher entry'))}${g.alreadyAdded?` · ${tr('Already in library')}`:''}</small></span></label>${g.alreadyAdded?'':`<div class="import-review-actions">${hide}${ignore}</div>`}</div>`;
+ }).join('');
  const paging=pageCount>1?`<div class="import-toolbar" aria-label="${tr('Import result pages')}"><span class="muted" style="font-size:12px">${tr('Showing {first}–{last} of {total} (page {page} of {pages})',{first:formatNumber(first+1),last:formatNumber(Math.min(games.length,first+IMPORT_PAGE_SIZE)),total:formatNumber(games.length),page:formatNumber(state.importPage+1),pages:formatNumber(pageCount)})}</span><div style="display:flex;gap:8px"><button class="secondary-btn" data-action="import-page" data-page="prev" ${state.importPage===0?'disabled':''}>${tr('Previous')}</button><button class="secondary-btn" data-action="import-page" data-page="next" ${state.importPage===pageCount-1?'disabled':''}>${tr('Next')}</button></div></div>`:'';
  const selectionHint=addable.length>MAX_IMPORT_SELECTION?`<p class="setting-help">${tr('Each import supports up to {limit} games. Import the selected games, then rescan to import the remaining titles.',{limit:formatNumber(MAX_IMPORT_SELECTION)})}</p>`:'';
- return dialogFrame(t('Discover installed games'),description,`<div class="dialog-body">${warnings}${xboxNotice}${diagnostics}<div class="import-toolbar"><span class="muted" style="font-size:12px">${tr('{count} selected across all pages',{count:formatNumber(selected)})}</span><button class="small-link" data-action="toggle-all-import">${tr(selected?'Deselect all':'Select all new')}</button></div>${games.length?`<div class="import-list">${rows}</div>${paging}${selectionHint}`:emptyState(t('No installed games found'),t('Add your preferred library folders in Settings or add an executable manually.'),`<button class="secondary-btn" data-action="add">${ic('plus',15)} ${tr('Add manually')}</button>`)}</div>`,`<div class="dialog-footer"><button class="secondary-btn" data-action="close-modal">${tr('Cancel')}</button><button class="primary-btn" data-action="import" ${selected?'':'disabled'}>${ic('download',16)} ${tr('Import')} ${formatNumber(selected)} ${tr(selected===1?'game':'games')}</button></div>`,true);
+ const empty=state.imports.length?emptyState(t('No games in this view'),t('Choose another discovery view to review the remaining games.')):emptyState(t('No installed games found'),t('Add your preferred library folders in Settings or add an executable manually.'),`<button class="secondary-btn" data-action="add">${ic('plus',15)} ${tr('Add manually')}</button>`);
+ return dialogFrame(t('Discover installed games'),description,`<div class="dialog-body">${warnings}${xboxNotice}${diagnostics}${views}<div class="import-toolbar"><span class="muted" style="font-size:12px">${tr('{count} selected across all pages',{count:formatNumber(selected)})}</span>${discoveryView==='available'?`<button class="small-link" data-action="toggle-all-import">${tr(selected?'Deselect all':'Select all new')}</button>`:''}</div>${games.length?`<div class="import-list">${rows}</div>${paging}${selectionHint}`:empty}</div>`,`<div class="dialog-footer"><button class="secondary-btn" data-action="close-modal">${tr('Cancel')}</button><button class="primary-btn" data-action="import" ${selected?'':'disabled'}>${ic('download',16)} ${tr('Import')} ${formatNumber(selected)} ${tr(selected===1?'game':'games')}</button></div>`,true);
 }
 function renderModal(){const modal=state.modal;if(!modal){el('modal-root').innerHTML='';return}let html='';
  if(modal.type==='game')html=editor(modal.id?state.games.find(g=>g.id===modal.id):null);
  else if(modal.type==='detail')html=detail(state.games.find(g=>g.id===modal.id));
+ else if(modal.type==='sessions')html=sessionHistoryDialog(modal);
  else if(modal.type==='scan')html=dialogFrame(t('Scanning your games'),t('Looking through installed launchers and selected library folders.'),`<div class="dialog-body" style="display:grid;place-items:center;min-height:200px;text-align:center;color:var(--muted)"><div>${ic('refresh',42)}<p>${tr('Scanning local manifests and folders…')}</p></div></div>`);
  else if(modal.type==='import')html=importDialog();
  else if(modal.type==='whats-new')html=whatsNewDialog();
@@ -672,14 +786,43 @@ function renderModal(){const modal=state.modal;if(!modal){el('modal-root').inner
  syncActivity();
  const dialog=root.querySelector('.dialog');if(dialog){dialog.setAttribute('tabindex','-1');const keepFocus=previousFocus?.action?[...dialog.querySelectorAll('[data-action]')].find(node=>node.dataset.action===previousFocus.action&&node.dataset.id===previousFocus.id):null;(keepFocus||dialog).focus({preventScroll:true});}
 }
-async function performScan(){if(state.scanning){openModal('scan');return;}state.scanning=true;syncActivity();openModal('scan');
- try{const results=await window.orbit.discoverGames();if(state.modal?.type!=='scan')return;state.imports=results.games;state.importPage=0;state.scanWarnings=results.warnings||[];state.scanDiagnostics=results.diagnostics||[];state.selectedImports=new Set(results.games.flatMap((g,i)=>g.alreadyAdded?[]:[i]).slice(0,MAX_IMPORT_SELECTION));openModal('import')}
- catch(e){if(state.modal?.type==='scan')closeModal();toast(e.message||t('Scan failed'),true)}finally{state.scanning=false;syncActivity();}
+async function performScan(background=false){
+ if(importingDiscovery||savingDiscoveryIgnore)return;
+ if(!background)openModal('scan');
+ if(state.scanning)return;
+ state.scanning=true;syncActivity();
+ try{
+  const results=await window.orbit.discoverGames(background);
+  if(!results)return;
+  state.imports=results.games;state.importPage=0;state.scanWarnings=results.warnings||[];state.scanDiagnostics=results.diagnostics||[];
+  discoveryView='available';hiddenDiscoveries=new Set();
+  state.selectedImports=new Set(importableDiscoveryIndices().slice(0,MAX_IMPORT_SELECTION));
+  updateDiscoveryShortcut();
+  if(state.modal?.type==='scan')openModal('import');
+ }catch(e){
+  if(state.modal?.type==='scan'){closeModal();toast(e.message||t('Scan failed'),true);}
+ }finally{state.scanning=false;syncActivity();}
 }
-async function performImport(){const games=[...state.selectedImports].map(i=>state.imports[i]).filter(x=>x&&!x.alreadyAdded).map(({alreadyAdded,...rest})=>rest);if(!games.length)return;
+async function performImport(){
+ if(savingDiscoveryIgnore||importingDiscovery)return;
+ const available=new Set(importableDiscoveryIndices());
+ const entries=new Set([...state.selectedImports].filter(i=>available.has(i)));
+ const games=[...entries].map(i=>state.imports[i]).map(({alreadyAdded,discoveryKey,...rest})=>rest);if(!games.length)return;
  const button=el('modal-root').querySelector('[data-action=import]');if(button)button.disabled=true;
- try{const result=await window.orbit.importGames(games);closeModal();toast(t('Imported {count} games.{skipped}',{count:formatNumber(result.imported),skipped:result.skipped?' '+t('{count} already in library.',{count:formatNumber(result.skipped)}):''}));if(result.errors.length)toast(result.errors.slice(0,3).join(' · '),true)}
+ const review=state.imports,modal=state.modal;
+ importingDiscovery=true;
+ try{
+  const result=await window.orbit.importGames(games);
+  if(state.imports===review&&!result.errors.length){
+   state.imports=review.map((game,index)=>entries.has(index)?{...game,alreadyAdded:true}:game);
+   state.selectedImports.clear();updateDiscoveryShortcut();
+  }
+  if(state.modal===modal)closeModal();
+  toast(t('Imported {count} games.{skipped}',{count:formatNumber(result.imported),skipped:result.skipped?' '+t('{count} already in library.',{count:formatNumber(result.skipped)}):''}));
+  if(result.errors.length)toast(result.errors.slice(0,3).join(' · '),true);
+ }
  catch(e){toast(e.message||t('Import failed.'),true);if(button)button.disabled=false}
+ finally{importingDiscovery=false;}
 }
 function scanDiagnostics(){
  if(!state.scanDiagnostics.length)return '';
@@ -692,7 +835,7 @@ function syncActivity(){
   const pending=state.pendingLaunches.has(button.dataset.id),running=state.runningIds.includes(button.dataset.id);
   button.classList.toggle('launch-pending',pending);
   button.classList.toggle('launch-running',running);
-  if(pending||running){if(!button.dataset.restHtml)button.dataset.restHtml=button.innerHTML;button.innerHTML=ic(pending?'refresh':'check',16)+(button.matches('.cover-play,.continue-play')?'':pending?' '+tr('Starting…'):' '+tr('Playing'));button.disabled=true;button.setAttribute('aria-busy',String(pending));button.setAttribute('title',t(pending?'Starting game…':'Game is running'));}
+  if(pending||running){if(!button.dataset.restHtml)button.dataset.restHtml=button.innerHTML;button.innerHTML=ic(pending?'refresh':'check',16)+(button.matches('.continue-play')?'':pending?' '+tr('Starting…'):' '+tr('Playing'));button.disabled=true;button.setAttribute('aria-busy',String(pending));button.setAttribute('title',t(pending?'Starting game…':'Game is running'));}
   else if(button.dataset.restHtml){button.innerHTML=button.dataset.restHtml;delete button.dataset.restHtml;button.disabled=false;button.removeAttribute('aria-busy');button.removeAttribute('title');}
  }
  for(const button of document.querySelectorAll('[data-action="shuffle"]'))button.disabled=state.games.length===0;
@@ -701,11 +844,43 @@ function syncActivity(){
  controllerMode?.update();
  wakeDesktopPadEntry();
 }
-async function performLaunch(id){const game=state.games.find(g=>g.id===id);if(!game||state.pendingLaunches.has(id)||state.runningIds.includes(id))return;
- const started=performance.now();state.pendingLaunches.add(id);
- try{const launch=window.orbit.launchGame(id);syncActivity();const result=await launch;toast(result.message||t('Launched {name}',{name:game.name}));}
- catch(e){toast(e.message||t('Could not launch {name}',{name:game.name}),true)}
- finally{setTimeout(()=>{state.pendingLaunches.delete(id);syncActivity();},Math.max(0,650-(performance.now()-started)));}
+const launchTimers=new Map();
+function clearLaunchPending(id){
+ const timer=launchTimers.get(id);
+ if(timer!==undefined)clearTimeout(timer);
+ launchTimers.delete(id);
+ state.pendingLaunches.delete(id);
+}
+function waitForLaunchConfirmation(id,waitMs,reportTimeout=true){
+ if(typeof id!=='string'||!Number.isFinite(waitMs)||waitMs<=0||state.runningIds.includes(id))return;
+ clearLaunchPending(id);
+ state.pendingLaunches.add(id);
+ launchTimers.set(id,setTimeout(()=>{
+  clearLaunchPending(id);
+  syncActivity();
+  if(reportTimeout&&!state.runningIds.includes(id))toast(t('Orbit could not confirm the game started. Check your game launcher before retrying.'),true);
+ },Math.min(waitMs,90000)));
+ syncActivity();
+}
+async function performLaunch(id){
+ const game=state.games.find(g=>g.id===id);
+ if(!game||state.pendingLaunches.has(id)||state.runningIds.includes(id))return;
+ const started=performance.now();
+ state.pendingLaunches.add(id);
+ try{
+  const launch=window.orbit.launchGame(id);syncActivity();
+  const result=await launch;
+  if(result.confirmationTimeoutMs>0){
+   if(!launchTimers.has(id))waitForLaunchConfirmation(id,result.confirmationTimeoutMs);
+  }else{
+   toast(result.message||t('Launched {name}',{name:game.name}));
+   waitForLaunchConfirmation(id,Math.max(1,650-(performance.now()-started)),false);
+  }
+  return result;
+ }catch(e){
+  clearLaunchPending(id);syncActivity();
+  toast(e.message||t('Could not launch {name}',{name:game.name}),true);
+ }
 }
 async function favorite(id){try{await window.orbit.favoriteGame(id)}catch(e){toast(e.message,true)}}
 async function storeGame(form){const data=Object.fromEntries(new FormData(form));data.tags=String(data.tags||'').split(',').map(t=>t.trim()).filter(Boolean);
@@ -764,6 +939,10 @@ async function handleAction(button){const action=button.dataset.action,id=button
   case 'add':openModal('game');break;
   case 'edit':openModal('game',{id});break;
   case 'detail':openModal('detail',{id});break;
+  case 'session-history':await showSessionHistory(id);break;
+  case 'session-page':if(state.modal?.type==='sessions')await showSessionHistory(state.modal.id,state.modal.page+(id==='next'?1:-1));break;
+  case 'session-edit':if(state.modal?.type==='sessions'){state.modal.editId=id;renderModal();el('session-seconds')?.focus();}break;
+  case 'session-cancel':if(state.modal?.type==='sessions'){state.modal.editId=null;renderModal();}break;
   case 'close-modal':closeModal();break;
   case 'scrim':if(button.classList.contains('dialog-scrim'))closeModal();break;
   case 'launch':await performLaunch(id);break;
@@ -773,10 +952,20 @@ async function handleAction(button){const action=button.dataset.action,id=button
   case 'scan':await performScan();break;
   case 'repair-artwork':{button.disabled=true;try{const result=await window.orbit.repairSteamArtwork();const note=result.onlineEnabled===false?t(' Online artwork is off in Settings.'):result.paused?t(' Online artwork was paused by Performance Guard during repair.'):'';toast(t('Updated {covers} portrait covers and {icons} game icons across {games} games.{note}',{covers:formatNumber(result.found),icons:formatNumber(result.icons||0),games:formatNumber(result.attempted),note}))}catch(e){toast(e.message||t('Cover repair failed.'),true)}finally{button.disabled=false}break;}
   case 'import':await performImport();break;
-  case 'toggle-all-import':{const allowed=state.imports.flatMap((g,i)=>g.alreadyAdded?[]:[i]).slice(0,MAX_IMPORT_SELECTION);state.selectedImports=state.selectedImports.size?new Set():new Set(allowed);renderModal();break;}
+  case 'review-discoveries':if(state.imports.length)openModal('import');break;
+  case 'toggle-all-import':{const allowed=importableDiscoveryIndices().slice(0,MAX_IMPORT_SELECTION);state.selectedImports=state.selectedImports.size?new Set():new Set(allowed);renderModal();break;}
+  case 'discovery-view':discoveryView=button.dataset.view;state.importPage=0;renderModal();break;
+  case 'hide-discovery':{
+   const index=Number(id),game=state.imports[index];
+   if(importingDiscovery||savingDiscoveryIgnore||!game||game.alreadyAdded)break;
+   if(hiddenDiscoveries.has(index))hiddenDiscoveries.delete(index);else hiddenDiscoveries.add(index);
+   state.selectedImports.delete(index);renderModal();break;
+  }
+  case 'ignore-discovery':await changeDiscoveryIgnore(Number(id));break;
+  case 'reset-discovery-ignore':await saveSettings({discoveryIgnored:[]});break;
   case 'import-page':{
    const direction=button.dataset.page;
-   state.importPage=Math.max(0,Math.min(Math.ceil(state.imports.length/IMPORT_PAGE_SIZE)-1,state.importPage+(direction==='next'?1:-1)));
+   state.importPage=Math.max(0,Math.min(Math.ceil(discoveryGroups()[discoveryView].length/IMPORT_PAGE_SIZE)-1,state.importPage+(direction==='next'?1:-1)));
    renderModal();
    const root=el('modal-root');
    const target=root.querySelector(`[data-action="import-page"][data-page="${direction}"]:not([disabled])`)
@@ -854,7 +1043,10 @@ let searchTimer;document.addEventListener('input',event=>{if(event.target.id!=='
  state.query=event.target.value;if(!['library','favorites','recent'].includes(state.route)){state.route='library';el('side-slot').innerHTML=sidebar();renderPage();}
  clearTimeout(searchTimer);searchTimer=setTimeout(()=>{if(['library','favorites','recent'].includes(state.route)){const scroller=el('main-scroll');if(scroller)scroller.scrollTop=0;renderVirtual();}},95);
 });
-document.addEventListener('submit',event=>{if(event.target.id==='game-form'){event.preventDefault();storeGame(event.target)}});
+document.addEventListener('submit',event=>{
+ if(event.target.id==='game-form'){event.preventDefault();storeGame(event.target);}
+ if(event.target.id==='session-correction-form'){event.preventDefault();saveSessionCorrection(event.target);}
+});
 document.addEventListener('keydown',event=>{
  const menu=el('game-actions-popup');
  if(menu){
@@ -922,7 +1114,7 @@ document.addEventListener('load',event=>checkCoverAspect(event.target),true);
 document.addEventListener('error',event=>{
   if(event.target instanceof HTMLImageElement){event.target.classList.add('bad-aspect');ensureImageFallback(event.target);}
 },true);
-window.addEventListener('resize',()=>{if(['library','recent','favorites'].includes(state.route))renderVirtual()});
+window.addEventListener('resize',()=>renderVirtual());
 window.matchMedia?.('(prefers-color-scheme:light)')?.addEventListener('change',()=>{if(state.settings?.theme==='system')setupTheme()});
 async function boot(){try{
  if(!window.orbit)throw Error('Desktop integration is unavailable. Start Orbit using the desktop application.');
@@ -937,10 +1129,17 @@ async function boot(){try{
  state.games=libraryUpdates.snapshot().games;state.runningIds=data.runningIds||[];state.settings=data.settings;
  state.sort=data.settings.sort||'name';state.view=data.settings.view||'grid';state.platform=data.platform;state.version=data.version;
  applyLanguage(data.settings?.language||'system');setupTheme();renderShell();
+ if(typeof waitForLaunchConfirmation==='function'){
+  for(const item of data.launchPending||[])waitForLaunchConfirmation(item.id,item.waitMs);
+ }
  lastRenderedLocale=localeRenderKey();
  for(const event of buffered)handleOrbitEvent(event);
+ if(data.controllerReturn&&typeof restoreControllerReturn==='function')await restoreControllerReturn(data.controllerReturn);
  if(typeof startDesktopPadEntry==='function')startDesktopPadEntry();
  if(typeof showWhatsNewAfterBoot==='function')showWhatsNewAfterBoot();
+ if(state.settings.autoScan)setTimeout(()=>{
+  if(state.settings.autoScan&&!state.runningIds.length&&!state.imports.length)void performScan(true);
+ },1000);
  // Update-service availability must not delay or prevent library startup.
  if(window.orbit.getUpdateStatus)Promise.resolve().then(()=>window.orbit.getUpdateStatus()).then(status=>{
   if(status){state.updateStatus=status;const statusNode=el('update-status');if(statusNode)statusNode.textContent=typeof t==='function'?t(status.message||''):status.message||'';}

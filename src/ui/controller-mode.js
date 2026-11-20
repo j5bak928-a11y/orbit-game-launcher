@@ -53,6 +53,7 @@
 			this.active = false;
 			this.session = null;
 			this.transitions = Promise.resolve();
+			this.returnWrites = Promise.resolve();
 			this.input = new window.OrbitControllerInput.GamepadInput();
 			this.frame = null;
 			this.timer = null;
@@ -73,7 +74,7 @@
 			this.statusKind = "none";
 			this.statusOwner = null;
 		}
-		enter() {
+		enter(returnPosition = null) {
 			if (this.session) return this.session.promise;
 			const session = { cancelled: false, touched: false, previous: false };
 			this.session = session;
@@ -82,13 +83,14 @@
 				.then(async () => {
 					try {
 						const state = await this.options.api.getWindowState();
-						session.previous = !!state.fullscreen;
+						session.previous = typeof returnPosition?.previousFullscreen === "boolean"
+							? returnPosition.previousFullscreen : !!state.fullscreen;
 						if (session.cancelled) return;
 						session.touched = true;
 						await this.options.api.setFullscreen(true);
 						if (session.cancelled) return;
 						this.active = true;
-						this.mount();
+						this.mount(returnPosition);
 					} catch (error) {
 						if (this.session === session) {
 							this.session = null;
@@ -116,6 +118,7 @@
 			session.cancelled = true;
 			this.session = null;
 			this.active = false;
+			this.clearLaunchReturn();
 			this.unmount();
 			this.options.onExit();
 			const task = this.transitions
@@ -138,7 +141,7 @@
 			if (this.notice) this.notice.textContent = message;
 			else this.options.notify?.(message, true);
 		}
-		mount() {
+		mount(returnPosition) {
 			this.filter = "all";
 			this.page = 0;
 			this.detailId = null;
@@ -147,6 +150,8 @@
 			this.detailSignature = "";
 			this.launchInFlight = false;
 			this.launchGameId = null;
+			this.cardPosition = null;
+			this.launchReturn = null;
 			this.recentMarkup = "";
 			this.libraryMarkup = "";
 			this.statusKind = "none";
@@ -238,7 +243,18 @@
 			);
 			window.addEventListener("resize", () => this.update({ revealFocusAfterResize: true }), { signal });
 			window.addEventListener("orbit:languagechange", () => this.languageChanged(), { signal });
-			this.render({ initial: true });
+			if (returnPosition) {
+				this.restoreCard(returnPosition);
+				const sawRunning = !!this.snapshot.runningIds?.includes(returnPosition.gameId);
+				const awaitingConfirmation = !!this.snapshot.pendingLaunches?.has(returnPosition.gameId);
+				if (sawRunning || awaitingConfirmation) {
+					this.launchReturn = { position: returnPosition, sawRunning, awaitingConfirmation };
+				} else {
+					void this.saveLaunchReturn(null);
+				}
+			} else {
+				this.render({ initial: true });
+			}
 			this.resume();
 		}
 			localizeShell() {
@@ -320,6 +336,7 @@
 		resume() {
 			this.pause();
 			if (!this.active || document.hidden || !document.hasFocus()) return;
+			this.updateLaunchReturn();
 			this.frame = requestAnimationFrame((time) => this.poll(time));
 		}
 		poll(time) {
@@ -407,6 +424,7 @@
 		}
 		update({ revealFocusAfterResize = false } = {}) {
 			if (!this.active) return;
+			if (this.updateLaunchReturn()) return;
 			if (revealFocusAfterResize) this.revealFocusAfterResize = true;
 			if (this.renderFrame !== null) return;
 			this.renderFrame = requestAnimationFrame(() => {
@@ -416,7 +434,7 @@
 				if (this.active) this.render({ passive: true, revealFocusAfterResize: revealFocus });
 			});
 		}
-		render({ initial = false, focusLibrary = false, focusKey = "", passive = false, revealFocusAfterResize = false } = {}) {
+		render({ initial = false, focusLibrary = false, focusKey = "", passive = false, revealFocusAfterResize = false, restoreGameId = "" } = {}) {
 			if (!this.root) return;
 			const main = this.root.querySelector(".tv-main");
 			const scrollTop = passive ? main.scrollTop : 0;
@@ -426,7 +444,7 @@
 			const detailScrollTop = passive
 				? this.root.querySelector(".tv-sheet")?.scrollTop || 0
 				: 0;
-			const previous =
+			let previous =
 				focusKey || document.activeElement?.dataset.tvKey || this.lastKey;
 			this.snapshot = this.options.snapshot();
 			if (this.gamesRef !== this.snapshot.games) {
@@ -451,6 +469,12 @@
 					)
 					.slice(0, 8);
 			}
+			if (restoreGameId) {
+				if (this.filter === "favorites" && !this.favorites.some((game) => game.id === restoreGameId))
+					this.filter = "all";
+				if (previous !== `recent:${restoreGameId}` || !this.recent.some((game) => game.id === restoreGameId))
+					previous = `library:${restoreGameId}`;
+			}
 			const recent = this.root.querySelector(".tv-recent-slot");
 			const selectedId = previous.startsWith("recent:") || previous.startsWith("library:")
 				? previous.slice(previous.indexOf(":") + 1)
@@ -468,8 +492,7 @@
 				columns = this.columns(),
 				size = columns * 2;
 			if (
-				this.pageSize &&
-				this.pageSize !== size &&
+				(restoreGameId || (this.pageSize && this.pageSize !== size)) &&
 				!focusLibrary &&
 				!initial &&
 				previous.startsWith("library:")
@@ -692,10 +715,58 @@
 			const distance = Math.round(Math.max(72, Math.min(180, panel.clientHeight / 3)));
 			panel.scrollBy({ top: direction * distance, behavior: "auto" });
 		}
+		saveLaunchReturn(position) {
+			this.returnWrites = this.returnWrites.then(() =>
+				this.options.api.saveControllerReturn?.(position),
+			).catch(() => {
+				// A failed checkpoint cannot prevent launching the game.
+			});
+			return this.returnWrites;
+		}
+		clearLaunchReturn() {
+			if (!this.launchReturn) return;
+			this.launchReturn = null;
+			void this.saveLaunchReturn(null);
+		}
+		restoreCard(position) {
+			this.detailId = null;
+			this.filter = position.filter === "favorites" ? "favorites" : "all";
+			this.page = Number.isSafeInteger(position.page) ? position.page : 0;
+			this.render({ passive: true, focusKey: position.focusKey, restoreGameId: position.gameId });
+			const main = this.root.querySelector(".tv-main");
+			if (main) main.scrollTop = Number.isFinite(position.scrollTop) ? position.scrollTop : 0;
+			const recent = this.root.querySelector(".tv-recent");
+			if (recent) recent.scrollLeft = Number.isFinite(position.recentScrollLeft) ? position.recentScrollLeft : 0;
+		}
+		updateLaunchReturn() {
+			const returning = this.launchReturn;
+			if (!returning) return false;
+			const { runningIds, pendingLaunches } = this.options.snapshot();
+			const { gameId } = returning.position;
+			if (runningIds?.includes(gameId)) {
+				returning.sawRunning = true;
+				return false;
+			}
+			if (!returning.sawRunning) {
+				if (returning.awaitingConfirmation && !pendingLaunches?.has(gameId))
+					this.clearLaunchReturn();
+				return false;
+			}
+			if (document.hidden || !document.hasFocus()) return false;
+			this.restoreCard(returning.position);
+			this.clearLaunchReturn();
+			return true;
+		}
 		async act(action, button) {
 			if (action === "open") {
 				this.returnKey = button.dataset.tvKey;
 				this.detailId = button.dataset.tvGame;
+				this.cardPosition = {
+					gameId: this.detailId, focusKey: this.returnKey, filter: this.filter, page: this.page,
+					scrollTop: this.root.querySelector(".tv-main")?.scrollTop || 0,
+					recentScrollLeft: this.root.querySelector(".tv-recent")?.scrollLeft || 0,
+					previousFullscreen: !!this.session?.previous,
+				};
 				this.render({ focusKey: "detail:play" });
 				return;
 			}
@@ -714,15 +785,31 @@
 					const id = button?.dataset.tvGame;
 					if (!id || this.launchInFlight || this.snapshot.pendingLaunches?.has(id) ||
 						this.snapshot.runningIds?.includes(id)) return;
+				const session = this.session;
+				const position = this.cardPosition;
+				const returning = position?.gameId === id ? { position } : null;
+				this.launchReturn = returning;
 				this.launchInFlight = true;
-					this.launchGameId = id;
-					this.render({ passive: true, focusKey: "detail:play" });
+				this.launchGameId = id;
+				this.render({ passive: true, focusKey: "detail:play" });
 				try {
-						await this.options.launch(id);
+					if (returning) await this.saveLaunchReturn(position);
+					if (this.session !== session) return;
+					const result = await this.options.launch(id);
+					if (returning && this.launchReturn === returning) {
+						if (!result?.tracked && !result?.confirmationTimeoutMs && !returning.sawRunning)
+							this.clearLaunchReturn();
+						else returning.awaitingConfirmation = !!result?.confirmationTimeoutMs;
+					}
+				} catch (error) {
+					if (returning && this.launchReturn === returning) this.clearLaunchReturn();
+					throw error;
 				} finally {
-					this.launchInFlight = false;
+					if (this.session === session) {
+						this.launchInFlight = false;
 						this.launchGameId = null;
 						this.update();
+					}
 				}
 				return;
 			}

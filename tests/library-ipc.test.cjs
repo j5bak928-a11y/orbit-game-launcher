@@ -90,6 +90,12 @@ test('linked launch checks for a game process after releasing the pending launch
  f.context.fixtureId=game.id;vm.runInContext('activityTracker=fixtureTracker',f.context);
  const result=await f.invoke('launchGame',game.id);
  assert.match(result.message,/detects the game process/);assert.equal(f.context.pendingWhenPolled,false);
+ assert.equal(result.confirmationTimeoutMs,90000);
+ assert.equal((await f.invoke('bootstrap')).launchPending[0].id,game.id);
+ await assert.rejects(f.invoke('launchGame',game.id),/already launching/);
+ vm.runInContext("awaitingLaunch.set(fixtureId, performance.now()-1);",f.context);
+ assert.equal((await f.invoke('bootstrap')).launchPending.length,0);
+ assert.equal((await f.invoke('launchGame',game.id)).confirmationTimeoutMs,90000);
 });
 
 test('fullscreen IPC accepts booleans, reports state and rejects malformed requests',async t=>{

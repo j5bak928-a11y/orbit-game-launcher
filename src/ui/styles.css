@@ -779,3 +779,11 @@ body:is([data-reduce-motion=true],[data-game-active=true]) #app .game-card.poste
  .whats-new-footer{padding:14px 18px;flex-wrap:wrap}
  .whats-new-footer .primary-btn{width:100%}
 }
+
+.import-review-controls{justify-content:flex-start;flex-wrap:wrap}
+.import-review-controls [aria-pressed="true"]{border-color:var(--accent)}
+.import-review-item{cursor:default;flex-wrap:wrap}
+.import-review-label{display:flex;align-items:center;gap:12px;flex:1 1 180px;min-width:0;cursor:pointer}
+.import-review-label .icon-box,.import-review-label input{flex-shrink:0}
+.import-review-actions{display:flex;flex-wrap:wrap;gap:10px;margin-left:auto}
+.import-review-actions button{min-height:32px}

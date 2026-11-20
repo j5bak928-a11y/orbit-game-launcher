@@ -2,6 +2,14 @@
 
 This changelog covers the changes users receive with Orbit's Windows editions. **Rust/Tauri is the recommended direction starting with 0.2.8**, but its separately named download remains an **experimental, unsigned preview** while installed Windows acceptance is incomplete. Electron remains a supported fallback with separate application data. Release files appear on [GitHub Releases](https://github.com/j5bak928-a11y/orbit-game-launcher/releases); check the version on the download before installing.
 
+## 0.3.0 — Library, launches and playtime
+
+- Browse the full collection in Overview. Poster shading now continues smoothly behind the Play button.
+- See when a supported storefront launch is waiting for process detection. Orbit prevents repeat launch requests during that wait.
+- Review newly discovered games before adding them. Hide scan results temporarily or ignore individual entries across scans.
+- View and correct completed playtime sessions from game details. Quick-launch favorites and recent games from the tray, which also shows active session start times.
+- Return to the same game and scroll position in controller mode after a tracked play session.
+
 ## 0.2.11 — Release-notes close button and neutral window frame (9 November 2026)
 
 - **Aligned X:** the What's New close button follows the right padding of the header at desktop and compact window sizes, and its icon stays centered without inherited padding or overlap.
@@ -82,3 +90,4 @@ Version 0.2.7 combined the substantial work since 0.2.6, grouped here by user-vi
 - Added repository dependency/source/secret scanning and kept build workflows manually triggered during hosted-build limitations. The local Rust build path verifies required Windows runtime DLLs; published installer trust and real hardware acceptance remain separate requirements. ([#23](https://github.com/j5bak928-a11y/orbit-game-launcher/pull/23), [#35](https://github.com/j5bak928-a11y/orbit-game-launcher/pull/35))
 
 For technical backup details, see [Rust 0.2.7 reliability](docs/RUST-0.2.7-RELIABILITY.md), [Tauri migration](docs/TAURI-MIGRATION.md), and [controller verification](docs/VERIFICATION-controller-mode.md).
+

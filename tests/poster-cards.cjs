@@ -27,6 +27,20 @@ async function assertContinuousCaption(card){
  assert(layout.textBottom<=layout.playTop,'metadata stays above Play');
 }
 
+async function assertPlayAccentPaint(play){
+ const bounds=await play.boundingBox();
+ const pixel=await play.page().screenshot({clip:{
+  x:Math.floor(bounds.x+16),y:Math.floor(bounds.y+bounds.height/2),width:1,height:1
+ }});
+ const color=await play.page().evaluate(async png=>{
+  const image=new Image();image.src='data:image/png;base64,'+png;await image.decode();
+  const canvas=document.createElement('canvas');canvas.width=canvas.height=1;
+  const ctx=canvas.getContext('2d');ctx.drawImage(image,0,0);
+  return Array.from(ctx.getImageData(0,0,1,1).data);
+ },pixel.toString('base64'));
+ assert.deepEqual(color,[139,122,255,255],'caption shading stays behind the painted Play button');
+}
+
 test('poster cards keep the existing Orbit shell and expose working artwork actions',async t=>{
  const browser=await chromium.launch(process.env.ORBIT_BROWSER_EXECUTABLE
   ?{headless:true,executablePath:process.env.ORBIT_BROWSER_EXECUTABLE,args:['--no-sandbox','--disable-dev-shm-usage']}
@@ -79,6 +93,8 @@ test('poster cards keep the existing Orbit shell and expose working artwork acti
   'unselected favorite stays hidden when the card is idle');
  await card.focus();
  await page.waitForFunction(()=>getComputedStyle(document.querySelector('.poster-card .favorite-float')).opacity==='1');
+ await page.waitForFunction(()=>getComputedStyle(document.querySelector('.poster-card .cover-play')).opacity==='1');
+ await assertPlayAccentPaint(card.locator('.cover-play'));
  await page.locator('nav [data-route=library]').focus();
  await page.waitForFunction(()=>getComputedStyle(document.querySelector('.poster-card .favorite-float')).opacity==='0');
  await card.hover();
@@ -87,6 +103,7 @@ test('poster cards keep the existing Orbit shell and expose working artwork acti
  assert.equal(await card.locator('.game-name').textContent(),'Game 00000',
   'poster reveals the game title when actions become visible');
  await assertContinuousCaption(card);
+ await assertPlayAccentPaint(card.locator('.cover-play'));
  const buttons=await card.evaluate(node=>{
   const rect=el=>{const b=el.getBoundingClientRect();return {x:b.x,y:b.y,width:b.width,height:b.height,right:b.right,bottom:b.bottom};};
   return {cover:rect(node.querySelector('.cover')),heart:rect(node.querySelector('.favorite-float')),

@@ -4,8 +4,9 @@ const path=require('node:path');
 const fs=require('node:fs');
 const fsp=fs.promises;
 const crypto=require('node:crypto');
+const {performance}=require('node:perf_hooks');
 const {pathToFileURL}=require('node:url');
-const {LibraryDatabase,cleanGame,reconcileDiscoveredGames}=require('./core/database.cjs');
+const {LibraryDatabase,cleanGame,duplicateKey,reconcileDiscoveredGames}=require('./core/database.cjs');
 const {discoverAll,steamRoots}=require('./core/discovery.cjs');
 const {launchGame:executeGame,deferredExit}=require('./core/launch.cjs');
 const {findSteamCover,findSteamBanner,localSteamIcon}=require('./core/steam-cover.cjs');
@@ -19,6 +20,7 @@ const {findLocalPortrait,findEpicPortrait}=require('./core/nonsteam-artwork.cjs'
 const {WindowsActivityTracker}=require('./core/windows-activity.cjs');
 const {backgroundWindow}=require('./core/background-window.cjs');
 const {sessionClock}=require('./core/session-clock.cjs');
+const {trayMenuEntries}=require('./core/tray-menu.cjs');
 const {pendingFinishes}=require('./core/pending-finishes.cjs');
 const {createUpdateService}=require('./core/updates.cjs');
 const {catalogMatch,identifyGame}=require('./core/game-identity.cjs');
@@ -27,16 +29,30 @@ const {createPortableBackup,decodePortableBackup,installBackupArtwork,cleanupUnu
 protocol.registerSchemesAsPrivileged([{scheme:'orbit-art',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true}}]);
 if(!app.requestSingleInstanceLock())app.quit();
 let win,db,scanning=false,activityTracker=null,libraryRevision=0,tray=null,initialized=false,updateService=null,restoringLibrary=false;
+let controllerReturn=null;
 const background=backgroundWindow({close:()=>win?.destroy(),show:()=>{if(!win||win.isDestroyed())createWindow();else {if(win.isMinimized())win.restore();win.show();win.focus();}}});
 const fullscreenController=new FullscreenController(()=>win);
 const sessions=new Map(),sessionClocks=new Map();
 const directFinishes=pendingFinishes({
  finish:(session,seconds)=>{if(!db)throw Error('Game library is unavailable.');return db.finishSession(session,seconds);},
  onSuccess:id=>{if(db)gamesChanged({games:[db.get(id)],reason:'playtime'});},
- onError:(_id,error)=>broadcast({type:'error',message:`Could not save play time; retrying: ${error.message}`})
+ onError:(_id,error)=>{
+  broadcast({type:'error',message:`Could not save play time; retrying: ${error.message}`});
+  refreshTrayMenu();
+ }
 });
 let checkpointTimer=null,guardTimer=null;
 const pendingLaunches=new Set();
+const awaitingLaunch=new Map();
+const LAUNCH_CONFIRMATION_MS=90000;
+function launchPendingSnapshot(){
+  const now=performance.now(),pending=[];
+  for(const [id,until] of awaitingLaunch){
+    if(until>now)pending.push({id,waitMs:Math.max(1,Math.round(until-now))});
+    else awaitingLaunch.delete(id);
+  }
+  return pending;
+}
 const artworkWork=new ArtworkWork();
 const iconWork=new ArtworkWork({concurrency:2});
 const artworkEditRevisions=new Map();
@@ -61,8 +77,31 @@ function decodableArtwork(bytes){
   if(!dims||dims.width>4096||dims.height>4096)return false;
   try{return !!nativeImage&&!nativeImage.createFromBuffer(bytes).isEmpty();}catch{return false;}
 }
-const broadcast=payload=>{if(win&&!win.isDestroyed())win.webContents.send('orbit:event',payload)};
+const broadcast=payload=>{
+  if(win&&!win.isDestroyed())win.webContents.send('orbit:event',payload);
+  if(payload.type==='settingsChanged')refreshTrayMenu();
+};
 const runningGameIds=()=>[...new Set([...sessions.keys(),...(activityTracker?.runningIds()||[])])];
+let trayMenuKey='';
+function refreshTrayMenu(){
+ if(!tray||!db)return;
+ try{
+  const sessionIds=[...sessions.values(), ...(activityTracker?.checkpoints()||[]).map(session=>session.id)];
+  const contents=db.getTrayGames(sessionIds);
+  const entries=trayMenuEntries(contents,db.getSettings().language,app.getLocale?.(),new Set(runningGameIds()));
+  const signature=JSON.stringify(entries);
+  if(signature===trayMenuKey)return;
+  const menuItem=({action,id,submenu,...properties})=>{
+   if(submenu)return {...properties,submenu:submenu.map(menuItem)};
+   if(id)return {...properties,click:()=>{launchGame(id).catch(error=>dialog.showErrorBox('Orbit Launcher',error.message));}};
+   if(action==='open')return {...properties,click:()=>background.open()};
+   if(action==='quit')return {...properties,click:()=>{background.quit();app.quit();}};
+   return properties;
+  };
+  tray.setContextMenu(Menu.buildFromTemplate(entries.map(menuItem)));
+  trayMenuKey=signature;
+ }catch(error){console.error('Orbit tray: cannot refresh the menu:',error.message);}
+}
 function checkpointPlaytime(){
  if(!db)return;
  directFinishes.flush();
@@ -90,8 +129,10 @@ function authorizedSender(event){
 const librarySnapshot=()=>({games:db.list(),runningIds:runningGameIds(),revision:libraryRevision});
 function gamesChanged({games=[],removedIds=[],reason='',reset=false}={}){
   const event={type:'gamesChanged',reason,revision:++libraryRevision,runningIds:runningGameIds()};
+  for(const id of [...event.runningIds,...removedIds])awaitingLaunch.delete(id);
   if(!reset){event.games=games.filter(Boolean);event.removedIds=removedIds;}
   broadcast(event);
+  if(reason!=='artwork')refreshTrayMenu();
 }
 const okId=validHistoryId;
 function createWindow(){
@@ -340,15 +381,63 @@ function queueArtwork(requests){
   run(cacheCoverAndBanner).catch(()=>{});
 }
 
-async function discover(){
+let startupDiscoveryAttempted=false;
+async function discover(background=false){
+  if(background===true){
+    if(startupDiscoveryAttempted||scanning||runningGameIds().length)return null;
+    startupDiscoveryAttempted=true;
+  }
   if(scanning)throw Error('A library scan is already running.');
   scanning=true;broadcast({type:'scanStarted'});
   try{
     const result=await discoverAll(db.getSettings(),{downloadsPath:app.getPath('downloads')});
     const library=db.list();
-    const games=reconcileDiscoveredGames(library,result.games,process.platform);
+    const games=reconcileDiscoveredGames(library,result.games,process.platform).map(game=>{
+      const identity=duplicateKey(game);
+      return identity?{...game,discoveryKey:crypto.createHash('sha256').update(identity).digest('hex')}:game;
+    });
     broadcast({type:'scanFinished',count:games.length});return {games,warnings:result.warnings,diagnostics:result.diagnostics||[]};
   }finally{scanning=false;}
+}
+async function launchGame(id){
+  if(!okId(id))throw Error('Invalid game identifier.');const game=db.get(id);if(!game)throw Error('Game was removed.');
+  // A process can take time to emit "spawn". Reserve the game ID before
+  // awaiting it so double-clicks cannot launch two copies concurrently.
+  if(sessions.has(id)||pendingLaunches.has(id)||awaitingLaunch.get(id)>performance.now()||directFinishes.has(id)||activityTracker?.isRunning(id))throw Error('This game is already launching, running, or saving a tracked session.');
+  pendingLaunches.add(id);
+  try{
+    let sessionId=null;
+    const exit=deferredExit(()=>{
+      if(!sessionId||!db)return;
+      const seconds=sessionClocks.get(id)?.seconds()||0;
+      sessions.delete(id);sessionClocks.delete(id);
+      directFinishes.add(id,sessionId,seconds);
+    });
+    const result=await executeGame(game,url=>shell.openExternal(url),exit.onExit);
+    if(result.tracked){
+      try{sessionId=db.startSession(id);sessions.set(id,sessionId);sessionClocks.set(id,sessionClock());exit.ready();performanceGuard();}
+      catch(e){
+        // Launch succeeded; never report it as a failed launch if recording
+        // play time fails after the process has already started.
+        broadcast({type:'error',message:`Game launched, but play time could not be tracked: ${e.message}`});
+        return {...result,tracked:false,message:'Game launched. Play-time tracking could not start.'};
+      }
+    }else{
+      db.db.prepare('UPDATE games SET last_played_at=?,updated_at=? WHERE id=?').run(new Date().toISOString(),new Date().toISOString(),id);
+      if(result.mode==='external'&&activityTracker){
+        const watchable=!!(game.executable||(['steam','epic'].includes(game.source)&&game.install_path));
+        if(watchable){
+          result.confirmationTimeoutMs=LAUNCH_CONFIRMATION_MS;
+          awaitingLaunch.set(id,performance.now()+LAUNCH_CONFIRMATION_MS);
+          broadcast({type:'launchPending',id,waitMs:LAUNCH_CONFIRMATION_MS});
+        }
+        result.message=watchable?'Opened in the launcher. Orbit will track play time when it detects the game process.':'Opened in the launcher. Add the actual game executable to track play time.';
+      }else if(result.mode==='external')result.message='Opened in the launcher. Play-time tracking is unavailable for this launch on this platform.';
+    }
+    gamesChanged({games:[db.get(id)],reason:'launch'});
+    cachedSteamBanner(db.get(id)).catch(()=>{});
+    return result;
+  }finally{pendingLaunches.delete(id);if(activityTracker?.noteLaunch)activityTracker.noteLaunch();else activityTracker?.poll?.().catch(()=>{});}
 }
 function handlers(){
   const bind=(name,fn)=>ipcMain.handle('orbit:'+name,async(event, ...args)=>{try{if(!authorizedSender(event))throw Error('Untrusted IPC sender.');return await fn(...args)}catch(e){throw new Error(e?.message||'Unexpected error.')}});
@@ -357,10 +446,21 @@ function handlers(){
   bind('checkForUpdates',()=>updateService?.check({manual:true})||{state:'unsupported'});
   bind('installUpdate',()=>updateService?.install());
   bind('setFullscreen',enabled=>fullscreenController.set(enabled));
-  bind('bootstrap',()=>({...librarySnapshot(),settings:db.getSettings(),platform:process.platform,version:displayVersion()}));
+  bind('bootstrap',()=>({...librarySnapshot(),settings:db.getSettings(),platform:process.platform,version:displayVersion(),controllerReturn,launchPending:launchPendingSnapshot()}));
+  bind('saveControllerReturn',position=>{
+    if(position!==null&&(!position||typeof position!=='object'||Array.isArray(position)||JSON.stringify(position).length>2048))
+      throw Error('Invalid controller return position.');
+    controllerReturn=position;
+  });
   bind('librarySnapshot',librarySnapshot);
   bind('listGames',()=>db.list());
   bind('getStatistics',options=>db.getStatistics(options));
+  bind('listSessions',(id,page)=>db.listSessions(id,page));
+  bind('correctSession',(id,sessionId,seconds)=>{
+    const game=db.correctSession(id,sessionId,seconds);
+    gamesChanged({games:[game],reason:'playtime'});
+    return game;
+  });
   bind('runningGames',runningGameIds);
   bind('getGame',id=>{if(!okId(id))throw Error('Invalid game identifier.');return db.get(id)});
   bind('addGame',data=>{const result=db.upsert(data);gamesChanged({games:[result.game],reason:'add'});if(result.added)enrichGameArtwork(result.game).catch(()=>{});return result});
@@ -407,41 +507,7 @@ function handlers(){
     queueArtwork(artwork);
     return {imported,skipped,errors};
   });
-  bind('launchGame',async id=>{
-    if(!okId(id))throw Error('Invalid game identifier.');const game=db.get(id);if(!game)throw Error('Game was removed.');
-    // A process can take time to emit "spawn". Reserve the game ID before
-    // awaiting it so double-clicks cannot launch two copies concurrently.
-    if(sessions.has(id)||pendingLaunches.has(id)||directFinishes.has(id)||activityTracker?.isRunning(id))throw Error('This game is already launching, running, or saving a tracked session.');
-    pendingLaunches.add(id);
-    try{
-      let sessionId=null;
-      const exit=deferredExit(()=>{
-        if(!sessionId||!db)return;
-        const seconds=sessionClocks.get(id)?.seconds()||0;
-        sessions.delete(id);sessionClocks.delete(id);
-        directFinishes.add(id,sessionId,seconds);
-      });
-      const result=await executeGame(game,url=>shell.openExternal(url),exit.onExit);
-      if(result.tracked){
-        try{sessionId=db.startSession(id);sessions.set(id,sessionId);sessionClocks.set(id,sessionClock());exit.ready();performanceGuard();}
-        catch(e){
-          // Launch succeeded; never report it as a failed launch if recording
-          // play time fails after the process has already started.
-          broadcast({type:'error',message:`Game launched, but play time could not be tracked: ${e.message}`});
-          return {...result,tracked:false,message:'Game launched. Play-time tracking could not start.'};
-        }
-      }else{
-        db.db.prepare('UPDATE games SET last_played_at=?,updated_at=? WHERE id=?').run(new Date().toISOString(),new Date().toISOString(),id);
-        if(result.mode==='external'&&activityTracker){
-          const watchable=!!(game.executable||(['steam','epic'].includes(game.source)&&game.install_path));
-          result.message=watchable?'Opened in the launcher. Orbit will track play time when it detects the game process.':'Opened in the launcher. Add the actual game executable to track play time.';
-        }else if(result.mode==='external')result.message='Opened in the launcher. Play-time tracking is unavailable for this launch on this platform.';
-      }
-      gamesChanged({games:[db.get(id)],reason:'launch'});
-      cachedSteamBanner(db.get(id)).catch(()=>{});
-      return result;
-    }finally{pendingLaunches.delete(id);if(activityTracker?.noteLaunch)activityTracker.noteLaunch();else activityTracker?.poll?.().catch(()=>{});}
-  });
+  bind('launchGame',launchGame);
   bind('openGameFolder',async id=>{if(!okId(id))throw Error('Invalid game identifier.');const game=db.get(id);if(!game)throw Error('Game not found.');const dir=game.install_path|| (game.executable?path.dirname(game.executable):'');if(!dir||!path.isAbsolute(dir)||!fs.existsSync(dir)||!fs.statSync(dir).isDirectory())throw Error('Installation folder is unavailable.');const error=await shell.openPath(dir);if(error)throw Error(error);return true});
   bind('openAppData',async()=>{const error=await shell.openPath(app.getPath('userData'));if(error)throw Error(error);return true});
   bind('exportLibrary',async()=>{
@@ -546,8 +612,16 @@ app.whenReady().then(async()=>{
   updateService=createUpdateService({app,emit:broadcast,getSettings:()=>db.getSettings(),hasRunningGames:()=>runningGameIds().length>0});
   updateService.initialize();
   if(process.platform==='win32'&&typeof Tray==='function'&&Menu){
-    try{tray=new Tray(path.join(__dirname,'../assets/icon.ico'));tray.setToolTip('Orbit — tracking playtime');tray.setContextMenu(Menu.buildFromTemplate([{label:'Open Orbit',click:()=>background.open()},{label:'Quit Orbit',click:()=>{background.quit();app.quit();}}]));tray.on('click',()=>background.open());}
-    catch{tray=null;}
+    try{
+      tray=new Tray(path.join(__dirname,'../assets/icon.ico'));
+      tray.setToolTip('Orbit Launcher');
+      tray.setContextMenu(Menu.buildFromTemplate([
+        {label:'Open Orbit',click:()=>background.open()},
+        {label:'Quit Orbit',click:()=>{background.quit();app.quit();}}
+      ]));
+      tray.on('click',()=>background.open());
+      refreshTrayMenu();
+    }catch{tray=null;}
   }
   initialized=true;
   createWindow();
@@ -565,22 +639,6 @@ app.whenReady().then(async()=>{
   powerMonitor?.on?.('suspend',()=>{checkpointPlaytime();for(const clock of sessionClocks.values())clock.pause();activityTracker?.suspend();});
   powerMonitor?.on?.('resume',()=>{for(const clock of sessionClocks.values())clock.resume();activityTracker?.resume();});
   setTimeout(async()=>{if(!db||runningGameIds().length&&db.getSettings().performanceGuard)return;await repairMissingSteamCovers({limit:30}).catch(()=>{});if(db)for(const game of db.list('recent').slice(0,3))await cachedSteamBanner(game).catch(()=>{});},2500);
-  if(db.getSettings().autoScan)setTimeout(async()=>{
-    try{
-      if(!db)return;
-      const result=await discover();
-      const imported=result.games.filter(game=>!game.alreadyAdded&&!game.downloadCandidate),added=[];
-      if(!imported.length)return;
-      for(let i=0;i<imported.length;i+=50){
-        if(!db)return;
-        added.push(...artworkRequests(db.upsertBatch(imported.slice(i,i+50)).addedGames));
-        await new Promise(resolve=>setImmediate(resolve));
-      }
-      if(!db)return;
-      gamesChanged({reset:true,reason:'autoScan'});
-      queueArtwork(added);
-    }catch(e){broadcast({type:'error',message:`Background scan failed: ${e.message}`})}
-  },1000);
   app.on('activate',()=>{if(BrowserWindow.getAllWindows().length===0)createWindow()});
 });
 app.on('before-quit',()=>{

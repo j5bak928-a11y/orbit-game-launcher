@@ -16,7 +16,7 @@ async function waitFor(predicate,timeoutMs=6000){
  return false;
 }
 
-test('startup scan gives every newly imported game an icon without replacing existing artwork',async t=>{
+test('startup scan presents discoveries for review and icons are enriched after explicit import',async t=>{
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'orbit-startup-scan-'));
  let database=new LibraryDatabase(path.join(root,'library.sqlite')),context;
  t.after(()=>{
@@ -36,7 +36,7 @@ test('startup scan gives every newly imported game an icon without replacing exi
  const existing=database.upsert({name:'Existing',source:'manual',executable:executables[0],icon:customIcon}).game;
  database.saveSettings({autoScan:true,useSteamArtwork:false,libraryFolders:[library]});
  database.close();database=null;
- const timers=[],events=[];
+ const timers=[],events=[],handlers=new Map();
  class FakeWindow extends EventEmitter{
   constructor(){super();this.webContents=new EventEmitter();this.webContents.setWindowOpenHandler=()=>{};this.webContents.send=(_channel,event)=>events.push(structuredClone(event));}
   isDestroyed(){return false;}
@@ -46,7 +46,7 @@ test('startup scan gives every newly imported game an icon without replacing exi
  }
  const app={requestSingleInstanceLock:()=>true,getPath:()=>root,getVersion:()=> 'fixture',whenReady:()=>Promise.resolve(),on(){},getFileIcon:async()=>({isEmpty:()=>false,toPNG:()=>icon})};
  const electron={app,BrowserWindow:FakeWindow,dialog:{showErrorBox(){throw Error('Database startup failed');}},
-  ipcMain:{handle(){}},protocol:{registerSchemesAsPrivileged(){},handle(){}},nativeTheme:{themeSource:'dark'}};
+  ipcMain:{handle:(channel,handler)=>handlers.set(channel,handler)},protocol:{registerSchemesAsPrivileged(){},handle(){}},nativeTheme:{themeSource:'dark'}};
  const main=path.join(__dirname,'../src/main.cjs'),realRequire=createRequire(main);
  context=vm.createContext({
   require:name=>{
@@ -65,15 +65,22 @@ test('startup scan gives every newly imported game an icon without replacing exi
   setTimeout:(callback,delay)=>{timers.push({callback,delay});return timers.length;},
  });
  vm.runInContext(fs.readFileSync(main,'utf8'),context,{filename:main});
- assert(await waitFor(()=>timers.some(timer=>timer.delay===1000)),'Startup scan should be scheduled');
+ assert(await waitFor(()=>handlers.has('orbit:discoverGames')),'Discovery IPC should be registered');
  database=vm.runInContext('db',context);
- await timers.find(timer=>timer.delay===1000).callback();
- assert.equal(database.count(),53,'Only new games should be imported');
+ assert.equal(timers.some(timer=>timer.delay===1000),false,'main process does not schedule automatic imports');
+ const result=await handlers.get('orbit:discoverGames')({},true);
+ assert.equal(result.games.length,53);
+ const available=result.games.filter(game=>!game.alreadyAdded);
+ assert.equal(available.length,52);
+ assert(available.every(game=>/^[a-f0-9]{64}$/.test(game.discoveryKey)));
+ assert.equal(await handlers.get('orbit:discoverGames')({},true),null,'one startup scan per process');
+ assert.equal(database.count(),1,'Reviewing discoveries leaves the library unchanged');
+ assert.equal((await handlers.get('orbit:importGames')({},available)).imported,52);
  await waitFor(()=>events.filter(event=>event.reason==='artwork').length===52);
  const games=database.list(),newGames=games.filter(game=>game.id!==existing.id);
  const missing=newGames.filter(game=>!game.icon).map(game=>game.name);
  assert.deepEqual(missing,[],'Every new game should receive its local icon, including games after the first import batch');
  assert.equal(database.get(existing.id).icon,customIcon);
  assert(newGames.every(game=>fs.existsSync(path.join(root,'artwork',game.icon))));
- assert(events.some(event=>event.reason==='autoScan'));
+ assert(events.some(event=>event.reason==='import'));
 });

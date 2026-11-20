@@ -58,6 +58,9 @@ try {
     $env:CC = 'clang.exe'
     $env:CXX = 'clang++.exe'
 
+    & npm.cmd run tauri:stage
+    if ($LASTEXITCODE -ne 0) { throw 'Tauri frontend staging failed.' }
+
     if (-not $SkipRustTests) {
         Push-Location (Join-Path $root 'src-tauri')
         try {

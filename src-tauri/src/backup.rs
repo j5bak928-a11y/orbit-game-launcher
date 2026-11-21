@@ -14,7 +14,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const MAX_ARCHIVE: u64 = 128 * 1024 * 1024;
+pub(crate) const MAX_ARCHIVE: u64 = 128 * 1024 * 1024;
 const MAX_UNCOMPRESSED: u64 = 192 * 1024 * 1024;
 const MAX_IMAGE: u64 = 15 * 1024 * 1024;
 const MAX_ARTWORK_TOTAL: u64 = 100 * 1024 * 1024;
@@ -178,15 +178,7 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     if !metadata.is_file() || metadata.len() > limit {
         return Err(err("File is not a regular file within the size limit."));
     }
-    let file = File::open(path).map_err(|e| e.to_string())?;
-    let mut bytes = Vec::new();
-    file.take(limit + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > limit {
-        return Err(err("File exceeds the safe size limit."));
-    }
-    Ok(bytes)
+    crate::files::read_regular_bounded(path, limit)
 }
 
 fn gzip_bounded(bytes: &[u8]) -> Result<Vec<u8>, String> {
@@ -319,8 +311,13 @@ pub struct StagedBackup {
 }
 
 impl StagedBackup {
+    #[cfg(test)]
     pub fn library(&self) -> &Value {
         &self.library
+    }
+
+    pub(crate) fn library_mut(&mut self) -> &mut Value {
+        &mut self.library
     }
 
     fn rollback_unused(&mut self, referenced: &HashSet<String>) -> Result<(), String> {
@@ -548,14 +545,16 @@ where
     let compressed = read_bounded(input, MAX_ARCHIVE)
         .map_err(|_| err("Invalid Orbit portable backup or archive exceeds the 128 MB limit."))?;
     let unpacked = gunzip_bounded(&compressed)?;
-    let envelope: Value = serde_json::from_slice(&unpacked)
+    drop(compressed);
+    let mut envelope: Value = serde_json::from_slice(&unpacked)
         .map_err(|_| err("Portable backup is corrupt or exceeds the safe size limit."))?;
+    drop(unpacked);
     if envelope.get("format").and_then(Value::as_str) != Some(PORTABLE_FORMAT) {
         return Err(err("Unrecognized portable backup format."));
     }
     let mut library = envelope
-        .get("library")
-        .cloned()
+        .as_object_mut()
+        .and_then(|fields| fields.remove("library"))
         .ok_or_else(|| err("Unrecognized portable backup format."))?;
     let rows = games(&library)?;
     // Validate every game before installing embedded artwork, including a

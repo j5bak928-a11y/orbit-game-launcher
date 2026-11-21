@@ -1,6 +1,7 @@
 mod artwork;
 mod backup;
 mod database;
+mod files;
 mod native;
 mod tray;
 
@@ -789,14 +790,8 @@ fn save_artwork(source: &Path, artwork_dir: &Path) -> Result<String, String> {
     if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 15 * 1024 * 1024 {
         return Err("Artwork must be an image file smaller than 15 MB".into());
     }
-    use std::io::Read;
-    let mut bytes = Vec::with_capacity(meta.len() as usize);
-    std::fs::File::open(source)
-        .map_err(|e| e.to_string())?
-        .take(15 * 1024 * 1024 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    if bytes.is_empty() || bytes.len() > 15 * 1024 * 1024 {
+    let bytes = files::read_regular_bounded(source, 15 * 1024 * 1024)?;
+    if bytes.is_empty() {
         return Err("Artwork must be smaller than 15 MB".into());
     }
     let ext = source
@@ -834,7 +829,9 @@ fn save_artwork(source: &Path, artwork_dir: &Path) -> Result<String, String> {
     {
         Ok(mut file) => file.write_all(&bytes).map_err(|e| e.to_string())?,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            if std::fs::read(&path).map_err(|e| e.to_string())? != bytes {
+            if !std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_file())
+                || files::read_regular_bounded(&path, 15 * 1024 * 1024)? != bytes
+            {
                 return Err("Artwork name collision detected".into());
             }
         }
@@ -882,6 +879,26 @@ fn restored_artwork_token(value: &Value, dir: &Path) -> String {
     } else {
         String::new()
     }
+}
+
+fn sanitize_restore_payload(payload: &mut Value, artwork_dir: &Path) -> Result<(), String> {
+    if payload["format"] != "orbit.library.v1" {
+        return Err("Invalid Orbit backup format".into());
+    }
+    let games = payload["games"].as_array_mut().ok_or("Invalid game list")?;
+    if games.len() > 100_000 {
+        return Err("Too many games in backup".into());
+    }
+    for game in games.iter_mut().filter_map(Value::as_object_mut) {
+        for field in ["cover", "banner", "icon"] {
+            let token = game
+                .get(field)
+                .map(|value| restored_artwork_token(value, artwork_dir))
+                .unwrap_or_default();
+            game.insert(field.into(), json!(token));
+        }
+    }
+    Ok(())
 }
 
 fn write_json_backup(path: &Path, payload: &Value) -> Result<(), String> {
@@ -1256,70 +1273,32 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             let Some(path) = choose_file(app, &["orbit", "json"])? else {
                 return Ok(Value::Null);
             };
-            let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
-            if metadata.len() > 128 * 1024 * 1024 {
-                return Err("Backup exceeds 128MB".into());
-            }
-            // Retain DB ownership through portable archive preflight, artwork
-            // installation and the eventual session transaction, so no other
-            // window command can invalidate the identity mapping between the
-            // validation and commit. Native playtime tracking continues after
-            // this explicit, bounded user-requested restore operation.
-            let mut db = state.db.lock().unwrap();
             let portable = path.extension().and_then(|s| s.to_str()) == Some("orbit");
-            let staged = if portable {
-                Some(backup::import_backup_checked_staged(
-                    &path,
-                    &state.artwork_dir,
-                    |library| db.preflight_restore_json(library),
-                )?)
-            } else {
-                None
-            };
             let json_payload = if portable {
                 None
             } else {
-                Some(
-                    serde_json::from_slice::<Value>(
-                        &std::fs::read(&path).map_err(|e| e.to_string())?,
-                    )
-                    .map_err(|e| e.to_string())?,
-                )
+                let bytes = files::read_regular_bounded(&path, backup::MAX_ARCHIVE)
+                    .map_err(|error| format!("Cannot read JSON backup (128 MB limit): {error}"))?;
+                let mut payload = serde_json::from_slice::<Value>(&bytes)
+                    .map_err(|error| error.to_string())?;
+                drop(bytes);
+                sanitize_restore_payload(&mut payload, &state.artwork_dir)?;
+                Some(payload)
             };
-            let payload = staged
-                .as_ref()
-                .map(backup::StagedBackup::library)
-                .or(json_payload.as_ref())
-                .ok_or("Missing Orbit restore payload")?;
-            let restore = (|| -> Result<Value, String> {
-                if payload["format"] != "orbit.library.v1" {
-                    return Err("Invalid Orbit backup format".into());
-                }
-                let games = payload["games"].as_array().ok_or("Invalid game list")?;
-                if games.len() > 100_000 {
-                    return Err("Too many games in backup".into());
-                }
-                let mut clean_payload = payload.clone();
-                let clean_games = clean_payload["games"]
-                    .as_array_mut()
-                    .ok_or("Invalid game list")?;
-                // Artwork tokens have already been extracted/validated by backup;
-                // a JSON backup may only refer to safe, existing local files.
-                for (clean, original) in clean_games.iter_mut().zip(games.iter()) {
-                    if let Some(game) = clean.as_object_mut() {
-                        for field in ["cover", "banner", "icon"] {
-                            game.insert(
-                                field.into(),
-                                json!(restored_artwork_token(&original[field], &state.artwork_dir)),
-                            );
-                        }
-                    }
-                }
-                // The database layer maps source IDs and imports completed
-                // history without crediting aggregate playtime twice.
-                db.restore_json(&clean_payload)
-            })();
-            let result = if let Some(staged) = staged {
+            // Preserve DB ownership across portable preflight, artwork installation,
+            // commit and cleanup so the identity mapping cannot change in between.
+            let mut db = state.db.lock().unwrap();
+            let result = if let Some(payload) = json_payload {
+                db.restore_json(&payload)?
+            } else {
+                let mut staged = backup::import_backup_checked_staged(
+                    &path,
+                    &state.artwork_dir,
+                    |library| db.preflight_restore_json(library),
+                )?;
+                let payload = staged.library_mut();
+                let restore = sanitize_restore_payload(payload, &state.artwork_dir)
+                    .and_then(|()| db.restore_json(payload));
                 // Old v1 restores can succeed partially. Preserve artwork used
                 // by any committed game and prune only newly installed files
                 // that are unreferenced after the database operation.
@@ -1340,8 +1319,6 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
                     None
                 };
                 staged.finish(restore, live_artwork.as_ref())?
-            } else {
-                restore?
             };
             drop(db);
             changed(app, &state, vec![], vec![], "restore", true);
@@ -1401,7 +1378,7 @@ fn queue_finished_session(state: &OrbitState, id: &str, seconds: Option<i64>) {
         .insert(id.to_string(), (session_id, elapsed));
 }
 
-fn flush_finished_sessions(state: &OrbitState) -> Vec<String> {
+fn flush_finished_sessions(state: &OrbitState, mut report_error: impl FnMut(&str)) -> Vec<String> {
     let pending = state
         .pending_finishes
         .lock()
@@ -1421,22 +1398,66 @@ fn flush_finished_sessions(state: &OrbitState) -> Vec<String> {
                 state.pending_finishes.lock().unwrap().remove(&game_id);
                 completed.push(game_id);
             }
-            Err(error) => {
-                eprintln!("Orbit: retrying unfinished playtime save: {error}");
-            }
+            Err(error) => report_error(&error),
         }
     }
     completed
 }
 
-fn poll_sessions(app: &tauri::AppHandle) {
+#[derive(Default)]
+struct TrackingDiagnostics {
+    last_log: HashMap<&'static str, Instant>,
+    last_notice: Option<Instant>,
+}
+
+impl TrackingDiagnostics {
+    fn report(&mut self, app: &tauri::AppHandle, stage: &'static str, error: &str) {
+        const INTERVAL: Duration = Duration::from_secs(300);
+        let now = Instant::now();
+        if self
+            .last_log
+            .get(stage)
+            .is_none_or(|last| now.duration_since(*last) >= INTERVAL)
+        {
+            self.last_log.insert(stage, now);
+            eprintln!("Orbit playtime ({stage}): {error}");
+        }
+        if self
+            .last_notice
+            .is_none_or(|last| now.duration_since(last) >= INTERVAL)
+        {
+            self.last_notice = Some(now);
+            emit(
+                app,
+                json!({
+                    "type":"error",
+                    "message":"Orbit could not update playtime. Tracking will retry in the background."
+                }),
+            );
+        }
+    }
+}
+
+fn poll_sessions(app: &tauri::AppHandle, diagnostics: &mut TrackingDiagnostics) {
     let state = app.state::<OrbitState>();
-    for id in flush_finished_sessions(&state) {
+    for id in flush_finished_sessions(&state, |error| {
+        diagnostics.report(app, "finish session", error);
+    }) {
         notify_game(app, &state, &id, "playtime");
     }
-    let Ok(exits) = native::poll_sessions() else {
-        return;
+    // Keep the reservation set stable while inspecting child handles. A fast
+    // exit must remain in the native tracker until its session is registered.
+    let exits = match state.launching.lock() {
+        Ok(launching) => native::poll_sessions(&launching),
+        Err(error) => Err(error.to_string()),
     };
+    let exits = exits.unwrap_or_else(|error| {
+        diagnostics.report(app, "direct process check", &error);
+        Value::Null
+    });
+    if let Some(error) = exits["error"].as_str() {
+        diagnostics.report(app, "direct process check", error);
+    }
     let mut observed: HashMap<String, u64> = HashMap::new();
     if let Some(checkpoints) = exits["checkpoints"].as_array() {
         for checkpoint in checkpoints {
@@ -1448,30 +1469,40 @@ fn poll_sessions(app: &tauri::AppHandle) {
             }
         }
     }
-    let Some(items) = exits.get("completed").and_then(Value::as_array) else {
-        return;
-    };
-    for item in items {
-        let Some(id) = item["game_id"].as_str() else {
-            continue;
-        };
-        queue_finished_session(&state, id, item["seconds"].as_i64());
+    if let Some(items) = exits["completed"].as_array() {
+        for item in items {
+            let Some(id) = item["game_id"].as_str() else {
+                continue;
+            };
+            queue_finished_session(&state, id, item["seconds"].as_i64());
+        }
+        if !items.is_empty() {
+            tray::request_menu_refresh(app);
+        }
     }
-    if !items.is_empty() {
-        tray::request_menu_refresh(app);
-    }
-    for id in flush_finished_sessions(&state) {
+    for id in flush_finished_sessions(&state, |error| {
+        diagnostics.report(app, "finish session", error);
+    }) {
         notify_game(app, &state, &id, "playtime");
     }
     // External launcher processes are tracked from verified install paths by
     // the Rust Windows process-inventory implementation.
-    let watchlist = state
-        .db
-        .lock()
-        .ok()
-        .and_then(|db| db.list_activity_games().ok());
+    let watchlist = if cfg!(windows) {
+        state
+            .db
+            .lock()
+            .map_err(|error| error.to_string())
+            .and_then(|db| db.list_activity_games())
+            .map_err(|error| diagnostics.report(app, "read tracked games", &error))
+            .ok()
+    } else {
+        None
+    };
     if let Some(watchlist) = watchlist {
-        if let Ok(activity) = native::poll_activity(&watchlist) {
+        let activity = native::poll_activity(&watchlist)
+            .map_err(|error| diagnostics.report(app, "process inventory", &error))
+            .ok();
+        if let Some(activity) = activity {
             if let Some(checkpoints) = activity["checkpoints"].as_array() {
                 for checkpoint in checkpoints {
                     if let (Some(id), Some(seconds)) = (
@@ -1497,24 +1528,30 @@ fn poll_sessions(app: &tauri::AppHandle) {
                         .lock()
                         .map_err(|e| e.to_string())
                         .and_then(|mut db| db.start_session(id));
-                    if let Ok(session) = session {
-                        state
-                            .active
-                            .lock()
-                            .unwrap()
-                            .insert(id.into(), (session, Instant::now()));
-                        state.confirming.lock().unwrap().remove(id);
-                        native::acknowledge_activity_session(id);
-                        drop(launching);
-                        notify_game(app, &state, id, "playtime");
-                        let settings = state.db.lock().ok().and_then(|db| db.get_settings().ok());
-                        if let Some(settings) = settings {
-                            let _ = tray::hide_for_performance_guard(
-                                app,
-                                settings["performanceGuard"] == true,
-                                !running_ids(&state).is_empty(),
-                            );
+                    let session = match session {
+                        Ok(session) => session,
+                        Err(error) => {
+                            drop(launching);
+                            diagnostics.report(app, "register detected session", &error);
+                            continue;
                         }
+                    };
+                    state
+                        .active
+                        .lock()
+                        .unwrap()
+                        .insert(id.into(), (session, Instant::now()));
+                    state.confirming.lock().unwrap().remove(id);
+                    native::acknowledge_activity_session(id);
+                    drop(launching);
+                    notify_game(app, &state, id, "playtime");
+                    let settings = state.db.lock().ok().and_then(|db| db.get_settings().ok());
+                    if let Some(settings) = settings {
+                        let _ = tray::hide_for_performance_guard(
+                            app,
+                            settings["performanceGuard"] == true,
+                            !running_ids(&state).is_empty(),
+                        );
                     }
                 }
             }
@@ -1528,7 +1565,9 @@ fn poll_sessions(app: &tauri::AppHandle) {
                 if !finished.is_empty() {
                     tray::request_menu_refresh(app);
                 }
-                for id in flush_finished_sessions(&state) {
+                for id in flush_finished_sessions(&state, |error| {
+                    diagnostics.report(app, "finish session", error);
+                }) {
                     notify_game(app, &state, &id, "playtime");
                 }
             }
@@ -1542,8 +1581,13 @@ fn poll_sessions(app: &tauri::AppHandle) {
         .filter_map(|(id, (session, _))| Some(json!({"id":session,"seconds":observed.get(id)?})))
         .collect();
     if !checkpoints.is_empty() {
-        if let Ok(mut db) = state.db.lock() {
-            let _ = db.checkpoint_sessions(&checkpoints);
+        let checkpoint = state
+            .db
+            .lock()
+            .map_err(|error| error.to_string())
+            .and_then(|mut db| db.checkpoint_sessions(&checkpoints));
+        if let Err(error) = checkpoint {
+            diagnostics.report(app, "save session checkpoints", &error);
         }
     }
 }
@@ -1580,7 +1624,9 @@ fn settle_sessions(app: &tauri::AppHandle) {
             .unwrap()
             .insert(id, (session_id, seconds));
     }
-    flush_finished_sessions(&state);
+    flush_finished_sessions(&state, |error| {
+        eprintln!("Orbit: cannot finish playtime on exit: {error}");
+    });
 }
 
 #[cfg(test)]
@@ -1676,7 +1722,7 @@ mod playtime_persistence_tests {
 
         let locked = rusqlite::Connection::open(&file).unwrap();
         locked.execute_batch("BEGIN IMMEDIATE").unwrap();
-        assert!(flush_finished_sessions(&state).is_empty());
+        assert!(flush_finished_sessions(&state, |_| {}).is_empty());
         assert_eq!(state.pending_finishes.lock().unwrap().len(), 1);
         assert!(
             reserve_game_launch(&state, &id).is_err(),
@@ -1684,7 +1730,7 @@ mod playtime_persistence_tests {
         );
         locked.execute_batch("ROLLBACK").unwrap();
 
-        assert_eq!(flush_finished_sessions(&state), vec![id.clone()]);
+        assert_eq!(flush_finished_sessions(&state, |_| {}), vec![id.clone()]);
         let launch = reserve_game_launch(&state, &id).unwrap();
         assert!(
             reserve_game_launch(&state, &id).is_err(),
@@ -1696,7 +1742,7 @@ mod playtime_persistence_tests {
             state.db.lock().unwrap().get(&id).unwrap()["total_play_seconds"],
             120
         );
-        assert!(flush_finished_sessions(&state).is_empty());
+        assert!(flush_finished_sessions(&state, |_| {}).is_empty());
         assert!(state.pending_finishes.lock().unwrap().is_empty());
         assert_eq!(
             state.db.lock().unwrap().get(&id).unwrap()["total_play_seconds"],
@@ -1761,11 +1807,10 @@ pub fn run() {
                 }
                 let dir = scheme_handler.lock().ok()?.clone()?;
                 let full = dir.join(name);
-                let metadata = full.metadata().ok()?;
-                if !metadata.is_file() || metadata.len() > 15 * 1024 * 1024 {
+                if !std::fs::symlink_metadata(&full).ok()?.file_type().is_file() {
                     return None;
                 }
-                let data = std::fs::read(full).ok()?;
+                let data = files::read_regular_bounded(&full, 15 * 1024 * 1024).ok()?;
                 let mime = if name.ends_with(".png") {
                     "image/png"
                 } else if name.ends_with(".webp") {
@@ -1817,9 +1862,12 @@ pub fn run() {
             tray::install_tray(app).map_err(std::io::Error::other)?;
             queue_artwork_scan(app.handle());
             let handle = app.handle().clone();
-            std::thread::spawn(move || loop {
-                std::thread::sleep(Duration::from_secs(10));
-                poll_sessions(&handle);
+            std::thread::spawn(move || {
+                let mut diagnostics = TrackingDiagnostics::default();
+                loop {
+                    std::thread::sleep(Duration::from_secs(10));
+                    poll_sessions(&handle, &mut diagnostics);
+                }
             });
             Ok(())
         })

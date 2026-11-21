@@ -2,6 +2,13 @@
 
 This changelog covers the changes users receive with Orbit's Windows editions. **Rust/Tauri is the recommended direction starting with 0.2.8**, but its separately named download remains an **experimental, unsigned preview** while installed Windows acceptance is incomplete. Electron remains a supported fallback with separate application data. Release files appear on [GitHub Releases](https://github.com/j5bak928-a11y/orbit-game-launcher/releases); check the version on the download before installing.
 
+## 0.3.2 — Playtime and backup reliability
+
+- Preserve playtime tracking when a directly launched game closes during startup.
+- Report tracking and save failures without repeating notifications every poll.
+- Restore JSON backups with less copying and shorter database lock times. Bound reads for manifests, backup files and artwork.
+- Use one Xbox manifest snapshot to verify each game and its artwork.
+
 ## 0.3.1 — Play button contrast
 
 - Restored the Play button’s accent color on poster cards. The artwork shading stays behind the button, keeping the label and icon readable.

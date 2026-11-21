@@ -34,7 +34,7 @@ Orbit is a local-first desktop game launcher for finding, organizing, and playin
 
 | | Rust / Tauri 2 preview | Electron desktop |
 | --- | --- | --- |
-| Version in this repository | **0.3.1** | **0.3.1** |
+| Version in this repository | **0.3.2** | **0.3.2** |
 | Status | **Rust-first recommended Windows preview**; experimental, installed native acceptance incomplete | **Established fallback**, maintained during the Rust transition |
 | UI | Familiar Orbit HTML/CSS/JavaScript in WebView2 | Familiar Orbit HTML/CSS/JavaScript in Electron |
 | Backend | Native Rust for library, discovery, tracking, artwork and backups | Node.js/Electron, with a native Windows process helper |
@@ -47,7 +47,7 @@ The editions have **different application IDs and data directories** (`com.orbit
 
 **Direction:** starting with **0.2.8**, make the fast, local-first Rust/Tauri preview the **recommended Windows download to try**, then strengthen native reliability and develop library organization, a console-quality controller experience, and optional offline intelligence. Keep Electron as the fallback during the transition; do not sacrifice libraries or playtime history to accelerate a version bump.
 
-These are **engineering milestones, not promises of public binary availability or dates**. Electron and Rust currently use version `0.3.1` in source. Rust-first is a **release/download preference**, not a claim that native Windows parity is proven. Rust `0.2.7` established the preceding reliability groundwork; see the [full changelog](CHANGELOG.md).
+These are **engineering milestones, not promises of public binary availability or dates**. Electron and Rust currently use version `0.3.2` in source. Rust-first is a **release/download preference**, not a claim that native Windows parity is proven. Rust `0.2.7` established the preceding reliability groundwork; see the [full changelog](CHANGELOG.md).
 
 | Milestone | Theme | Deliverable / exit criteria |
 | --- | --- | --- |

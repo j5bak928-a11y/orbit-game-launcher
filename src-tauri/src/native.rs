@@ -4,7 +4,6 @@
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, DirEntry};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
@@ -698,17 +697,12 @@ fn entries_at(dir: &Path, budget: usize) -> Result<(Vec<DirEntry>, bool), String
 }
 
 fn small_text(file: &Path) -> Result<String, String> {
-    let stat = fs::metadata(file).map_err(|e| e.to_string())?;
-    if !stat.is_file() || stat.len() > MANIFEST_BYTES {
-        return Err("Manifest too large or not a regular file".into());
-    }
-    let bytes = fs::read(file).map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > MANIFEST_BYTES {
-        return Err("Manifest too large".into());
-    }
+    let bytes = crate::files::read_regular_bounded(file, MANIFEST_BYTES)?;
     String::from_utf8(bytes).map_err(|_| "Manifest is not UTF-8".into())
 }
 
+/// Check containment against resolved paths and return the original joined path
+/// so existing launch paths retain their spelling. This check is point-in-time.
 fn contained_file(root: &Path, relative: &str) -> Option<PathBuf> {
     if !safe_text(relative, 4_000) {
         return None;
@@ -1619,24 +1613,9 @@ fn discover_battlenet_at(database: &Path) -> (Vec<Value>, Vec<String>) {
     if !database.is_file() {
         return (games, warnings);
     }
-    let bytes = (|| -> Result<Vec<u8>, String> {
-        let metadata = fs::metadata(database).map_err(|e| e.to_string())?;
-        if !metadata.is_file() || metadata.len() > MANIFEST_BYTES {
-            return Err("Battle.net product.db exceeds metadata size limit".into());
-        }
-        // Bound actual bytes read even if the Agent replaces its file after
-        // the metadata check. Never follow a product entry to read content.
-        let mut file = fs::File::open(database)
-            .map_err(|e| e.to_string())?
-            .take(MANIFEST_BYTES + 1);
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-        if bytes.len() as u64 > MANIFEST_BYTES {
-            return Err("Battle.net product.db exceeds metadata size limit".into());
-        }
-        Ok(bytes)
-    })();
-    let products = bytes.and_then(|bytes| battlenet_products(&bytes));
+    let products = crate::files::read_regular_bounded(database, MANIFEST_BYTES)
+        .map_err(|error| format!("Cannot read Battle.net product.db: {error}"))
+        .and_then(|bytes| battlenet_products(&bytes));
     match products {
         Ok(products) => {
             for (code, install) in products {
@@ -1693,11 +1672,13 @@ fn discover_battlenet() -> (Vec<Value>, Vec<String>) {
 // Unlike a start-tag regex, it rejects unmatched/misnested closing tags,
 // duplicate XML attributes and a second root. Every requested field is only
 // returned after the ENTIRE manifest has passed structure validation.
-fn xbox_xml_tags(source: &str, wanted: &str) -> Option<Vec<HashMap<String, String>>> {
+type XboxAttributes = HashMap<String, String>;
+
+fn xbox_xml_tags(source: &str) -> Option<HashMap<&str, XboxAttributes>> {
     if source.len() > 128 * 1024 {
         return None;
     }
-    let mut tags = Vec::new();
+    let mut tags = HashMap::new();
     let mut remaining = source.trim_start_matches('\u{feff}');
     let mut visits = 0;
     let mut stack: Vec<&str> = Vec::new();
@@ -1837,8 +1818,10 @@ fn xbox_xml_tags(source: &str, wanted: &str) -> Option<Vec<HashMap<String, Strin
         if !valid_parent {
             return None;
         }
-        if name == wanted {
-            tags.push(attrs);
+        if matches!(name, "Identity" | "ShellVisuals" | "ExecutableList" | "Executable")
+            && tags.insert(name, attrs).is_some()
+        {
+            return None;
         }
         if !self_closing {
             stack.push(name);
@@ -1916,65 +1899,69 @@ fn xml_unescape_attribute(raw: &str) -> Option<String> {
     Some(result)
 }
 
-fn xbox_from_manifest(root: &Path, file: &Path) -> Option<Value> {
-    if fs::metadata(file).ok()?.len() > 128 * 1024 {
-        return None;
-    }
-    let doc = small_text(file).ok()?;
-    if xbox_xml_tags(&doc, "Game")?.len() != 1 || xbox_xml_tags(&doc, "ExecutableList")?.len() != 1
-    {
-        return None;
-    }
-    let identities = xbox_xml_tags(&doc, "Identity")?;
-    if identities.len() != 1 {
-        return None;
-    }
-    let identity = identities.into_iter().next()?;
+struct XboxManifest {
+    id: String,
+    title: String,
+    owner: PathBuf,
+    executable: PathBuf,
+    visuals: XboxAttributes,
+    executable_attributes: XboxAttributes,
+}
+
+fn read_xbox_manifest(root: &Path, file: &Path) -> Option<XboxManifest> {
+    let bytes = crate::files::read_regular_bounded(file, 128 * 1024).ok()?;
+    let doc = std::str::from_utf8(&bytes).ok()?;
+    let mut tags = xbox_xml_tags(doc)?;
+    let identity = tags.remove("Identity")?;
     let id = identity.get("Name")?;
     let publisher = identity.get("Publisher")?;
     if !valid_app_id(id) || !safe_text(publisher, 256) {
         return None;
     }
-    // Most Gaming Services installations keep the manifest/executable in
-    // <title>/Content. Keep the title-level root for identity and dedup.
+    // Most Gaming Services installations keep the manifest and executable in
+    // <title>/Content. Keep the title-level root for identity and deduplication.
     let owner = if filename(root).eq_ignore_ascii_case("Content") {
         root.parent().unwrap_or(root)
     } else {
         root
     };
-    let visuals = xbox_xml_tags(&doc, "ShellVisuals")?;
-    if visuals.len() != 1 {
-        return None;
-    }
+    let visuals = tags.remove("ShellVisuals")?;
     let title = visuals
-        .into_iter()
-        .next()
-        .and_then(|shell| shell.get("DefaultDisplayName").cloned())
+        .get("DefaultDisplayName")
         .filter(|name| valid_title(name) && !name.starts_with("ms-resource:"))
+        .cloned()
         .unwrap_or_else(|| clean_name(&filename(owner)));
     if !valid_title(&title) {
         return None;
     }
-    let entries = xbox_xml_tags(&doc, "Executable")?;
-    if entries.len() != 1 {
-        return None;
-    }
-    let entry = entries.first()?;
-    if entry
+    let executable_attributes = tags.remove("Executable")?;
+    if executable_attributes
         .get("IsDevOnly")
         .is_some_and(|v| v.eq_ignore_ascii_case("true"))
-        || entry
+        || executable_attributes
             .get("TargetDeviceFamily")
             .is_some_and(|v| !v.eq_ignore_ascii_case("PC"))
     {
         return None;
     }
-    let executable = entry
+    let executable = executable_attributes
         .get("Name")
         .and_then(|name| contained_file(root, name))
         .filter(|file| extension(file) == "exe" && !ignored_executable(file))?;
-    Some(json!({"name":title,"source":"xbox","source_id":id,
-        "install_path":owner,"executable":executable,"tags":[]}))
+    Some(XboxManifest {
+        id: id.clone(),
+        title,
+        owner: owner.to_path_buf(),
+        executable,
+        visuals,
+        executable_attributes,
+    })
+}
+
+fn xbox_from_manifest(root: &Path, file: &Path) -> Option<Value> {
+    let manifest = read_xbox_manifest(root, file)?;
+    Some(json!({"name":manifest.title,"source":"xbox","source_id":manifest.id,
+        "install_path":manifest.owner,"executable":manifest.executable,"tags":[]}))
 }
 
 /// Resolve official Microsoft GDK logo assets from the installed package's
@@ -2000,20 +1987,17 @@ pub(crate) fn xbox_logo_paths(game: &Value) -> Vec<PathBuf> {
     };
     let mut images = Vec::new();
     for root in [owner.to_path_buf(), owner.join("Content")] {
-        let manifest = root.join("MicrosoftGame.config");
-        if !manifest.is_file()
-            || !fs::canonicalize(&manifest).is_ok_and(|path| path.starts_with(&owner_canonical))
-        {
-            continue;
-        }
-        let Some(discovered) = xbox_from_manifest(&root, &manifest) else {
+        let Ok(manifest) = fs::canonicalize(root.join("MicrosoftGame.config")) else {
             continue;
         };
-        if discovered["source_id"] != source_id
-            || !discovered["install_path"]
-                .as_str()
-                .and_then(|path| fs::canonicalize(path).ok())
-                .is_some_and(|path| path == owner_canonical)
+        if !manifest.starts_with(&owner_canonical) {
+            continue;
+        }
+        let Some(discovered) = read_xbox_manifest(&root, &manifest) else {
+            continue;
+        };
+        if discovered.id != source_id
+            || !fs::canonicalize(&discovered.owner).is_ok_and(|path| path == owner_canonical)
         {
             continue;
         }
@@ -2023,26 +2007,13 @@ pub(crate) fn xbox_logo_paths(game: &Value) -> Vec<PathBuf> {
             .as_str()
             .filter(|value| !value.is_empty())
         {
-            let verified = discovered["executable"]
-                .as_str()
-                .and_then(|value| fs::canonicalize(value).ok());
-            if fs::canonicalize(saved).ok() != verified {
+            let Ok(verified) = fs::canonicalize(&discovered.executable) else {
+                continue;
+            };
+            if !fs::canonicalize(saved).is_ok_and(|path| path == verified) {
                 continue;
             }
         }
-        let Ok(document) = small_text(&manifest) else {
-            continue;
-        };
-        let Some(shell) = xbox_xml_tags(&document, "ShellVisuals")
-            .and_then(|items| (items.len() == 1).then_some(items))
-            .and_then(|mut items| items.pop())
-        else {
-            continue;
-        };
-        let executable = xbox_xml_tags(&document, "Executable")
-            .and_then(|items| (items.len() == 1).then_some(items))
-            .and_then(|mut items| items.pop())
-            .unwrap_or_default();
         let visual_keys = [
             ("OverrideSquare480x480Logo", true),
             ("OverrideLogo", true),
@@ -2054,9 +2025,9 @@ pub(crate) fn xbox_logo_paths(game: &Value) -> Vec<PathBuf> {
         ];
         for (key, override_asset) in visual_keys {
             let relative = if override_asset {
-                executable.get(key)
+                discovered.executable_attributes.get(key)
             } else {
-                shell.get(key)
+                discovered.visuals.get(key)
             };
             let Some(relative) = relative else { continue };
             if !relative.to_ascii_lowercase().ends_with(".png") {
@@ -2452,14 +2423,25 @@ pub fn launch_game(game: &Value) -> Result<Value, String> {
     Ok(json!({"mode":"process","pid":pid,"tracked":true,"message":"Game launched."}))
 }
 
-pub fn poll_sessions() -> Result<Value, String> {
+pub fn poll_sessions(launching: &HashSet<String>) -> Result<Value, String> {
     let mut active = direct()
         .lock()
         .map_err(|_| "Process tracker unavailable.")?;
+    Ok(poll_direct_sessions(&mut active, launching))
+}
+
+fn poll_direct_sessions(
+    active: &mut HashMap<String, DirectSession>,
+    launching: &HashSet<String>,
+) -> Value {
     let mut completed = Vec::new();
     let mut running = Vec::new();
     let mut checkpoints = Vec::new();
+    let mut first_error = None;
     for (id, session) in active.iter_mut() {
+        if launching.contains(id) {
+            continue;
+        }
         match session.child.try_wait() {
             Ok(None) => {
                 running.push(id.clone());
@@ -2468,13 +2450,15 @@ pub fn poll_sessions() -> Result<Value, String> {
             Ok(Some(status)) => completed.push(
                 json!({"game_id":id,"seconds":session.clock.seconds(),"exitCode":status.code()}),
             ),
-            Err(error) => return Err(format!("Unable to check game process: {error}")),
+            Err(error) => {
+                first_error.get_or_insert_with(|| format!("Unable to check game process: {error}"));
+            }
         }
     }
     for result in &completed {
         active.remove(field(result, "game_id"));
     }
-    Ok(json!({"completed":completed,"runningIds":running,"checkpoints":checkpoints}))
+    json!({"completed":completed,"runningIds":running,"checkpoints":checkpoints,"error":first_error})
 }
 
 pub fn suspend_sessions() -> Result<Value, String> {
@@ -2594,11 +2578,7 @@ fn find_nearby_artwork(executable: &Path, game_name: &str) -> Option<PathBuf> {
     }
     candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     candidates.into_iter().take(16).find_map(|(path, _)| {
-        let size = fs::metadata(&path).ok()?.len();
-        if size == 0 || size > 15 * 1024 * 1024 {
-            return None;
-        }
-        let bytes = fs::read(&path).ok()?;
+        let bytes = crate::files::read_regular_bounded(&path, 15 * 1024 * 1024).ok()?;
         if is_portrait_image(&bytes) {
             Some(path)
         } else {
@@ -3469,15 +3449,46 @@ mod tests {
         let doc = r#"<Game><!-- <Identity Name="fake" Publisher="CN=Fake"/> -->
           <Identity Name="real.game" Publisher="CN=Real"/>
           <ShellVisuals DefaultDisplayName="Real Game"/></Game>"#;
-        let identities = xbox_xml_tags(doc, "Identity").unwrap();
-        assert_eq!(identities.len(), 1);
-        assert_eq!(identities[0]["Name"], "real.game");
-        assert!(xbox_xml_tags("<Game><!ENTITY evil SYSTEM 'secret'></Game>", "Game").is_none());
+        let tags = xbox_xml_tags(doc).unwrap();
+        assert_eq!(tags["Identity"]["Name"], "real.game");
+        assert!(xbox_xml_tags("<Game><!ENTITY evil SYSTEM 'secret'></Game>").is_none());
         assert_eq!(
             xml_unescape_attribute("A &amp; B &#x26; C").as_deref(),
             Some("A & B & C")
         );
         assert!(xml_unescape_attribute("&secret;").is_none());
+    }
+
+    #[test]
+    fn exited_direct_process_waits_for_its_launch_reservation_to_clear() {
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .arg("--list")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        assert!(child.wait().unwrap().success());
+        let id = "fast-exit".to_string();
+        let mut active = HashMap::from([(
+            id.clone(),
+            DirectSession {
+                child,
+                clock: SessionClock::new(),
+            },
+        )]);
+        let mut launching = HashSet::from([id.clone()]);
+        let in_flight = poll_direct_sessions(&mut active, &launching);
+        assert_eq!(in_flight["completed"], json!([]));
+        assert!(active.contains_key(&id));
+
+        launching.remove(&id); // The SQLite session is now registered.
+        let registered = poll_direct_sessions(&mut active, &launching);
+        assert_eq!(registered["completed"][0]["game_id"], id);
+        assert!(active.is_empty());
+        assert_eq!(
+            poll_direct_sessions(&mut active, &launching)["completed"],
+            json!([])
+        );
     }
 
     #[test]

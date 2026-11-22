@@ -63,6 +63,33 @@ impl OrbitState {
     }
 }
 
+pub(crate) fn apply_window_theme<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    theme: Option<&str>,
+) {
+    let tauri_theme = match theme {
+        Some("light") => Some(tauri::Theme::Light),
+        Some("dark") => Some(tauri::Theme::Dark),
+        _ => None,
+    };
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_theme(tauri_theme);
+    }
+}
+
+pub(crate) fn sync_saved_window_theme<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let theme = app
+        .try_state::<OrbitState>()
+        .and_then(|state| state.db.lock().ok().and_then(|db| db.get_settings().ok()))
+        .and_then(|settings| {
+            settings
+                .get("theme")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        });
+    apply_window_theme(app, theme.as_deref());
+}
+
 fn lock_or_err<'a, T>(mutex: &'a Mutex<T>, label: &str) -> Result<MutexGuard<'a, T>, String> {
     mutex
         .lock()
@@ -1190,6 +1217,10 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
         }
         "saveSettings" => {
             let settings = lock_or_err(&state.db, "database")?.save_settings(argument(args, 0)?)?;
+            apply_window_theme(
+                app,
+                settings.get("theme").and_then(serde_json::Value::as_str),
+            );
             emit(app, json!({"type":"settingsChanged","settings":settings}));
             if argument(args, 0)?.get("useSteamArtwork").is_some()
                 || argument(args, 0)?.get("performanceGuard").is_some()
@@ -2143,6 +2174,7 @@ pub fn run() {
                 .map_err(std::io::Error::other)?;
             app.manage(ControllerReturn::default());
             app.manage(OrbitState::new(db, data_dir, artwork_dir));
+            sync_saved_window_theme(app.handle());
             #[cfg(target_os = "windows")]
             tray::install_tray(app).map_err(std::io::Error::other)?;
             queue_artwork_scan(app.handle());

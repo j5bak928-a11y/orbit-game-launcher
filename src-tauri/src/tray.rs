@@ -558,6 +558,7 @@ pub fn open_orbit<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
                 let _ = window.destroy();
                 return Ok(());
             }
+            crate::sync_saved_window_theme(&handle);
             if let Ok(placement) = handle.state::<TrayState>().placement.lock() {
                 if let Some(placement) = placement.as_ref() {
                     let _ = window.set_size(tauri::Size::Physical(placement.size));

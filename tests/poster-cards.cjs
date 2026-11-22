@@ -91,7 +91,7 @@ test('poster cards keep the existing Orbit shell and expose working artwork acti
  assert.equal(initial.caption,'0','metadata is quiet until card selection');
  assert.equal(await card.locator('.favorite-float').evaluate(x=>getComputedStyle(x).opacity),'0',
   'unselected favorite stays hidden when the card is idle');
- await card.focus();
+ await card.locator('.card-open-trigger').focus();
  await page.waitForFunction(()=>getComputedStyle(document.querySelector('.poster-card .favorite-float')).opacity==='1');
  await page.waitForFunction(()=>getComputedStyle(document.querySelector('.poster-card .cover-play')).opacity==='1');
  await assertPlayAccentPaint(card.locator('.cover-play'));
@@ -167,15 +167,16 @@ test('poster cards keep the existing Orbit shell and expose working artwork acti
  assert.equal(await page.locator('#game-actions-popup').count(),0,'Escape closes game card menu');
  await card.locator('.cover-play').click();
  await page.waitForFunction(()=>document.querySelector('.poster-card')?.querySelector('.game-meta')?.textContent.includes('Playing now'));
+ assert.equal(await card.locator('.cover-live-badge').count(),1,'live Playing badge renders while game is active');
  assert.equal(await page.locator('[role=dialog]').count(),0,'Play does not open the details dialog');
- await card.focus();await page.keyboard.press('Enter');
+ await card.locator('.card-open-trigger').focus();await page.keyboard.press('Enter');
  await page.locator('[role=dialog]').waitFor();
  const modalFavorite=page.locator('.showcase-favorite');
  assert.equal(await modalFavorite.getAttribute('aria-pressed'),'true');
  assert.equal(await modalFavorite.locator('svg').evaluate(x=>getComputedStyle(x).fill),'rgb(139, 122, 255)',
   'favorited game details show a solid purple heart');
  await page.keyboard.press('Escape');
- assert(await page.locator('.poster-card').first().evaluate(node=>document.activeElement===node),'Escape restores card focus');
+ assert(await page.locator('.poster-card').first().evaluate(node=>document.activeElement===node.querySelector('.card-open-trigger')),'Escape restores card focus');
  await page.locator('[data-action=view][data-view=list]').click();
  const listFavorite=page.locator('.game-row').first().locator('[data-action=favorite]');
  await listFavorite.waitFor();

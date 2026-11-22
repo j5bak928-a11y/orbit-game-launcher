@@ -10,8 +10,8 @@ body[data-controller-mode="true"] #toast-root {
 	--tv-border: #ffffff12;
 	--tv-text: #f4f2fa;
 	--tv-muted: #a1a1b1;
-	--tv-focus: #aa94ff;
-	--tv-accent: #b6a7e9;
+	--tv-focus: var(--accent, #8b7aff);
+	--tv-accent: var(--accent-text, var(--accent, #b6a7e9));
 	position: fixed;
 	inset: 0;
 	z-index: 90;
@@ -25,9 +25,9 @@ body[data-theme="light"] .controller-shell {
 	--tv-panel: #fff;
 	--tv-border: #201a321a;
 	--tv-text: #211d2b;
-	--tv-muted: #696273;
-	--tv-focus: #7651cf;
-	--tv-accent: #7055af;
+	--tv-muted: #4b5058;
+	--tv-focus: var(--accent-text, var(--accent, #503fd1));
+	--tv-accent: var(--accent-text, var(--accent, #503fd1));
 }
 .tv-stage {
 	height: 100%;
@@ -48,30 +48,31 @@ body[data-theme="light"] .controller-shell {
 .tv-brand {
 	display: flex;
 	align-items: center;
-	gap: 22px;
+	gap: 20px;
 }
-.tv-brand img {
-	width: 155px;
-	height: auto;
-	mix-blend-mode: lighten;
+.tv-brand-lockup {
+	display: inline-flex;
+	align-items: center;
+	gap: 11px;
 }
-.tv-brand span {
+.tv-brand-mark {
+	width: 30px;
+	height: 30px;
+	object-fit: contain;
+}
+.tv-brand-word {
+	font-family: Orbit UI, "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
+	font-size: 21px;
+	font-weight: 760;
+	letter-spacing: -0.045em;
+	color: var(--tv-text);
+}
+.tv-brand > span:not(.tv-brand-lockup) {
 	color: var(--tv-muted);
-	font-size: 10px;
-	letter-spacing: 2px;
+	font-size: 12px;
+	letter-spacing: 1.8px;
 	border-left: 1px solid var(--tv-border);
-	padding-left: 22px;
-}
-.tv-logo-light {
-	display: none;
-}
-body[data-theme="light"] .tv-logo-dark {
-	display: none;
-}
-body[data-theme="light"] .tv-logo-light {
-	display: block;
-	mix-blend-mode: darken;
-	filter: brightness(1.045);
+	padding-left: 20px;
 }
 .tv-header-actions {
 	display: flex;
@@ -911,7 +912,6 @@ body[data-theme="light"] .tv-sheet .tv-fallback-dark {
 	aspect-ratio: 1;
 	border: 1px solid #b3a0fb40;
 	border-radius: 50%;
-	box-shadow: 0 0 65px #9d82f714, inset 0 0 60px #9d82f714;
 }
 .tv-orbit-ring-two {
 	width: min(23vw, 240px);
@@ -975,7 +975,7 @@ body[data-theme="light"] .tv-sheet .tv-fallback-dark {
 }
 body[data-theme="light"] .tv-spotlight {
 	border-color: #34295738;
-	box-shadow: 0 14px 36px #2c194c1c;
+	box-shadow: 0 14px 36px rgba(0, 0, 0, 0.14);
 }
 body[data-theme="light"] .tv-spotlight-empty .tv-logo-dark {
 	/* The hero stays dark in the light theme. Use the dark-surface logo,

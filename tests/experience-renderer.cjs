@@ -59,7 +59,7 @@ const settle=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
   assert.equal(await page.locator('[role=dialog] .detail-playtime').count(),1);
   assert.equal(await page.locator('[role=dialog].detail-showcase').count(),1,'game details use the cinematic showcase');
   assert.equal(await page.locator('[role=dialog] .showcase-play').count(),1,'showcase has a dedicated Play action');
-  assert.equal(await page.locator('[role=dialog] [data-action=edit]').count(),0,'editing stays in the compact game-card dropdown');
+  assert.equal(await page.locator('[role=dialog] .showcase-manage [data-action=edit]').count(),1,'Game details exposes management actions');
   await page.keyboard.press('Escape');
   await page.evaluate(()=>window.fixture.patch(window.fixture.id(1),{name:'Game 00000'}));
   await page.locator('#global-search').fill('');
@@ -73,9 +73,9 @@ const settle=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
   await page.keyboard.press('Control+k');assert(await page.locator('#global-search').evaluate(node=>node===document.activeElement));
   await page.locator('#global-search').fill('Game 00003');
   await page.waitForFunction(()=>document.querySelectorAll('.game-card').length===1);
-  await page.locator('.game-card').focus();await page.keyboard.press('Enter');await page.locator('[role=dialog]').waitFor();
+  await page.locator('.game-card .card-open-trigger').focus();await page.keyboard.press('Enter');await page.locator('[role=dialog]').waitFor();
   await page.keyboard.press('Tab');assert(await page.locator('[role=dialog]').evaluate(node=>node.contains(document.activeElement)));
-  await page.keyboard.press('Escape');assert(await page.locator('.game-card').evaluate(node=>node===document.activeElement));
+  await page.keyboard.press('Escape');assert(await page.locator('.game-card .card-open-trigger').evaluate(node=>node===document.activeElement));
   await page.locator('#global-search').fill('');await settle(page);
   await page.locator('.library-page .page-heading [data-action=scan]').click();
   assert.equal(await page.locator('.library-page .page-heading [data-action=scan]').getAttribute('aria-busy'),'true');
@@ -217,18 +217,18 @@ const settle=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
    const fixture=await fixturePage(3);
    await fixture.evaluate(count=>{for(let index=1;index<=count;index++)window.fixture.patch(window.fixture.id(index),{last_played_at:'2026-10-24T00:00:00.000Z'});},playedCount);
    await settle(fixture);
-   const visible=await fixture.locator('.continue-card:visible').count(),expected=Math.min(playedCount,2);
+   const visible=await fixture.locator('.continue-card:visible').count(),expected=Math.min(Math.max(0,playedCount-1),2);
    if(visible!==expected)reviewFailures.push(`910px continuation with ${playedCount} played games: expected ${expected} visible, got ${visible}`);
    await fixture.close();
   }
   {
-   const fixture=await fixturePage(0),shuffle=fixture.locator('.sidebar [data-action=shuffle]');
-   assert(await shuffle.isDisabled(),'an empty library cannot suggest a game');
+   const fixture=await fixturePage(0),shuffle=fixture.locator('.home-page [data-action=shuffle]');
+   assert.equal(await shuffle.count(),0,'an empty library hides the Choose for me suggestion action');
    const id=await fixture.evaluate(async()=>{const result=await window.orbit.addGame({name:'First fixture',source:'manual',executable:'C:/Fixture/Game.exe',tags:[]});return result.game.id;});
    await settle(fixture);
-   if(await shuffle.isDisabled())reviewFailures.push('adding the first game must enable sidebar suggestions without navigation');
+   if(await shuffle.count()!==1||await shuffle.isDisabled())reviewFailures.push('adding the first game must enable hero suggestions without navigation');
    await fixture.evaluate(id=>window.orbit.removeGame(id),id);await settle(fixture);
-   if(!await shuffle.isDisabled())reviewFailures.push('removing the last game must disable sidebar suggestions without navigation');
+   if(await shuffle.count()!==0)reviewFailures.push('removing the last game must hide hero suggestions without navigation');
    await fixture.close();
   }
   {

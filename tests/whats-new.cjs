@@ -26,7 +26,7 @@ const server=http.createServer((request,response)=>{
   const context=await browser.newContext({viewport:{width:910,height:610},locale:'nl-NL'});
   const page=await context.newPage(),errors=[];
   page.on('pageerror',error=>errors.push(error.message));
-  await page.addInitScript({content:`(${installFixture.toString()})({count:7});const bootstrap=window.orbit.bootstrap;window.orbit.bootstrap=async()=>({...await bootstrap(),version:'0.3.3'});window.fixtureLaunches=0;const launch=window.orbit.launchGame;window.orbit.launchGame=(...args)=>{window.fixtureLaunches++;return launch(...args)};`});
+  await page.addInitScript({content:`(${installFixture.toString()})({count:7});const bootstrap=window.orbit.bootstrap;window.orbit.bootstrap=async()=>({...await bootstrap(),version:'0.3.4'});window.fixtureLaunches=0;const launch=window.orbit.launchGame;window.orbit.launchGame=(...args)=>{window.fixtureLaunches++;return launch(...args)};`});
   const url=`http://127.0.0.1:${server.address().port}/src/ui/index.html`;
   await page.goto(url);
   const dialog=page.locator('.whats-new-dialog');
@@ -68,9 +68,9 @@ const server=http.createServer((request,response)=>{
   }
   assert.equal(await dialog.getAttribute('aria-modal'),'true');
   assert.match(await dialog.locator('#dialog-title').textContent(),/nieuw|neu|new/i);
-  assert.equal(await page.locator('.whats-new-version').count(),9,'0.3.3 through 0.2.7 changes are visible');
+  assert.equal(await page.locator('.whats-new-version').count(),10,'0.3.4 through 0.2.7 changes are visible');
   const allText=await dialog.textContent();
-  for(const phrase of ['0.3.3','0.3.2','0.3.1','0.3.0','0.2.11','0.2.10','0.2.9','0.2.8','0.2.7','Rust','Electron','Menu/Options','Nederlands']){
+  for(const phrase of ['0.3.4','0.3.3','0.3.2','0.3.1','0.3.0','0.2.11','0.2.10','0.2.9','0.2.8','0.2.7','Rust','Electron','Menu/Options','Nederlands']){
    assert(allText.includes(phrase),`changelog includes ${phrase}`);
   }
   assert.equal(await page.evaluate(()=>window.fixtureLaunches),0,'onboarding never starts a game');
@@ -112,7 +112,7 @@ const server=http.createServer((request,response)=>{
   assert(await dialog.evaluate(el=>el.contains(document.activeElement)),'keyboard focus remains in dialog');
   await dialog.locator('[data-action=close-modal].primary-btn').click();
   await dialog.waitFor({state:'detached'});
-  assert.equal(await page.evaluate(()=>localStorage.getItem('orbit.whatsNew.lastAcknowledgedVersion')),'0.3.3');
+  assert.equal(await page.evaluate(()=>localStorage.getItem('orbit.whatsNew.lastAcknowledgedVersion')),'0.3.4');
   await page.reload();
   await page.locator('[data-route=settings]').waitFor();
   assert.equal(await dialog.count(),0,'already seen notes are not shown on each start');
@@ -153,12 +153,12 @@ const server=http.createServer((request,response)=>{
   // Real app starts with the persisted acknowledgment already present in WebView2.
   // Each scenario uses its own isolated browser context; no live profile is opened.
   for(const {version,acknowledged,denied,visible} of [
-   {version:'0.3.3',acknowledged:'0.3.3',visible:false},
-   {version:'0.3.3',acknowledged:'0.3.2',visible:true},
-   {version:'0.3.3+build.1',visible:true},
-   {version:'0.3.3.0',visible:true},
-   {version:'0.3.2',visible:false},
-   {version:'0.3.3',denied:true,visible:true},
+   {version:'0.3.4',acknowledged:'0.3.4',visible:false},
+   {version:'0.3.4',acknowledged:'0.3.3',visible:true},
+   {version:'0.3.4+build.1',visible:true},
+   {version:'0.3.4.0',visible:true},
+   {version:'0.3.3',visible:false},
+   {version:'0.3.4',denied:true,visible:true},
   ]){
    const isolated=await browser.newContext({viewport:{width:910,height:610},locale:'en-US'});
    try{

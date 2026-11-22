@@ -258,8 +258,7 @@ fn native_label(text: &str) -> String {
 fn tray_translations() -> Result<&'static serde_json::Value, String> {
     static TRANSLATIONS: OnceLock<Result<serde_json::Value, String>> = OnceLock::new();
     match TRANSLATIONS.get_or_init(|| {
-        serde_json::from_str(include_str!("../../src/core/tray-labels.json"))
-            .map_err(|e| e.to_string())
+        serde_json::from_str(include_str!("../tray-labels.json")).map_err(|e| e.to_string())
     }) {
         Ok(value) => Ok(value),
         Err(error) => Err(error.clone()),

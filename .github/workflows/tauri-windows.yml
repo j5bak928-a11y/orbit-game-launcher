@@ -42,13 +42,11 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked
       - name: Build unsigned Windows desktop installers
         run: npm run tauri:build
-      - name: Compare JavaScript and Rust SQLite engines on this runner
+      - name: Run Rust SQLite benchmark
         shell: pwsh
         continue-on-error: true
         run: |
           New-Item -ItemType Directory -Force -Path reports/native-benchmarks | Out-Null
-          npm run bench | Tee-Object -FilePath reports/native-benchmarks/electron-node.txt
-          if ($LASTEXITCODE -ne 0) { throw 'JavaScript benchmark failed' }
           cargo run --release --manifest-path src-tauri/Cargo.toml --locked --example benchmark | Tee-Object -FilePath reports/native-benchmarks/rust.txt
           if ($LASTEXITCODE -ne 0) { throw 'Rust benchmark failed' }
       - name: Upload benchmark evidence

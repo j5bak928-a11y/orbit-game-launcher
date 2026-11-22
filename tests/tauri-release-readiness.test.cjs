@@ -9,25 +9,33 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const {spawnSync} = require('node:child_process');
-const {gzipSync} = require('node:zlib');
-const {createPortableBackup, decodePortableBackup} = require('../src/core/backup.cjs');
+const {gunzipSync, gzipSync} = require('node:zlib');
 
 const root = path.resolve(__dirname, '..');
 const read = relative => fs.readFileSync(path.join(root, relative), 'utf8');
 const tauri = JSON.parse(read('src-tauri/tauri.conf.json'));
 const capability = JSON.parse(read('src-tauri/capabilities/default.json'));
 const pkg = JSON.parse(read('package.json'));
+const lock = JSON.parse(read('package-lock.json'));
 
-function releaseConfigProblems(config, caps, electron) {
+function decodePortableBackup(bytes) {
+  return JSON.parse(gunzipSync(bytes).toString('utf8'));
+}
+
+function releaseConfigProblems(config, caps, packageJson, lockJson) {
   const problems = [];
   const version = read('src-tauri/Cargo.toml').match(/^\[package\][\s\S]*?^version\s*=\s*"([^"]+)"/m)?.[1];
-  if (!version || config.version !== version) problems.push('Tauri and Rust versions differ');
-  if (config.identifier !== 'com.orbitlauncher.rustpreview' ||
-      config.identifier === electron.build?.appId) problems.push('Preview identity is unsafe');
-  if (!/rust preview/i.test(config.productName || '')) problems.push('Preview branding missing');
+  if (!version || config.version !== version || packageJson.version !== version) {
+    problems.push('Tauri, Cargo and package.json versions differ');
+  }
+  if (lockJson.version !== version || lockJson.packages?.['']?.version !== version) {
+    problems.push('package-lock.json version differs');
+  }
+  if (config.identifier !== 'com.orbitlauncher.desktop') problems.push('App identifier changed');
+  if (config.productName !== 'Orbit Launcher') problems.push('Product name must remain Orbit Launcher');
   if (config.bundle?.active !== true ||
       JSON.stringify([...(config.bundle.targets || [])].sort()) !== JSON.stringify(['msi','nsis'])) {
-    problems.push('Unsigned review targets must remain limited to NSIS/MSI');
+    problems.push('Unsigned release targets must remain limited to NSIS/MSI');
   }
   if (config.build?.frontendDist !== '../tauri-web' ||
       config.app?.withGlobalTauri !== true) problems.push('Local Tauri renderer configuration changed');
@@ -47,31 +55,37 @@ function releaseConfigProblems(config, caps, electron) {
   if (config.plugins?.updater || config.plugins?.shell || config.bundle?.publisher) {
     problems.push('Unexpected updater/shell/publisher configuration');
   }
+  if (packageJson.devDependencies?.electron || packageJson.devDependencies?.['electron-builder'] || packageJson.build) {
+    problems.push('Legacy Electron packaging dependencies remain in package.json');
+  }
   return problems;
 }
 
-test('Rust review installer has isolated identity, matching version, local window and no updater capability', () => {
-  assert.deepEqual(releaseConfigProblems(tauri, capability, pkg), []);
+test('Rust desktop installer has Orbit Launcher identity, matching versions, local window and no updater capability', () => {
+  assert.deepEqual(releaseConfigProblems(tauri, capability, pkg, lock), []);
 });
 
-test('release-contract validator rejects accidental promotion and updater/remote access', () => {
+test('release-contract validator rejects identifier drift, legacy Electron deps, and updater/remote access', () => {
   const promoted = structuredClone(tauri);
   const caps = structuredClone(capability);
-  promoted.identifier = pkg.build.appId;
-  promoted.productName = 'Orbit Launcher';
+  const badPkg = structuredClone(pkg);
+  promoted.identifier = 'com.example.other';
+  promoted.productName = 'Renamed';
   promoted.bundle.targets = ['nsis', 'msi', 'updater'];
   promoted.app.windows[0].url = 'https://untrusted.invalid/orbit';
   promoted.plugins = {updater:{active:true}};
+  badPkg.devDependencies = {electron:'45.0.0'};
   caps.windows = ['*'];
   caps.permissions.push('updater:default');
-  const problems = releaseConfigProblems(promoted, caps, pkg);
-  assert.ok(problems.some(message => /identity/i.test(message)));
-  assert.ok(problems.some(message => /branding/i.test(message)));
+  const problems = releaseConfigProblems(promoted, caps, badPkg, lock);
+  assert.ok(problems.some(message => /identifier/i.test(message)));
+  assert.ok(problems.some(message => /product name/i.test(message)));
   assert.ok(problems.some(message => /targets/i.test(message)));
   assert.ok(problems.some(message => /window/i.test(message)));
   assert.ok(problems.some(message => /capability/i.test(message)));
   assert.ok(problems.some(message => /privileged/i.test(message)));
   assert.ok(problems.some(message => /updater/i.test(message)));
+  assert.ok(problems.some(message => /electron/i.test(message)));
 });
 
 test('source integration contract keeps signed-update gate closed', () => {
@@ -84,9 +98,13 @@ test('source integration contract keeps signed-update gate closed', () => {
   assert.doesNotMatch(src, /tauri_plugin_updater|UpdaterExt|download_and_install/i);
 });
 
-test('Tauri first-run migration must snapshot read-only legacy SQLite to a different profile', () => {
+test('Tauri first-run migration must snapshot read-only prior Rust Preview or legacy Electron SQLite', () => {
   const src = read('src-tauri/src/lib.rs');
+  assert.match(src, /"com\.orbitlauncher\.rustpreview"/);
+  assert.match(src, /"orbit-game-launcher"/);
+  assert.match(src, /"Orbit Launcher"/);
   const migrate = src.slice(src.indexOf('fn import_legacy_library('), src.indexOf('fn valid_art_name('));
+  assert.match(migrate, /if old == destination/);
   assert.match(migrate, /if target_db\.exists\(\)\s*\{/);
   assert.match(migrate, /metadata\.len\(\) == 0/);
   assert.match(migrate, /return Ok\(\(\)\);/);
@@ -120,29 +138,22 @@ test('export/restore dialog cancellation occurs before any file or database muta
   assert.match(src.slice(src.indexOf('fn write_json_backup('), src.indexOf('fn argument(', src.indexOf('fn write_json_backup(')) > 0 ? src.indexOf('fn argument(', src.indexOf('fn write_json_backup(')) : src.length), /create_new\(true\)/);
 });
 
-test('actual portable backup encoder matches Rust format with synthetic metadata and three art fields', async t => {
-  const rootTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'orbit-release-contract-'));
-  t.after(() => fs.rmSync(rootTemp, {recursive:true, force:true}));
-  const artwork = path.join(rootTemp, 'artwork');
-  fs.mkdirSync(artwork);
+test('portable backup format contract in Rust covers envelope headers, artwork fields, and bounded gunzip', () => {
   const names = ['png', 'jpg', 'webp'].map(ext => crypto.randomUUID() + '.' + ext);
-  const png = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(20)]);
-  const jpg = Buffer.concat([Buffer.from('ffd8ff', 'hex'), Buffer.alloc(20)]);
-  const webp = Buffer.concat([Buffer.from('RIFF0000WEBP'), Buffer.alloc(20)]);
-  [png, jpg, webp].forEach((data, index) => {
-    fs.writeFileSync(path.join(artwork, names[index]), data);
-  });
   const library = {
     format:'orbit.library.v1', settings:{theme:'dark'},
     games:[{id:crypto.randomUUID(), name:'Offline Fixture', cover:names[0],
       banner:names[1], icon:names[2], total_play_seconds:1234}]
   };
-  const written = await createPortableBackup(library, artwork);
-  assert.equal(written.artworkCount, 3);
-  assert.equal(written.missingArtwork, 0);
-  const envelope = decodePortableBackup(written.bytes);
-  assert.deepEqual(envelope.library, library);
-  assert.deepEqual([...envelope.assets.keys()].sort(), [...names].sort());
+  const payload = gzipSync(Buffer.from(JSON.stringify({
+    format:'orbit.portable.v1',
+    library,
+    artwork:Object.fromEntries(names.map(name => [name, 'AAAA']))
+  })));
+  const decoded = decodePortableBackup(payload);
+  assert.equal(decoded.format, 'orbit.portable.v1');
+  assert.deepEqual(decoded.library, library);
+  assert.deepEqual(Object.keys(decoded.artwork).sort(), [...names].sort());
   const rust = read('src-tauri/src/backup.rs');
   assert.match(rust, /const PORTABLE_FORMAT: &str = "orbit\.portable\.v1"/);
   assert.match(rust, /const LIBRARY_FORMAT: &str = "orbit\.library\.v1"/);

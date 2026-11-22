@@ -33,7 +33,7 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-      - name: Install developer tools without downloading Electron
+      - name: Install developer tools
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Verify Chrome is available
         run: google-chrome --version

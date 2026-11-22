@@ -1,26 +1,22 @@
 {
   "name": "orbit-game-launcher",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "private": true,
-  "description": "Orbit — a fast, local-first desktop game launcher",
-  "main": "src/main.cjs",
+  "description": "Orbit — a fast, local-first Rust desktop game launcher",
   "license": "MIT",
   "author": "Orbit",
   "scripts": {
-    "start": "electron .",
-    "dev": "electron . --dev",
+    "start": "tauri dev",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "build:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/build-tauri-local-unsigned.ps1",
     "tauri:stage": "node scripts/prepare-tauri.cjs",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "test": "node --test tests/*.test.cjs",
-    "bench": "node tests/performance.cjs",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --locked --lib",
     "check": "node scripts/check.cjs",
-    "dist": "electron-builder",
-    "dist:win": "electron-builder --win nsis portable",
-    "dist:mac": "electron-builder --mac dmg zip",
-    "dist:linux": "electron-builder --linux AppImage deb",
     "lint": "npx --yes --package @biomejs/biome@2.6.2 biome lint src tests scripts --reporter=json --max-diagnostics=none | node scripts/lint-report.cjs",
-    "bench:tracking": "node tests/tracking-performance.cjs",
     "test:renderer": "node tests/library-renderer.cjs",
     "test:experience": "node tests/experience-renderer.cjs",
     "test:cinematic": "node tests/cinematic-v2.cjs",
@@ -35,74 +31,6 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.4",
-    "electron": "45.1.0",
-    "electron-builder": "^26.0.0",
     "playwright": "1.62.1"
-  },
-  "build": {
-    "buildVersion": "0.3.3",
-    "appId": "com.orbitlauncher.desktop",
-    "productName": "Orbit Launcher",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "src/**/*",
-      "assets/**/*",
-      "package.json",
-      "README.md",
-      "!**/*.map"
-    ],
-    "asar": true,
-    "win": {
-      "icon": "assets/icon.ico",
-      "target": [
-        "nsis",
-        "portable"
-      ],
-      "extraResources": [
-        {
-          "from": "assets/bin/orbit-process-list.exe",
-          "to": "bin/orbit-process-list.exe"
-        }
-      ]
-    },
-    "mac": {
-      "icon": "assets/icon.png",
-      "target": [
-        "dmg",
-        "zip"
-      ],
-      "category": "public.app-category.games"
-    },
-    "linux": {
-      "icon": "assets/icon.png",
-      "target": [
-        "AppImage",
-        "deb"
-      ],
-      "category": "Game"
-    },
-    "nsis": {
-      "artifactName": "Orbit-Launcher-Setup-0.3.3.${ext}",
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true
-    },
-    "portable": {
-      "artifactName": "Orbit-Launcher-0.3.3.${ext}"
-    },
-    "electronFuses": {
-      "runAsNode": false,
-      "enableNodeOptionsEnvironmentVariable": false,
-      "enableNodeCliInspectArguments": false,
-      "enableEmbeddedAsarIntegrityValidation": true,
-      "onlyLoadAppFromAsar": true
-    },
-    "publish": {
-      "provider": "github",
-      "owner": "j5bak928-a11y",
-      "repo": "orbit-game-launcher",
-      "releaseType": "release"
-    }
   }
 }

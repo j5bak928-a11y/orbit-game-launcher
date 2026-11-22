@@ -69,37 +69,50 @@ fn lock_or_err<'a, T>(mutex: &'a Mutex<T>, label: &str) -> Result<MutexGuard<'a,
         .map_err(|_| format!("Orbit {label} lock is unavailable after an earlier error."))
 }
 
+const LEGACY_APP_DATA_DIRS: &[&str] = &[
+    "com.orbitlauncher.rustpreview",
+    "orbit-game-launcher",
+    "Orbit Launcher",
+];
+
+fn legacy_library_dir_in(roaming: &Path) -> Option<PathBuf> {
+    LEGACY_APP_DATA_DIRS
+        .iter()
+        .map(|name| roaming.join(name))
+        .find(|path| path.join("library.sqlite").is_file())
+}
+
 fn legacy_library_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
         let roaming = PathBuf::from(std::env::var_os("APPDATA")?);
-        for name in ["orbit-game-launcher", "Orbit Launcher"] {
-            let path = roaming.join(name);
-            if path.join("library.sqlite").is_file() {
-                return Some(path);
-            }
-        }
+        return legacy_library_dir_in(&roaming);
     }
+    #[cfg(not(target_os = "windows"))]
     None
 }
 
-// The first Tauri launch snapshots the old Electron database with SQLite's own
-// VACUUM INTO. Existing Electron data remains untouched and usable.
+// On first launch in a fresh profile directory, snapshot an existing Rust Preview
+// or legacy Electron database using read-only SQLite VACUUM INTO so older data
+// stays untouched on disk.
 fn import_legacy_library(destination: &Path) -> Result<(), String> {
     let Some(old) = legacy_library_dir() else {
         return Ok(());
     };
+    if old == destination {
+        return Ok(());
+    }
     import_legacy_library_from(&old, destination)
 }
 
-/// Separate source/destination arguments let us prove first-run migration on
-/// disposable SQLite/WAL fixtures, never on an installed Electron profile.
+/// Separate source/destination arguments let us verify first-run migration on
+/// disposable SQLite/WAL fixtures without touching real user profiles.
 fn import_legacy_library_from(old: &Path, destination: &Path) -> Result<(), String> {
     let target_db = destination.join("library.sqlite");
     if target_db.exists() {
         let metadata = std::fs::symlink_metadata(&target_db).map_err(|e| e.to_string())?;
         if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() == 0 {
-            return Err("Existing Rust library.sqlite is empty or not a safe regular file. Refusing to replace it or silently ignore the legacy Electron library; inspect or restore your backup manually.".into());
+            return Err("Existing Orbit library.sqlite is empty or not a safe regular file. Refusing to replace it or silently ignore the prior profile; inspect or restore your backup manually.".into());
         }
         return Ok(());
     }
@@ -240,7 +253,7 @@ fn snapshot_rust_library_before_upgrade(destination: &Path) -> Result<bool, Stri
     }
     let source =
         rusqlite::Connection::open_with_flags(&current, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|e| format!("Cannot read existing Rust preview library: {e}"))?;
+            .map_err(|e| format!("Cannot read existing Orbit library: {e}"))?;
     let temporary = destination.join(format!(".orbit-upgrade-{}.sqlite", uuid::Uuid::new_v4()));
     let result = (|| -> Result<(), String> {
         source
@@ -1295,10 +1308,10 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
         }
         "launchGame" => launch_game(app, game_id(args)?),
         "getUpdateStatus" => Ok(
-            json!({"state":"unsupported","message":"Update installation is unavailable in this unsigned Rust preview."}),
+            json!({"state":"unsupported","message":"Update installation is unavailable in this unsigned build."}),
         ),
         "checkForUpdates" => Ok(
-            json!({"state":"unsupported","message":"Update installation is unavailable in this unsigned Rust preview."}),
+            json!({"state":"unsupported","message":"Update installation is unavailable in this unsigned build."}),
         ),
         "installUpdate" => {
             Err("Automatic updates require a signed release and trusted update feed".into())

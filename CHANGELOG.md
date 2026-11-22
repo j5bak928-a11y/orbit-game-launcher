@@ -1,6 +1,12 @@
 # Changelog
 
-This changelog covers the changes users receive with Orbit's Windows editions. **Rust/Tauri is the recommended direction starting with 0.2.8**, but its separately named download remains an **experimental, unsigned preview** while installed Windows acceptance is incomplete. Electron remains a supported fallback with separate application data. Release files appear on [GitHub Releases](https://github.com/j5bak928-a11y/orbit-game-launcher/releases); check the version on the download before installing.
+This changelog covers the changes users receive with Orbit's Windows desktop releases. **Starting with 0.3.4, native Rust/Tauri 2 is the sole Orbit Launcher application** (Electron has been retired and removed). Unsigned installers and automatic update limitations remain documented below. Release files appear on [GitHub Releases](https://github.com/j5bak928-a11y/orbit-game-launcher/releases); check the version on the download before installing.
+
+## 0.3.4 — Native Rust main edition (Electron removed)
+
+- Retired and removed the legacy Electron runtime, `electron-builder` packaging, Node backend modules, C++ process-list helper, and Electron workflow/tests so **Rust + Tauri 2 is now the main Orbit Launcher** (`Orbit Launcher`, `com.orbitlauncher.desktop`).
+- Updated first-run profile migration to import an existing `com.orbitlauncher.rustpreview` library first (before falling back to legacy Electron folders `orbit-game-launcher` or `Orbit Launcher`) via read-only SQLite `VACUUM INTO` and compatible artwork copy without touching original files.
+- Switched Windows release assets from preview naming to standard `Orbit-Launcher-Setup-0.3.4.exe`, `Orbit-Launcher-0.3.4.msi`, and `Orbit-Launcher-Portable-0.3.4.zip`, and excluded leftover Electron `assets/bin` binaries during frontend staging.
 
 ## 0.3.3 — Rust recovery, tray and artwork reliability
 

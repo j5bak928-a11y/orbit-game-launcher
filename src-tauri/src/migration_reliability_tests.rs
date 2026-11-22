@@ -475,3 +475,36 @@ fn unrelated_valid_sqlite_file_is_not_an_orbit_pre_upgrade_backup() {
     assert_eq!(count(&rust, "games"), 1);
     assert!(backup_file.exists());
 }
+
+#[test]
+fn legacy_profile_lookup_prefers_rust_preview_over_electron_directories() {
+    let root =
+        std::env::temp_dir().join(format!("orbit-profile-priority-{}", uuid::Uuid::new_v4()));
+    let _cleanup = fs::create_dir_all(&root);
+    let electron_a = root.join("orbit-game-launcher");
+    let electron_b = root.join("Orbit Launcher");
+    let preview = root.join("com.orbitlauncher.rustpreview");
+    fs::create_dir_all(&electron_a).unwrap();
+    fs::create_dir_all(&electron_b).unwrap();
+    fs::create_dir_all(&preview).unwrap();
+
+    fs::write(electron_b.join("library.sqlite"), b"electron-b").unwrap();
+    assert_eq!(
+        crate::legacy_library_dir_in(&root).as_deref(),
+        Some(electron_b.as_path())
+    );
+
+    fs::write(electron_a.join("library.sqlite"), b"electron-a").unwrap();
+    assert_eq!(
+        crate::legacy_library_dir_in(&root).as_deref(),
+        Some(electron_a.as_path())
+    );
+
+    fs::write(preview.join("library.sqlite"), b"rust-preview").unwrap();
+    assert_eq!(
+        crate::legacy_library_dir_in(&root).as_deref(),
+        Some(preview.as_path())
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}

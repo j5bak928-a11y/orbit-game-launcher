@@ -13,11 +13,15 @@ function load(window) {
   return window.orbit;
 }
 
-test('Tauri adapter matches the Electron preload methods and positional argument shapes', async () => {
-  const preload = fs.readFileSync(path.join(ui, '../preload.cjs'), 'utf8');
-  const match = preload.match(/const METHODS=\[([^\]]+)\]/);
-  assert.ok(match, 'preload method list');
-  const expectedMethods = [...match[1].matchAll(/'([^']+)'/g)].map(match => match[1]);
+test('Tauri adapter exposes every desktop IPC command supported by Rust backend', async () => {
+  const rust = fs.readFileSync(path.join(ui, '../../src-tauri/src/lib.rs'), 'utf8');
+  const commandBlock = rust.slice(
+    rust.indexOf('fn handle_command('),
+    rust.indexOf('_ => Err(format!("Unknown Orbit command', rust.indexOf('fn handle_command(')),
+  );
+  const backendCommands = new Set(
+    [...commandBlock.matchAll(/^\s*"([A-Za-z]+)"\s*=>/gm)].map(match => match[1]),
+  );
 
   const calls = [];
   let handler;
@@ -26,8 +30,13 @@ test('Tauri adapter matches the Electron preload methods and positional argument
     event:{listen:async (name, callback) => {assert.equal(name, 'orbit:event');handler=callback;return ()=>{};}}
   }});
   await orbit.ready;
-  for(const method of expectedMethods)assert.equal(typeof orbit[method], 'function', method);
-  assert.deepEqual(Object.keys(orbit).filter(key => key !== 'onEvent' && key !== 'ready'), expectedMethods);
+  const exposedMethods = Object.keys(orbit).filter(key => key !== 'onEvent' && key !== 'ready');
+  assert.ok(exposedMethods.includes('bootstrap'));
+  for (const method of exposedMethods) {
+    assert.equal(typeof orbit[method], 'function', method);
+    assert.ok(backendCommands.has(method), `Rust backend handles window.orbit.${method}`);
+  }
+  assert.deepEqual([...backendCommands].sort(), [...exposedMethods].sort());
   assert.ok(Object.isFrozen(orbit));
   assert.equal(typeof handler, 'function');
 
@@ -85,7 +94,7 @@ test('Tauri errors are Error objects; listener failures are visible through read
   await assert.rejects(orbit.ready, /Event channel blocked/);
 });
 
-test('Electron preload is preserved and the adapter loads before app startup', () => {
+test('Existing window.orbit is preserved and the adapter loads before app startup', () => {
   const original = {bootstrap:()=>1};
   let listenCalls = 0;
   const current = load({orbit:original, __TAURI__:{

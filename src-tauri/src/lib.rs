@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
@@ -32,8 +32,41 @@ struct OrbitState {
     pending_finishes: Mutex<HashMap<String, (String, i64)>>,
     artwork_pending: AtomicU64,
     artwork_busy: AtomicBool,
+    artwork_misses: Mutex<HashMap<String, (String, Instant)>>,
+    repair_lock: Mutex<()>,
+    poll_lock: Mutex<()>,
+    shutdown: Mutex<bool>,
+    shutdown_cv: Condvar,
     data_dir: PathBuf,
     artwork_dir: PathBuf,
+}
+
+impl OrbitState {
+    fn new(db: LibraryDatabase, data_dir: PathBuf, artwork_dir: PathBuf) -> Self {
+        Self {
+            db: Mutex::new(db),
+            revision: AtomicU64::new(0),
+            active: Mutex::new(HashMap::new()),
+            launching: Mutex::new(HashSet::new()),
+            confirming: Mutex::new(HashMap::new()),
+            pending_finishes: Mutex::new(HashMap::new()),
+            artwork_pending: AtomicU64::new(0),
+            artwork_busy: AtomicBool::new(false),
+            artwork_misses: Mutex::new(HashMap::new()),
+            repair_lock: Mutex::new(()),
+            poll_lock: Mutex::new(()),
+            shutdown: Mutex::new(false),
+            shutdown_cv: Condvar::new(),
+            data_dir,
+            artwork_dir,
+        }
+    }
+}
+
+fn lock_or_err<'a, T>(mutex: &'a Mutex<T>, label: &str) -> Result<MutexGuard<'a, T>, String> {
+    mutex
+        .lock()
+        .map_err(|_| format!("Orbit {label} lock is unavailable after an earlier error."))
 }
 
 fn legacy_library_dir() -> Option<PathBuf> {
@@ -247,7 +280,9 @@ const LAUNCH_CONFIRMATION: Duration = Duration::from_secs(90);
 
 fn launch_pending(state: &OrbitState) -> Vec<Value> {
     let now = Instant::now();
-    let mut pending = state.confirming.lock().unwrap();
+    let Ok(mut pending) = state.confirming.lock() else {
+        return Vec::new();
+    };
     pending.retain(|_, deadline| *deadline > now);
     pending
         .iter()
@@ -261,7 +296,7 @@ fn launch_pending(state: &OrbitState) -> Vec<Value> {
 pub(crate) fn launch_game(app: &tauri::AppHandle, id: &str) -> Result<Value, String> {
     let state = app.state::<OrbitState>();
     let _reservation = reserve_game_launch(&state, id)?;
-    let game = state.db.lock().unwrap().get(id)?;
+    let game = lock_or_err(&state.db, "database")?.get(id)?;
     if game.is_null() {
         return Err("Game not found".into());
     }
@@ -277,10 +312,7 @@ pub(crate) fn launch_game(app: &tauri::AppHandle, id: &str) -> Result<Value, Str
                 || (matches!(game["source"].as_str(), Some("steam" | "epic"))
                     && absolute_path("install_path")));
         if watchable {
-            state
-                .confirming
-                .lock()
-                .unwrap()
+            lock_or_err(&state.confirming, "launch confirmation")?
                 .insert(id.into(), Instant::now() + LAUNCH_CONFIRMATION);
             let wait_ms = LAUNCH_CONFIRMATION.as_millis() as u64;
             result["confirmationTimeoutMs"] = json!(wait_ms);
@@ -289,7 +321,7 @@ pub(crate) fn launch_game(app: &tauri::AppHandle, id: &str) -> Result<Value, Str
                 json!({"type":"launchPending","id":id,"waitMs":wait_ms}),
             );
         }
-        if let Err(error) = state.db.lock().unwrap().record_external_launch(id) {
+        if let Err(error) = lock_or_err(&state.db, "database")?.record_external_launch(id) {
             emit(
                 app,
                 json!({"type":"error","message":format!("Launcher opened, but recent-play information could not be saved: {error}")}),
@@ -299,19 +331,16 @@ pub(crate) fn launch_game(app: &tauri::AppHandle, id: &str) -> Result<Value, Str
         }
     }
     if result["tracked"].as_bool() == Some(true) {
-        let session_result = state.db.lock().unwrap().start_session(id);
+        let session_result = lock_or_err(&state.db, "database")?.start_session(id);
         match session_result {
             Ok(session_id) => {
-                state
-                    .active
-                    .lock()
-                    .unwrap()
+                lock_or_err(&state.active, "active sessions")?
                     .insert(id.to_string(), (session_id, Instant::now()));
+                native::acknowledge_direct_session(id);
             }
             Err(error) => {
                 result["tracked"] = json!(false);
-                result["message"] =
-                    json!("Game launched, but play-time tracking could not start.");
+                result["message"] = json!("Game launched, but play-time tracking could not start.");
                 emit(
                     app,
                     json!({"type":"error","message":format!("Game launched, but play time could not be recorded: {error}")}),
@@ -332,7 +361,10 @@ pub(crate) fn launch_game(app: &tauri::AppHandle, id: &str) -> Result<Value, Str
 }
 
 fn running_ids(state: &OrbitState) -> Vec<String> {
-    let mut ids: Vec<String> = state.active.lock().unwrap().keys().cloned().collect();
+    let Ok(active) = state.active.lock() else {
+        return Vec::new();
+    };
+    let mut ids: Vec<String> = active.keys().cloned().collect();
     ids.sort();
     ids
 }
@@ -377,31 +409,36 @@ fn reserve_game_launch<'a>(
     };
     {
         let now = Instant::now();
-        let mut confirming = state.confirming.lock().unwrap();
+        let mut confirming = lock_or_err(&state.confirming, "launch confirmation")?;
         confirming.retain(|_, deadline| *deadline > now);
-        if confirming.contains_key(id) || aliases.iter().any(|other| confirming.contains_key(other)) {
+        if confirming.contains_key(id) || aliases.iter().any(|other| confirming.contains_key(other))
+        {
             launching.remove(id);
             return Err("This game is already launching".into());
         }
     }
-    if aliases.iter().any(|other| {
-        launching.contains(other)
-            || state.active.lock().unwrap().contains_key(other)
-            || state.pending_finishes.lock().unwrap().contains_key(other)
-    }) {
-        launching.remove(id);
-        return Err("This installation already has a tracked session running or saving.".into());
-    }
-    if state.active.lock().unwrap().contains_key(id) {
-        launching.remove(id);
-        return Err("This game is already running".into());
-    }
-    // Reject before spawning the executable. Otherwise a temporary SQLite
-    // failure could leave an old finalization queued, launch a second game,
-    // and only THEN fail to create its new playtime row.
-    if state.pending_finishes.lock().unwrap().contains_key(id) {
-        launching.remove(id);
-        return Err("Orbit is still saving this game's playtime. Try again shortly.".into());
+    {
+        let active = lock_or_err(&state.active, "active sessions")?;
+        let pending = lock_or_err(&state.pending_finishes, "pending finishes")?;
+        if aliases.iter().any(|other| {
+            launching.contains(other) || active.contains_key(other) || pending.contains_key(other)
+        }) {
+            launching.remove(id);
+            return Err(
+                "This installation already has a tracked session running or saving.".into(),
+            );
+        }
+        if active.contains_key(id) {
+            launching.remove(id);
+            return Err("This game is already running".into());
+        }
+        // Reject before spawning the executable. Otherwise a temporary SQLite
+        // failure could leave an old finalization queued, launch a second game,
+        // and only THEN fail to create its new playtime row.
+        if pending.contains_key(id) {
+            launching.remove(id);
+            return Err("Orbit is still saving this game's playtime. Try again shortly.".into());
+        }
     }
     Ok(LaunchReservation {
         state,
@@ -419,8 +456,9 @@ fn activity_registration_conflicts(
     launching: &HashSet<String>,
 ) -> bool {
     let aliases = native::installation_alias_ids(watchlist, id);
-    let active = state.active.lock().unwrap();
-    let pending = state.pending_finishes.lock().unwrap();
+    let (Ok(active), Ok(pending)) = (state.active.lock(), state.pending_finishes.lock()) else {
+        return true;
+    };
     launching.contains(id)
         || active.contains_key(id)
         || pending.contains_key(id)
@@ -557,7 +595,7 @@ fn refresh_generated_names(app: &tauri::AppHandle, visited: &mut HashSet<String>
         else {
             continue;
         };
-        let Ok(info) = native::inspect_game_file(path) else {
+        let Ok(info) = native::inspect_game_title(path) else {
             continue;
         };
         if !trustworthy_detected_name(previous, &info) {
@@ -593,19 +631,40 @@ fn queue_artwork_scan(app: &tauri::AppHandle) {
         let last_processed = loop {
             std::thread::sleep(Duration::from_millis(900));
             let state = handle.state::<OrbitState>();
+            if state.shutdown.lock().is_ok_and(|stopped| *stopped) {
+                return;
+            }
             let generation = state.artwork_pending.load(Ordering::SeqCst);
             let mut visited_names = HashSet::new();
-            let mut more_names = refresh_generated_names(&handle, &mut visited_names);
-            if let Err(error) = handle_command(&handle, "repairSteamArtwork", &[json!("automatic")])
-            {
-                eprintln!("Orbit automatic artwork scan: {error}");
-            }
-            // A large or slow library is processed in bounded passes, with
-            // a brief yield between passes. No stale first page can starve
-            // later titles just because the user never changes the library.
-            while more_names {
+            // Resolve generated executable titles across the full library first
+            // so newly detected titles can receive artwork in the following scan.
+            while refresh_generated_names(&handle, &mut visited_names) {
+                if state.shutdown.lock().is_ok_and(|stopped| *stopped) {
+                    return;
+                }
                 std::thread::sleep(Duration::from_millis(100));
-                more_names = refresh_generated_names(&handle, &mut visited_names);
+            }
+            for pass in 0..4 {
+                if state.shutdown.lock().is_ok_and(|stopped| *stopped)
+                    || state.artwork_pending.load(Ordering::SeqCst) != generation
+                {
+                    break;
+                }
+                match handle_command(&handle, "repairSteamArtwork", &[json!("automatic")]) {
+                    Ok(report) => {
+                        let more_online = report["onlineEnabled"] == true
+                            && report["paused"] != true
+                            && (report["truncated"] == true || report["found"].as_u64() == Some(8));
+                        if !more_online || pass == 3 {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(400));
+                    }
+                    Err(error) => {
+                        eprintln!("Orbit automatic artwork scan: {error}");
+                        break;
+                    }
+                }
             }
             if state.artwork_pending.load(Ordering::SeqCst) == generation {
                 break generation;
@@ -613,7 +672,9 @@ fn queue_artwork_scan(app: &tauri::AppHandle) {
         };
         let state = handle.state::<OrbitState>();
         state.artwork_busy.store(false, Ordering::SeqCst);
-        if state.artwork_pending.load(Ordering::SeqCst) != last_processed {
+        if !state.shutdown.lock().is_ok_and(|stopped| *stopped)
+            && state.artwork_pending.load(Ordering::SeqCst) != last_processed
+        {
             queue_artwork_scan(&handle);
         }
     });
@@ -811,28 +872,67 @@ fn save_artwork(source: &Path, artwork_dir: &Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     let digest = format!("{:x}", Sha256::digest(&bytes));
     let name = format!(
-        "{}-{}-{}-{}{}.{}",
+        "{}-{}-{}-{}-{}.{}",
         &digest[..8],
         &digest[8..12],
         &digest[12..16],
         &digest[16..20],
-        format!("-{}", &digest[20..32]),
+        &digest[20..32],
         ext
     );
     std::fs::create_dir_all(artwork_dir).map_err(|e| e.to_string())?;
     let path = artwork_dir.join(&name);
+    let temporary = artwork_dir.join(format!(".orbit-art-{}.tmp", uuid::Uuid::new_v4()));
     use std::io::Write;
-    match std::fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&path)
-    {
-        Ok(mut file) => file.write_all(&bytes).map_err(|e| e.to_string())?,
+    let write_tmp = (|| -> Result<(), std::io::Error> {
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)?;
+        file.write_all(&bytes)?;
+        file.sync_all()
+    })();
+    if let Err(error) = write_tmp {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error.to_string());
+    }
+    let linked = std::fs::hard_link(&temporary, &path);
+    let _ = std::fs::remove_file(&temporary);
+    match linked {
+        Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             if !std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_file())
                 || files::read_regular_bounded(&path, 15 * 1024 * 1024)? != bytes
             {
                 return Err("Artwork name collision detected".into());
+            }
+        }
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::Unsupported | std::io::ErrorKind::PermissionDenied
+            ) =>
+        {
+            match std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&path)
+            {
+                Ok(mut file) => {
+                    if let Err(write_err) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
+                        let _ = std::fs::remove_file(&path);
+                        return Err(write_err.to_string());
+                    }
+                }
+                Err(exists) if exists.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if !std::fs::symlink_metadata(&path)
+                        .is_ok_and(|meta| meta.file_type().is_file())
+                        || files::read_regular_bounded(&path, 15 * 1024 * 1024)? != bytes
+                    {
+                        return Err("Artwork name collision detected".into());
+                    }
+                }
+                Err(other) => return Err(other.to_string()),
             }
         }
         Err(error) => return Err(error.to_string()),
@@ -934,15 +1034,51 @@ fn write_json_backup(path: &Path, payload: &Value) -> Result<(), String> {
     write
 }
 
+const ARTWORK_MISS_TTL: Duration = Duration::from_secs(6 * 3600);
+
+fn artwork_lookup_signature(game: &Value) -> String {
+    format!(
+        "{}|{}|{}",
+        game["source"].as_str().unwrap_or(""),
+        game["source_id"].as_str().unwrap_or(""),
+        game["name"].as_str().unwrap_or("")
+    )
+}
+
+fn prioritize_unattempted_games(
+    games: &[Value],
+    misses: &mut HashMap<String, (String, Instant)>,
+) -> Vec<Value> {
+    let now = Instant::now();
+    misses.retain(|_, (_, at)| now.duration_since(*at) < ARTWORK_MISS_TTL);
+    let mut fresh = Vec::with_capacity(games.len());
+    let mut deferred = Vec::new();
+    for game in games {
+        let missed = game["id"].as_str().is_some_and(|id| {
+            misses
+                .get(id)
+                .is_some_and(|(sig, _)| *sig == artwork_lookup_signature(game))
+        });
+        if missed {
+            deferred.push(game.clone());
+        } else {
+            fresh.push(game.clone());
+        }
+    }
+    fresh.extend(deferred);
+    fresh
+}
+
 fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Result<Value, String> {
     let state = app.state::<OrbitState>();
     match method {
         "bootstrap" => {
             let mut result = snapshot(&state)?;
-            result["settings"] = state.db.lock().unwrap().get_settings()?;
+            result["settings"] = lock_or_err(&state.db, "database")?.get_settings()?;
             result["platform"] = json!(platform());
             result["version"] = json!(app.package_info().version.to_string());
-            result["controllerReturn"] = app.state::<ControllerReturn>().0.lock().unwrap().clone();
+            result["controllerReturn"] =
+                lock_or_err(&app.state::<ControllerReturn>().0, "controller state")?.clone();
             Ok(result)
         }
         "saveControllerReturn" => {
@@ -950,11 +1086,12 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             if !position.is_null() && (!position.is_object() || position.to_string().len() > 2048) {
                 return Err("Invalid controller return position.".into());
             }
-            *app.state::<ControllerReturn>().0.lock().unwrap() = position.clone();
+            *lock_or_err(&app.state::<ControllerReturn>().0, "controller state")? =
+                position.clone();
             Ok(Value::Null)
         }
         "librarySnapshot" => snapshot(&state),
-        "listGames" => state.db.lock().unwrap().list("name"),
+        "listGames" => lock_or_err(&state.db, "database")?.list("name"),
         "getStatistics" => {
             let days = match args.first() {
                 None | Some(Value::Null) => 30,
@@ -966,23 +1103,31 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
                 },
                 _ => return Err("Statistics options must be an object.".into()),
             };
-            state.db.lock().unwrap().get_statistics(days)
+            lock_or_err(&state.db, "database")?.get_statistics(days)
         }
         "listSessions" => {
-            let page = args.get(1).map_or(Ok(0), |page| page.as_i64().ok_or("Invalid session page."))?;
-            state.db.lock().unwrap().list_sessions(game_id(args)?, page)
+            let page = args
+                .get(1)
+                .map_or(Ok(0), |page| page.as_i64().ok_or("Invalid session page."))?;
+            lock_or_err(&state.db, "database")?.list_sessions(game_id(args)?, page)
         }
         "correctSession" => {
             let id = game_id(args)?;
-            let seconds = argument(args, 2)?.as_i64().ok_or("Invalid session duration.")?;
-            let game = state.db.lock().unwrap().correct_session(id, str_argument(args, 1)?, seconds)?;
+            let seconds = argument(args, 2)?
+                .as_i64()
+                .ok_or("Invalid session duration.")?;
+            let game = lock_or_err(&state.db, "database")?.correct_session(
+                id,
+                str_argument(args, 1)?,
+                seconds,
+            )?;
             changed(app, &state, vec![game.clone()], vec![], "playtime", false);
             Ok(game)
         }
         "runningGames" => Ok(json!(running_ids(&state))),
-        "getGame" => state.db.lock().unwrap().get(game_id(args)?),
+        "getGame" => lock_or_err(&state.db, "database")?.get(game_id(args)?),
         "addGame" => {
-            let result = state.db.lock().unwrap().upsert(argument(args, 0)?)?;
+            let result = lock_or_err(&state.db, "database")?.upsert(argument(args, 0)?)?;
             if let Some(game) = result.get("game").cloned() {
                 changed(app, &state, vec![game], vec![], "add", false);
                 queue_artwork_scan(app);
@@ -991,7 +1136,10 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
         }
         "updateGame" => {
             let id = game_id(args)?;
-            let game = state.db.lock().unwrap().update(id, argument(args, 1)?)?;
+            let game = lock_or_err(&state.db, "database")?.update(id, argument(args, 1)?)?;
+            if let Ok(mut misses) = state.artwork_misses.lock() {
+                misses.remove(id);
+            }
             changed(app, &state, vec![game.clone()], vec![], "edit", false);
             if argument(args, 1)?.get("executable").is_some()
                 || argument(args, 1)?.get("name").is_some()
@@ -1003,19 +1151,32 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
         }
         "removeGame" => {
             let id = game_id(args)?;
-            let result = state.db.lock().unwrap().remove(id)?;
+            let result = lock_or_err(&state.db, "database")?.remove(id)?;
             if result {
+                if let Ok(mut confirming) = state.confirming.lock() {
+                    confirming.remove(id);
+                }
+                if let Ok(mut active) = state.active.lock() {
+                    active.remove(id);
+                }
+                if let Ok(mut pending) = state.pending_finishes.lock() {
+                    pending.remove(id);
+                }
+                if let Ok(mut misses) = state.artwork_misses.lock() {
+                    misses.remove(id);
+                }
+                native::forget_game(id);
                 changed(app, &state, vec![], vec![json!(id)], "remove", false);
             }
             Ok(json!(result))
         }
         "favoriteGame" => {
-            let game = state.db.lock().unwrap().toggle_favorite(game_id(args)?)?;
+            let game = lock_or_err(&state.db, "database")?.toggle_favorite(game_id(args)?)?;
             changed(app, &state, vec![game.clone()], vec![], "favorite", false);
             Ok(game)
         }
         "saveSettings" => {
-            let settings = state.db.lock().unwrap().save_settings(argument(args, 0)?)?;
+            let settings = lock_or_err(&state.db, "database")?.save_settings(argument(args, 0)?)?;
             emit(app, json!({"type":"settingsChanged","settings":settings}));
             if argument(args, 0)?.get("useSteamArtwork").is_some()
                 || argument(args, 0)?.get("performanceGuard").is_some()
@@ -1070,7 +1231,7 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             Ok(info)
         }
         "openGameFolder" => {
-            let game = state.db.lock().unwrap().get(game_id(args)?)?;
+            let game = lock_or_err(&state.db, "database")?.get(game_id(args)?)?;
             native::open_game_folder(&game)
         }
         "openAppData" => native::open_path(&state.data_dir.to_string_lossy()),
@@ -1086,18 +1247,15 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             {
                 return Ok(Value::Null);
             }
-            let settings = state.db.lock().unwrap().get_settings()?;
+            let settings = lock_or_err(&state.db, "database")?.get_settings()?;
             let mut result = native::discover_games(&settings)?;
-            let games = state.db.lock().unwrap().list("name")?;
-            let known: HashSet<String> = games
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(game_identity)
-                .collect();
+            let games = lock_or_err(&state.db, "database")?.list("name")?;
+            let known = database::LibraryDuplicateIndex::from_games(
+                games.as_array().map(Vec::as_slice).unwrap_or(&[]),
+            );
             if let Some(items) = result.get_mut("games").and_then(Value::as_array_mut) {
                 for game in items {
-                    game["alreadyAdded"] = json!(known.contains(&game_identity(game)));
+                    game["alreadyAdded"] = json!(known.contains(game));
                     let identity = database::duplicate_key(game);
                     if !identity.is_empty() {
                         game["discoveryKey"] =
@@ -1114,7 +1272,7 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             }
             let mut result = json!({"imported":0,"skipped":0,"errors":[]});
             for batch in games.chunks(50) {
-                let next = state.db.lock().unwrap().upsert_batch(batch)?;
+                let next = lock_or_err(&state.db, "database")?.upsert_batch(batch)?;
                 result["imported"] = json!(
                     result["imported"].as_u64().unwrap_or(0)
                         + next["imported"].as_u64().unwrap_or(0)
@@ -1146,7 +1304,7 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             Err("Automatic updates require a signed release and trusted update feed".into())
         }
         "findOnlineCover" => {
-            let settings = state.db.lock().unwrap().get_settings()?;
+            let settings = lock_or_err(&state.db, "database")?.get_settings()?;
             if settings["useSteamArtwork"] != true {
                 return Err("Enable online artwork in Settings first.".into());
             }
@@ -1160,20 +1318,25 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             })
         }
         "repairSteamArtwork" => {
-            let db = state.db.lock().unwrap();
-            let settings = db.get_settings()?;
-            let games = db.list("name")?;
-            drop(db);
+            let _repair_guard = lock_or_err(&state.repair_lock, "artwork repair")?;
+            let (settings, games) = {
+                let db = lock_or_err(&state.db, "database")?;
+                (db.get_settings()?, db.list("name")?)
+            };
             let enabled = settings["useSteamArtwork"] == true;
             let paused = settings["performanceGuard"] == true && !running_ids(&state).is_empty();
-            let originals = games.as_array().ok_or("Invalid game list")?;
+            let originals_raw = games.as_array().ok_or("Invalid game list")?;
+            let originals = {
+                let mut misses = lock_or_err(&state.artwork_misses, "artwork cache")?;
+                prioritize_unattempted_games(originals_raw, &mut misses)
+            };
             // Automatic enrichment fills missing artwork only. The explicit
             // Repair button remains allowed to replace a landscape cover.
             let automatic = args.first().and_then(Value::as_str) == Some("automatic");
             let allowed = || online_artwork_allowed(&state);
             let mut result = if automatic {
                 artwork::repair_artwork_auto_guarded(
-                    originals,
+                    &originals,
                     &state.artwork_dir,
                     enabled,
                     paused,
@@ -1181,7 +1344,7 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
                 )?
             } else {
                 artwork::repair_artwork_guarded(
-                    originals,
+                    &originals,
                     &state.artwork_dir,
                     enabled,
                     paused,
@@ -1193,10 +1356,11 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
                 .filter_map(|game| Some((game["id"].as_str()?.to_string(), game)))
                 .collect();
             let mut changes = Vec::new();
+            let mut updated_covers = HashSet::new();
             let mut covers = 0;
             let mut icons = 0;
             if let Some(updates) = result["updates"].as_array() {
-                let mut db = state.db.lock().unwrap();
+                let mut db = lock_or_err(&state.db, "database")?;
                 for patch in updates {
                     let Some(id) = patch["id"].as_str() else {
                         continue;
@@ -1225,11 +1389,32 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
                     let changed_game = db.update(id, &Value::Object(allowed.clone()))?;
                     if allowed.contains_key("cover") {
                         covers += 1;
+                        updated_covers.insert(id.to_owned());
                     }
                     if allowed.contains_key("icon") {
                         icons += 1;
                     }
                     changes.push(changed_game);
+                }
+            }
+            if let Some(attempted_ids) = result["onlineAttempted"].as_array() {
+                if let Ok(mut misses) = state.artwork_misses.lock() {
+                    let now = Instant::now();
+                    for id in attempted_ids.iter().filter_map(Value::as_str) {
+                        if updated_covers.contains(id) {
+                            misses.remove(id);
+                        } else if let Some(game) = original_by_id.get(id) {
+                            if misses.len() >= 5_000 {
+                                misses.retain(|_, (_, at)| {
+                                    now.duration_since(*at) < ARTWORK_MISS_TTL
+                                });
+                                if misses.len() >= 5_000 {
+                                    misses.clear();
+                                }
+                            }
+                            misses.insert(id.to_owned(), (artwork_lookup_signature(game), now));
+                        }
+                    }
                 }
             }
             if !changes.is_empty() {
@@ -1239,6 +1424,7 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             result["icons"] = json!(icons);
             if let Some(obj) = result.as_object_mut() {
                 obj.remove("updates");
+                obj.remove("onlineAttempted");
             }
             Ok(result)
         }
@@ -1255,7 +1441,7 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             };
             // Export is one SQLite snapshot of games, settings and completed
             // sessions. Incomplete live sessions must not be silently omitted.
-            let payload = state.db.lock().unwrap().export_json()?;
+            let payload = lock_or_err(&state.db, "database")?.export_json()?;
             let count = payload["games"].as_array().map_or(0, Vec::len);
             if path
                 .extension()
@@ -1279,23 +1465,30 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             } else {
                 let bytes = files::read_regular_bounded(&path, backup::MAX_ARCHIVE)
                     .map_err(|error| format!("Cannot read JSON backup (128 MB limit): {error}"))?;
-                let mut payload = serde_json::from_slice::<Value>(&bytes)
-                    .map_err(|error| error.to_string())?;
+                let mut payload =
+                    serde_json::from_slice::<Value>(&bytes).map_err(|error| error.to_string())?;
                 drop(bytes);
                 sanitize_restore_payload(&mut payload, &state.artwork_dir)?;
                 Some(payload)
             };
-            // Preserve DB ownership across portable preflight, artwork installation,
-            // commit and cleanup so the identity mapping cannot change in between.
-            let mut db = state.db.lock().unwrap();
             let result = if let Some(payload) = json_payload {
-                db.restore_json(&payload)?
+                lock_or_err(&state.db, "database")?.restore_json(&payload)?
             } else {
-                let mut staged = backup::import_backup_checked_staged(
-                    &path,
-                    &state.artwork_dir,
-                    |library| db.preflight_restore_json(library),
-                )?;
+                // Decompress and decode outside the DB mutex; acquire and retain
+                // DB ownership from preflight through artwork install, commit,
+                // and cleanup so concurrent writes cannot alter identity mapping.
+                let mut db_guard = None;
+                let mut staged =
+                    backup::import_backup_checked_staged(&path, &state.artwork_dir, |library| {
+                        let mut db = lock_or_err(&state.db, "database")?;
+                        db.preflight_restore_json(library)?;
+                        db_guard = Some(db);
+                        Ok(())
+                    })?;
+                let mut db = match db_guard.take() {
+                    Some(db) => db,
+                    None => lock_or_err(&state.db, "database")?,
+                };
                 let payload = staged.library_mut();
                 let restore = sanitize_restore_payload(payload, &state.artwork_dir)
                     .and_then(|()| db.restore_json(payload));
@@ -1320,7 +1513,6 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
                 };
                 staged.finish(restore, live_artwork.as_ref())?
             };
-            drop(db);
             changed(app, &state, vec![], vec![], "restore", true);
             queue_artwork_scan(app);
             Ok(result)
@@ -1366,36 +1558,39 @@ async fn orbit_invoke(
 
 fn queue_finished_session(state: &OrbitState, id: &str, seconds: Option<i64>) {
     // Make the move from active to pending atomic relative to a new launch.
-    let _launching = state.launching.lock().unwrap();
-    let Some((session_id, started)) = state.active.lock().unwrap().remove(id) else {
+    let Ok(_launching) = state.launching.lock() else {
+        return;
+    };
+    let Ok(mut active) = state.active.lock() else {
+        return;
+    };
+    let Some((session_id, started)) = active.remove(id) else {
         return;
     };
     let elapsed = seconds.unwrap_or(started.elapsed().as_secs() as i64);
-    state
-        .pending_finishes
-        .lock()
-        .unwrap()
-        .insert(id.to_string(), (session_id, elapsed));
+    if let Ok(mut pending) = state.pending_finishes.lock() {
+        pending.insert(id.to_string(), (session_id, elapsed));
+    }
 }
 
 fn flush_finished_sessions(state: &OrbitState, mut report_error: impl FnMut(&str)) -> Vec<String> {
-    let pending = state
-        .pending_finishes
-        .lock()
-        .unwrap()
+    let Ok(pending_guard) = state.pending_finishes.lock() else {
+        return Vec::new();
+    };
+    let pending = pending_guard
         .iter()
         .map(|(id, (session, seconds))| (id.clone(), session.clone(), *seconds))
         .collect::<Vec<_>>();
+    drop(pending_guard);
     let mut completed = Vec::new();
     for (game_id, session_id, seconds) in pending {
-        let result = state
-            .db
-            .lock()
-            .map_err(|error| error.to_string())
+        let result = lock_or_err(&state.db, "database")
             .and_then(|mut db| db.finish_session(&session_id, seconds));
         match result {
             Ok(_) => {
-                state.pending_finishes.lock().unwrap().remove(&game_id);
+                if let Ok(mut map) = state.pending_finishes.lock() {
+                    map.remove(&game_id);
+                }
                 completed.push(game_id);
             }
             Err(error) => report_error(&error),
@@ -1469,6 +1664,40 @@ fn poll_sessions(app: &tauri::AppHandle, diagnostics: &mut TrackingDiagnostics) 
             }
         }
     }
+    if let Some(unregistered) = exits["unregistered"].as_array() {
+        for id in unregistered.iter().filter_map(Value::as_str) {
+            let Ok(launching) = state.launching.lock() else {
+                break;
+            };
+            if launching.contains(id) {
+                continue;
+            }
+            let already_tracked = state.active.lock().is_ok_and(|a| a.contains_key(id))
+                || state
+                    .pending_finishes
+                    .lock()
+                    .is_ok_and(|p| p.contains_key(id));
+            if already_tracked {
+                continue;
+            }
+            let session =
+                lock_or_err(&state.db, "database").and_then(|mut db| db.start_session(id));
+            match session {
+                Ok(session_id) => {
+                    if let Ok(mut active) = state.active.lock() {
+                        active.insert(id.to_string(), (session_id, Instant::now()));
+                    }
+                    native::acknowledge_direct_session(id);
+                    drop(launching);
+                    notify_game(app, &state, id, "playtime");
+                }
+                Err(error) => {
+                    drop(launching);
+                    diagnostics.report(app, "register direct session", &error);
+                }
+            }
+        }
+    }
     if let Some(items) = exits["completed"].as_array() {
         for item in items {
             let Some(id) = item["game_id"].as_str() else {
@@ -1488,10 +1717,7 @@ fn poll_sessions(app: &tauri::AppHandle, diagnostics: &mut TrackingDiagnostics) 
     // External launcher processes are tracked from verified install paths by
     // the Rust Windows process-inventory implementation.
     let watchlist = if cfg!(windows) {
-        state
-            .db
-            .lock()
-            .map_err(|error| error.to_string())
+        lock_or_err(&state.db, "database")
             .and_then(|db| db.list_activity_games())
             .map_err(|error| diagnostics.report(app, "read tracked games", &error))
             .ok()
@@ -1519,15 +1745,14 @@ fn poll_sessions(app: &tauri::AppHandle, diagnostics: &mut TrackingDiagnostics) 
                     // native spawn, and database insertion, automatic
                     // inventory detection must not claim the same game or
                     // its manually linked/storefront alias.
-                    let launching = state.launching.lock().unwrap();
+                    let Ok(launching) = state.launching.lock() else {
+                        break;
+                    };
                     if activity_registration_conflicts(&state, &watchlist, id, &launching) {
                         continue;
                     }
-                    let session = state
-                        .db
-                        .lock()
-                        .map_err(|e| e.to_string())
-                        .and_then(|mut db| db.start_session(id));
+                    let session =
+                        lock_or_err(&state.db, "database").and_then(|mut db| db.start_session(id));
                     let session = match session {
                         Ok(session) => session,
                         Err(error) => {
@@ -1536,12 +1761,12 @@ fn poll_sessions(app: &tauri::AppHandle, diagnostics: &mut TrackingDiagnostics) 
                             continue;
                         }
                     };
-                    state
-                        .active
-                        .lock()
-                        .unwrap()
-                        .insert(id.into(), (session, Instant::now()));
-                    state.confirming.lock().unwrap().remove(id);
+                    if let Ok(mut active) = state.active.lock() {
+                        active.insert(id.into(), (session, Instant::now()));
+                    }
+                    if let Ok(mut confirming) = state.confirming.lock() {
+                        confirming.remove(id);
+                    }
                     native::acknowledge_activity_session(id);
                     drop(launching);
                     notify_game(app, &state, id, "playtime");
@@ -1576,15 +1801,17 @@ fn poll_sessions(app: &tauri::AppHandle, diagnostics: &mut TrackingDiagnostics) 
     let checkpoints: Vec<Value> = state
         .active
         .lock()
-        .unwrap()
-        .iter()
-        .filter_map(|(id, (session, _))| Some(json!({"id":session,"seconds":observed.get(id)?})))
-        .collect();
+        .map(|active| {
+            active
+                .iter()
+                .filter_map(|(id, (session, _))| {
+                    Some(json!({"id":session,"seconds":observed.get(id)?}))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     if !checkpoints.is_empty() {
-        let checkpoint = state
-            .db
-            .lock()
-            .map_err(|error| error.to_string())
+        let checkpoint = lock_or_err(&state.db, "database")
             .and_then(|mut db| db.checkpoint_sessions(&checkpoints));
         if let Err(error) = checkpoint {
             diagnostics.report(app, "save session checkpoints", &error);
@@ -1596,6 +1823,11 @@ fn settle_sessions(app: &tauri::AppHandle) {
     let Some(state) = app.try_state::<OrbitState>() else {
         return;
     };
+    if let Ok(mut stopped) = state.shutdown.lock() {
+        *stopped = true;
+        state.shutdown_cv.notify_all();
+    }
+    let _poll_guard = state.poll_lock.lock();
     let elapsed: HashMap<String, i64> = native::stop_sessions()
         .ok()
         .and_then(|value| value["completed"].as_array().cloned())
@@ -1618,11 +1850,9 @@ fn settle_sessions(app: &tauri::AppHandle) {
             .get(&id)
             .copied()
             .unwrap_or(started.elapsed().as_secs() as i64);
-        state
-            .pending_finishes
-            .lock()
-            .unwrap()
-            .insert(id, (session_id, seconds));
+        if let Ok(mut pending) = state.pending_finishes.lock() {
+            pending.insert(id, (session_id, seconds));
+        }
     }
     flush_finished_sessions(&state, |error| {
         eprintln!("Orbit: cannot finish playtime on exit: {error}");
@@ -1640,18 +1870,7 @@ mod playtime_persistence_tests {
             std::env::temp_dir().join(format!("orbit-alias-race-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&folder).unwrap();
         let db = LibraryDatabase::open(&folder.join("library.sqlite")).unwrap();
-        let state = OrbitState {
-            db: Mutex::new(db),
-            revision: AtomicU64::new(0),
-            active: Mutex::new(HashMap::new()),
-            launching: Mutex::new(HashSet::new()),
-            confirming: Mutex::new(HashMap::new()),
-            pending_finishes: Mutex::new(HashMap::new()),
-            artwork_pending: AtomicU64::new(0),
-            artwork_busy: AtomicBool::new(false),
-            data_dir: folder.clone(),
-            artwork_dir: folder.join("artwork"),
-        };
+        let state = OrbitState::new(db, folder.clone(), folder.join("artwork"));
         let watchlist = json!([
             {"id":"store","name":"Example","source":"steam","install_path":r"D:\SteamLibrary\steamapps\common\Example"},
             {"id":"direct","name":"Example","source":"manual","executable":r"D:\SteamLibrary\steamapps\common\Example\Bin\Example.exe"},
@@ -1699,18 +1918,7 @@ mod playtime_persistence_tests {
         let game = db.upsert(&json!({"name":"Retryable session"})).unwrap()["game"].clone();
         let id = game["id"].as_str().unwrap().to_string();
         let session = db.start_session(&id).unwrap();
-        let state = OrbitState {
-            db: Mutex::new(db),
-            revision: AtomicU64::new(0),
-            active: Mutex::new(HashMap::new()),
-            launching: Mutex::new(HashSet::new()),
-            confirming: Mutex::new(HashMap::new()),
-            pending_finishes: Mutex::new(HashMap::new()),
-            artwork_pending: AtomicU64::new(0),
-            artwork_busy: AtomicBool::new(false),
-            data_dir: folder.clone(),
-            artwork_dir: folder.join("artwork"),
-        };
+        let state = OrbitState::new(db, folder.clone(), folder.join("artwork"));
         state
             .active
             .lock()
@@ -1753,11 +1961,80 @@ mod playtime_persistence_tests {
         drop(state);
         std::fs::remove_dir_all(folder).unwrap();
     }
+
+    #[test]
+    fn prioritize_unattempted_games_defers_recent_misses_without_dropping_them() {
+        let games = vec![
+            json!({"id":"g1","source":"manual","source_id":"","name":"Alpha"}),
+            json!({"id":"g2","source":"manual","source_id":"","name":"Beta"}),
+            json!({"id":"g3","source":"manual","source_id":"","name":"Gamma"}),
+        ];
+        let mut misses = HashMap::from([
+            (
+                "g1".to_string(),
+                (artwork_lookup_signature(&games[0]), Instant::now()),
+            ),
+            (
+                "g2".to_string(),
+                ("manual||Old Beta Title".to_string(), Instant::now()),
+            ),
+        ]);
+        let ordered = prioritize_unattempted_games(&games, &mut misses);
+        let ids: Vec<&str> = ordered.iter().filter_map(|g| g["id"].as_str()).collect();
+        // Renamed g2 and untouched g3 run first; already-missed g1 is deferred.
+        assert_eq!(ids, vec!["g2", "g3", "g1"]);
+    }
+
+    #[test]
+    fn art_mime_type_handles_uppercase_extensions_and_save_artwork_cleans_up_temp() {
+        assert_eq!(
+            art_mime_type("01234567-89ab-cdef-0123-456789abcdef.PNG"),
+            "image/png"
+        );
+        assert_eq!(
+            art_mime_type("01234567-89ab-cdef-0123-456789abcdef.WEBP"),
+            "image/webp"
+        );
+        assert_eq!(
+            art_mime_type("01234567-89ab-cdef-0123-456789abcdef.JPG"),
+            "image/jpeg"
+        );
+        let dir = std::env::temp_dir().join(format!("orbit-save-art-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("sample.png");
+        std::fs::write(
+            &src,
+            [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4],
+        )
+        .unwrap();
+        let out_dir = dir.join("out");
+        let saved = save_artwork(&src, &out_dir).unwrap();
+        assert!(valid_art_name(&saved));
+        assert!(out_dir.join(&saved).is_file());
+        // No leftover temporary file in artwork directory.
+        assert_eq!(std::fs::read_dir(&out_dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+fn art_mime_type(name: &str) -> &'static str {
+    let ext = Path::new(name)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    if ext.eq_ignore_ascii_case("png") {
+        "image/png"
+    } else if ext.eq_ignore_ascii_case("webp") {
+        "image/webp"
+    } else {
+        "image/jpeg"
+    }
 }
 
 pub fn run() {
     let scheme_dir = Arc::new(Mutex::new(None::<PathBuf>));
     let scheme_handler = scheme_dir.clone();
+    let last_fullscreen = Arc::new(Mutex::new(None::<bool>));
     tauri::Builder::default()
         // Only one Rust tracker may write playtime to this profile. Without
         // a single-instance guard, launching Orbit again while it is in the
@@ -1776,7 +2053,7 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
-        .on_window_event(|window, event| {
+        .on_window_event(move |window, event| {
             // Destroying the UI window is not quitting Orbit. In particular,
             // don't stop process tracking or settle playtime on Destroyed.
             let _ = tray::handle_window_event(window, event);
@@ -1791,10 +2068,23 @@ pub fn run() {
                 )
             {
                 if let Ok(fullscreen) = window.is_fullscreen() {
-                    emit(
-                        window.app_handle(),
-                        json!({"type":"windowState","fullscreen":fullscreen}),
-                    );
+                    let changed_state = last_fullscreen
+                        .lock()
+                        .map(|mut prev| {
+                            if *prev == Some(fullscreen) {
+                                false
+                            } else {
+                                *prev = Some(fullscreen);
+                                true
+                            }
+                        })
+                        .unwrap_or(true);
+                    if changed_state {
+                        emit(
+                            window.app_handle(),
+                            json!({"type":"windowState","fullscreen":fullscreen}),
+                        );
+                    }
                 }
             }
         })
@@ -1811,14 +2101,7 @@ pub fn run() {
                     return None;
                 }
                 let data = files::read_regular_bounded(&full, 15 * 1024 * 1024).ok()?;
-                let mime = if name.ends_with(".png") {
-                    "image/png"
-                } else if name.ends_with(".webp") {
-                    "image/webp"
-                } else {
-                    "image/jpeg"
-                };
-                Some((data, mime))
+                Some((data, art_mime_type(name)))
             })();
             match response {
                 Some((bytes, mime)) => tauri::http::Response::builder()
@@ -1846,18 +2129,7 @@ pub fn run() {
             db.recover_interrupted_sessions()
                 .map_err(std::io::Error::other)?;
             app.manage(ControllerReturn::default());
-            app.manage(OrbitState {
-                db: Mutex::new(db),
-                revision: AtomicU64::new(0),
-                active: Mutex::new(HashMap::new()),
-                launching: Mutex::new(HashSet::new()),
-                confirming: Mutex::new(HashMap::new()),
-                pending_finishes: Mutex::new(HashMap::new()),
-                artwork_pending: AtomicU64::new(0),
-                artwork_busy: AtomicBool::new(false),
-                data_dir,
-                artwork_dir,
-            });
+            app.manage(OrbitState::new(db, data_dir, artwork_dir));
             #[cfg(target_os = "windows")]
             tray::install_tray(app).map_err(std::io::Error::other)?;
             queue_artwork_scan(app.handle());
@@ -1865,8 +2137,27 @@ pub fn run() {
             std::thread::spawn(move || {
                 let mut diagnostics = TrackingDiagnostics::default();
                 loop {
-                    std::thread::sleep(Duration::from_secs(10));
-                    poll_sessions(&handle, &mut diagnostics);
+                    let state = handle.state::<OrbitState>();
+                    let Ok(stopped) = state.shutdown.lock() else {
+                        break;
+                    };
+                    if *stopped {
+                        break;
+                    }
+                    let (stopped, _) = state
+                        .shutdown_cv
+                        .wait_timeout(stopped, Duration::from_secs(10))
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if *stopped {
+                        break;
+                    }
+                    drop(stopped);
+                    if let Ok(_poll_guard) = state.poll_lock.lock() {
+                        if state.shutdown.lock().is_ok_and(|s| *s) {
+                            break;
+                        }
+                        poll_sessions(&handle, &mut diagnostics);
+                    };
                 }
             });
             Ok(())

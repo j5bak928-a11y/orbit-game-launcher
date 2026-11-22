@@ -6,6 +6,8 @@
 //! Tauri 2 requires the "tray-icon" feature on its dependency to build this
 //! module on Windows.
 
+#[cfg(target_os = "windows")]
+use std::sync::{atomic::AtomicU64, OnceLock};
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -45,6 +47,10 @@ pub struct TrayState {
     placement: Mutex<Option<WindowPlacement>>,
     #[cfg(target_os = "windows")]
     menu_refresh_queued: AtomicBool,
+    #[cfg(target_os = "windows")]
+    menu_refresh_dirty: AtomicBool,
+    #[cfg(target_os = "windows")]
+    menu_generation: AtomicU64,
     #[cfg(target_os = "windows")]
     menu_key: Mutex<String>,
 }
@@ -107,7 +113,8 @@ pub fn install_tray(app: &mut App) -> Result<(), String> {
                 let Some(id) = menu_id.strip_prefix(LAUNCH_PREFIX) else {
                     return;
                 };
-                if app.try_state::<TrayState>()
+                if app
+                    .try_state::<TrayState>()
                     .is_some_and(|state| state.quitting.load(Ordering::SeqCst))
                 {
                     return;
@@ -116,7 +123,10 @@ pub fn install_tray(app: &mut App) -> Result<(), String> {
                 let app = app.clone();
                 tauri::async_runtime::spawn_blocking(move || {
                     if let Err(error) = crate::launch_game(&app, &id) {
-                        app.dialog().message(error).title("Orbit Launcher").show(|_| {});
+                        app.dialog()
+                            .message(error)
+                            .title("Orbit Launcher")
+                            .show(|_| {});
                     }
                 });
             }
@@ -146,6 +156,8 @@ pub fn install_tray(app: &mut App) -> Result<(), String> {
         reopen_requested: AtomicBool::new(false),
         placement: Mutex::new(None),
         menu_refresh_queued: AtomicBool::new(false),
+        menu_refresh_dirty: AtomicBool::new(false),
+        menu_generation: AtomicU64::new(0),
         menu_key: Mutex::new(String::new()),
     }) {
         return Err("Orbit tray state already exists.".into());
@@ -164,24 +176,53 @@ pub fn request_menu_refresh(app: &AppHandle) {
     let Some(state) = app.try_state::<TrayState>() else {
         return;
     };
-    if state.quitting.load(Ordering::SeqCst)
-        || state.menu_refresh_queued.swap(true, Ordering::SeqCst)
-    {
+    if state.quitting.load(Ordering::SeqCst) {
+        return;
+    }
+    state.menu_generation.fetch_add(1, Ordering::SeqCst);
+    state.menu_refresh_dirty.store(true, Ordering::SeqCst);
+    if state.menu_refresh_queued.swap(true, Ordering::SeqCst) {
         return;
     }
 
     let menu_app = app.clone();
-    if app.run_on_main_thread(move || {
+    tauri::async_runtime::spawn_blocking(move || loop {
         let state = menu_app.state::<TrayState>();
-        state.menu_refresh_queued.store(false, Ordering::SeqCst);
-        if !state.quitting.load(Ordering::SeqCst) {
-            if let Err(error) = refresh_menu(&menu_app, &state) {
-                eprintln!("Orbit tray: cannot refresh menu: {error}");
+        while state.menu_refresh_dirty.swap(false, Ordering::SeqCst)
+            && !state.quitting.load(Ordering::SeqCst)
+        {
+            let generation = state.menu_generation.load(Ordering::SeqCst);
+            match prepare_menu_snapshot(&menu_app, &state) {
+                Ok(Some((key, language, games))) => {
+                    let apply_app = menu_app.clone();
+                    if let Err(error) = menu_app.run_on_main_thread(move || {
+                        let state = apply_app.state::<TrayState>();
+                        if state.quitting.load(Ordering::SeqCst)
+                            || state.menu_generation.load(Ordering::SeqCst) != generation
+                        {
+                            return;
+                        }
+                        if let Err(error) =
+                            apply_menu_snapshot(&apply_app, &state, key, language, games)
+                        {
+                            eprintln!("Orbit tray: cannot refresh menu: {error}");
+                        }
+                    }) {
+                        eprintln!("Orbit tray: cannot schedule menu refresh: {error}");
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => eprintln!("Orbit tray: cannot read menu state: {error}"),
             }
         }
-    }).is_err() {
         state.menu_refresh_queued.store(false, Ordering::SeqCst);
-    }
+        if !state.menu_refresh_dirty.load(Ordering::SeqCst)
+            || state.quitting.load(Ordering::SeqCst)
+            || state.menu_refresh_queued.swap(true, Ordering::SeqCst)
+        {
+            break;
+        }
+    });
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -205,34 +246,82 @@ fn windows_language() -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn native_label(text: &str) -> String {
-    let cleaned: String = text.chars().map(|ch| if ch.is_control() { ' ' } else { ch }).collect();
+    let cleaned: String = text
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect();
     // Win32 treats one ampersand as a mnemonic rather than display text.
     cleaned.replace('&', "&&")
 }
 
 #[cfg(target_os = "windows")]
-fn refresh_menu(app: &AppHandle, state: &TrayState) -> Result<(), String> {
+fn tray_translations() -> Result<&'static serde_json::Value, String> {
+    static TRANSLATIONS: OnceLock<Result<serde_json::Value, String>> = OnceLock::new();
+    match TRANSLATIONS.get_or_init(|| {
+        serde_json::from_str(include_str!("../../src/core/tray-labels.json"))
+            .map_err(|e| e.to_string())
+    }) {
+        Ok(value) => Ok(value),
+        Err(error) => Err(error.clone()),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn prepare_menu_snapshot(
+    app: &AppHandle,
+    state: &TrayState,
+) -> Result<Option<(String, String, serde_json::Value)>, String> {
     let orbit = app.state::<crate::OrbitState>();
     // Drop active before acquiring the SQLite lock. Launch/poll can need both.
-    let active_ids: Vec<String> = orbit.active.lock().map_err(|e| e.to_string())?
-        .values().map(|(session_id, _)| session_id.clone()).collect();
+    let active_ids: Vec<String> = orbit
+        .active
+        .lock()
+        .map_err(|e| e.to_string())?
+        .values()
+        .map(|(session_id, _)| session_id.clone())
+        .collect();
     let (games, mut language) = {
         let db = orbit.db.lock().map_err(|e| e.to_string())?;
-        (db.tray_games(&active_ids)?,
-         db.get_settings()?["language"].as_str().unwrap_or("en").to_string())
+        (
+            db.tray_games(&active_ids)?,
+            db.get_settings()?["language"]
+                .as_str()
+                .unwrap_or("en")
+                .to_string(),
+        )
     };
     if language == "system" {
         language = windows_language().unwrap_or_else(|| "en".into());
     }
-    let language = language.split('-').next().unwrap_or("en").to_ascii_lowercase();
+    let language = language
+        .split('-')
+        .next()
+        .unwrap_or("en")
+        .to_ascii_lowercase();
     let key = format!("{language}/{games}");
+    let previous = state.menu_key.lock().map_err(|e| e.to_string())?;
+    if *previous == key {
+        return Ok(None);
+    }
+    Ok(Some((key, language, games)))
+}
+
+#[cfg(target_os = "windows")]
+fn apply_menu_snapshot(
+    app: &AppHandle,
+    state: &TrayState,
+    key: String,
+    language: String,
+    games: serde_json::Value,
+) -> Result<(), String> {
     let mut previous = state.menu_key.lock().map_err(|e| e.to_string())?;
     if *previous == key {
         return Ok(());
     }
-    let translations: serde_json::Value = serde_json::from_str(include_str!("../../src/core/tray-labels.json"))
-        .map_err(|e| e.to_string())?;
-    let labels = translations.get(language.as_str()).unwrap_or(&translations["en"]);
+    let translations = tray_translations()?;
+    let labels = translations
+        .get(language.as_str())
+        .unwrap_or(&translations["en"]);
     let label = |key: &str| labels[key].as_str().unwrap_or("");
     let menu = Menu::new(app).map_err(|e| e.to_string())?;
     let open = MenuItem::with_id(app, OPEN_ID, label("open"), true, None::<&str>)
@@ -247,10 +336,14 @@ fn refresh_menu(app: &AppHandle, state: &TrayState) -> Result<(), String> {
     }
     for game in active {
         let name = game["name"].as_str().unwrap_or("");
-        let time = game["started_at"].as_str()
+        let time = game["started_at"]
+            .as_str()
             .and_then(|start| chrono::DateTime::parse_from_rfc3339(start).ok());
         let text = if let Some(time) = time {
-            let local = time.with_timezone(&chrono::Local).format("%d/%m %H:%M").to_string();
+            let local = time
+                .with_timezone(&chrono::Local)
+                .format("%d/%m %H:%M")
+                .to_string();
             format!("{name} · {}", label("tracking").replace("{time}", &local))
         } else {
             name.into()
@@ -261,7 +354,10 @@ fn refresh_menu(app: &AppHandle, state: &TrayState) -> Result<(), String> {
     }
 
     for group in ["favorites", "recent"] {
-        let Some(entries) = games[group].as_array().filter(|entries| !entries.is_empty()) else {
+        let Some(entries) = games[group]
+            .as_array()
+            .filter(|entries| !entries.is_empty())
+        else {
             continue;
         };
         let submenu = Submenu::new(app, label(group), true).map_err(|e| e.to_string())?;
@@ -269,8 +365,14 @@ fn refresh_menu(app: &AppHandle, state: &TrayState) -> Result<(), String> {
             let id = game["id"].as_str().unwrap_or("");
             let name = game["name"].as_str().unwrap_or("");
             let enabled = !active.iter().any(|entry| entry["id"] == id);
-            let entry = MenuItem::with_id(app, format!("{LAUNCH_PREFIX}{id}"),
-                native_label(name), enabled, None::<&str>).map_err(|e| e.to_string())?;
+            let entry = MenuItem::with_id(
+                app,
+                format!("{LAUNCH_PREFIX}{id}"),
+                native_label(name),
+                enabled,
+                None::<&str>,
+            )
+            .map_err(|e| e.to_string())?;
             submenu.append(&entry).map_err(|e| e.to_string())?;
         }
         menu.append(&submenu).map_err(|e| e.to_string())?;
@@ -278,9 +380,12 @@ fn refresh_menu(app: &AppHandle, state: &TrayState) -> Result<(), String> {
     let separator = PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?;
     let quit = MenuItem::with_id(app, QUIT_ID, label("quit"), true, None::<&str>)
         .map_err(|e| e.to_string())?;
-    menu.append_items(&[&separator, &quit]).map_err(|e| e.to_string())?;
-    app.tray_by_id(TRAY_ID).ok_or("Orbit tray is unavailable.")?
-        .set_menu(Some(menu)).map_err(|e| e.to_string())?;
+    menu.append_items(&[&separator, &quit])
+        .map_err(|e| e.to_string())?;
+    app.tray_by_id(TRAY_ID)
+        .ok_or("Orbit tray is unavailable.")?
+        .set_menu(Some(menu))
+        .map_err(|e| e.to_string())?;
     *previous = key;
     Ok(())
 }
@@ -335,17 +440,19 @@ fn release_webview_to_tray<R: Runtime>(
     if state.closing.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
-    if let (Ok(size), Ok(position), Ok(maximized)) = (
-        webview.inner_size(),
-        webview.outer_position(),
-        webview.is_maximized(),
-    ) {
-        if let Ok(mut placement) = state.placement.lock() {
-            *placement = Some(WindowPlacement {
-                size,
-                position,
-                maximized,
-            });
+    if !webview.is_minimized().unwrap_or(false) {
+        if let (Ok(size), Ok(position), Ok(maximized)) = (
+            webview.inner_size(),
+            webview.outer_position(),
+            webview.is_maximized(),
+        ) {
+            if let Ok(mut placement) = state.placement.lock() {
+                *placement = Some(WindowPlacement {
+                    size,
+                    position,
+                    maximized,
+                });
+            }
         }
     }
     if let Err(error) = webview.hide() {

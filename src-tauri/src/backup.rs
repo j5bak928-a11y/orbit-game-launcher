@@ -8,7 +8,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
 };
@@ -486,7 +486,7 @@ fn decode_artwork(
         let bytes = BASE64
             .decode(source)
             .map_err(|_| err("Backup contains invalid artwork."))?;
-        if !valid_image(name, &bytes) || BASE64.encode(&bytes) != source {
+        if !valid_image(name, &bytes) {
             return Err(err("Backup contains invalid artwork."));
         }
         total += bytes.len() as u64;
@@ -620,6 +620,7 @@ where
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::fs::File;
     use std::path::PathBuf;
 
     struct Fixture {

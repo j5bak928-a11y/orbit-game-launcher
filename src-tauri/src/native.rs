@@ -1015,6 +1015,69 @@ fn read_vdf(path: &Path) -> Result<Value, String> {
     vdf_object(&tokens, &mut 0, 0)
 }
 
+#[cfg(windows)]
+pub(crate) fn steam_registry_roots() -> Vec<PathBuf> {
+    use std::ffi::c_void;
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn RegGetValueW(
+            hkey: isize,
+            subkey: *const u16,
+            value: *const u16,
+            flags: u32,
+            pdw_type: *mut u32,
+            pv_data: *mut c_void,
+            pcb_data: *mut u32,
+        ) -> i32;
+    }
+    const HKEY_CURRENT_USER: isize = 0x8000_0001_u32 as i32 as isize;
+    const HKEY_LOCAL_MACHINE: isize = 0x8000_0002_u32 as i32 as isize;
+    const RRF_RT_REG_SZ: u32 = 0x0000_0002;
+
+    let mut roots = Vec::new();
+    for (hive, subkey, value_name) in [
+        (HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamPath"),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\WOW6432Node\Valve\Steam",
+            "InstallPath",
+        ),
+        (HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam", "InstallPath"),
+    ] {
+        let sub = wide(std::ffi::OsStr::new(subkey));
+        let val = wide(std::ffi::OsStr::new(value_name));
+        let mut buf = [0u16; 1024];
+        let mut bytes = (buf.len() * 2) as u32;
+        let status = unsafe {
+            RegGetValueW(
+                hive,
+                sub.as_ptr(),
+                val.as_ptr(),
+                RRF_RT_REG_SZ,
+                std::ptr::null_mut(),
+                buf.as_mut_ptr().cast(),
+                &mut bytes,
+            )
+        };
+        if status == 0 && bytes >= 2 {
+            let len = (bytes as usize / 2).min(buf.len());
+            if let Ok(raw) = String::from_utf16(&buf[..len]) {
+                let trimmed = raw.trim_end_matches('\0').trim().replace('/', "\\");
+                let path = PathBuf::from(&trimmed);
+                if safe_text(&trimmed, 4_000) && path.is_absolute() {
+                    add_root(&mut roots, path);
+                }
+            }
+        }
+    }
+    roots
+}
+
+#[cfg(not(windows))]
+pub(crate) fn steam_registry_roots() -> Vec<PathBuf> {
+    Vec::new()
+}
+
 fn steam_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Some(path) = std::env::var_os("STEAM_COMPAT_CLIENT_INSTALL_PATH") {
@@ -1022,6 +1085,9 @@ fn steam_roots() -> Vec<PathBuf> {
     }
     #[cfg(windows)]
     {
+        for root in steam_registry_roots() {
+            add_root(&mut roots, root);
+        }
         for var in ["ProgramFiles(x86)", "ProgramFiles"] {
             if let Some(prefix) = std::env::var_os(var) {
                 add_root(&mut roots, PathBuf::from(prefix).join("Steam"));
@@ -1818,8 +1884,10 @@ fn xbox_xml_tags(source: &str) -> Option<HashMap<&str, XboxAttributes>> {
         if !valid_parent {
             return None;
         }
-        if matches!(name, "Identity" | "ShellVisuals" | "ExecutableList" | "Executable")
-            && tags.insert(name, attrs).is_some()
+        if matches!(
+            name,
+            "Identity" | "ShellVisuals" | "ExecutableList" | "Executable"
+        ) && tags.insert(name, attrs).is_some()
         {
             return None;
         }
@@ -1960,8 +2028,10 @@ fn read_xbox_manifest(root: &Path, file: &Path) -> Option<XboxManifest> {
 
 fn xbox_from_manifest(root: &Path, file: &Path) -> Option<Value> {
     let manifest = read_xbox_manifest(root, file)?;
-    Some(json!({"name":manifest.title,"source":"xbox","source_id":manifest.id,
-        "install_path":manifest.owner,"executable":manifest.executable,"tags":[]}))
+    Some(
+        json!({"name":manifest.title,"source":"xbox","source_id":manifest.id,
+        "install_path":manifest.owner,"executable":manifest.executable,"tags":[]}),
+    )
 }
 
 /// Resolve official Microsoft GDK logo assets from the installed package's
@@ -2279,6 +2349,7 @@ fn validate_uri(raw: &str) -> Result<(), String> {
 struct DirectSession {
     child: Child,
     clock: SessionClock,
+    registered: bool,
 }
 
 struct SessionClock {
@@ -2418,9 +2489,27 @@ pub fn launch_game(game: &Value) -> Result<Value, String> {
         DirectSession {
             child,
             clock: SessionClock::new(),
+            registered: false,
         },
     );
     Ok(json!({"mode":"process","pid":pid,"tracked":true,"message":"Game launched."}))
+}
+
+pub fn acknowledge_direct_session(id: &str) {
+    if let Ok(mut sessions) = direct().lock() {
+        if let Some(session) = sessions.get_mut(id) {
+            session.registered = true;
+        }
+    }
+}
+
+pub fn forget_game(id: &str) {
+    if let Ok(mut sessions) = direct().lock() {
+        sessions.remove(id);
+    }
+    if let Ok(mut sessions) = activity().lock() {
+        sessions.remove(id);
+    }
 }
 
 pub fn poll_sessions(launching: &HashSet<String>) -> Result<Value, String> {
@@ -2437,6 +2526,7 @@ fn poll_direct_sessions(
     let mut completed = Vec::new();
     let mut running = Vec::new();
     let mut checkpoints = Vec::new();
+    let mut unregistered = Vec::new();
     let mut first_error = None;
     for (id, session) in active.iter_mut() {
         if launching.contains(id) {
@@ -2446,9 +2536,12 @@ fn poll_direct_sessions(
             Ok(None) => {
                 running.push(id.clone());
                 checkpoints.push(json!({"game_id":id,"seconds":session.clock.seconds()}));
+                if !session.registered {
+                    unregistered.push(id.clone());
+                }
             }
             Ok(Some(status)) => completed.push(
-                json!({"game_id":id,"seconds":session.clock.seconds(),"exitCode":status.code()}),
+                json!({"game_id":id,"seconds":session.clock.seconds(),"exitCode":status.code(),"registered":session.registered}),
             ),
             Err(error) => {
                 first_error.get_or_insert_with(|| format!("Unable to check game process: {error}"));
@@ -2458,7 +2551,7 @@ fn poll_direct_sessions(
     for result in &completed {
         active.remove(field(result, "game_id"));
     }
-    json!({"completed":completed,"runningIds":running,"checkpoints":checkpoints,"error":first_error})
+    json!({"completed":completed,"runningIds":running,"checkpoints":checkpoints,"unregistered":unregistered,"error":first_error})
 }
 
 pub fn suspend_sessions() -> Result<Value, String> {
@@ -2513,11 +2606,23 @@ pub fn stop_sessions() -> Result<Value, String> {
 }
 
 pub fn inspect_game_file(executable: &str) -> Result<Value, String> {
+    inspect_game_file_internal(executable, true)
+}
+
+pub fn inspect_game_title(executable: &str) -> Result<Value, String> {
+    inspect_game_file_internal(executable, false)
+}
+
+fn inspect_game_file_internal(executable: &str, scan_artwork: bool) -> Result<Value, String> {
     let file = require_absolute_file(executable)?;
     let parent = file.parent().ok_or("Game directory unavailable.")?;
     let product = read_windows_product_name(&file);
     let (name, fallback, kind) = game_file_title(&file, product.as_deref());
-    let local_artwork = find_nearby_artwork(&file, &name);
+    let local_artwork = if scan_artwork {
+        find_nearby_artwork(&file, &name)
+    } else {
+        None
+    };
     Ok(
         json!({"executable":file,"name":name,"suggested_name":fallback,
         "recognized":matches!(kind, "executable" | "metadata" | "folder"),
@@ -2815,13 +2920,30 @@ fn list_running_executables() -> Result<Vec<PathBuf>, String> {
         unsafe { CloseHandle(snapshot) };
         return Err(format!("Cannot read Windows process inventory: {error}"));
     }
+    const ERROR_INSUFFICIENT_BUFFER: i32 = 122;
+    let mut path = vec![0u16; 1024];
     while more != 0 && result.len() < 10_000 {
         let handle = unsafe { OpenProcess(QUERY_LIMITED, 0, item.pid) };
         if handle != 0 {
-            let mut path = [0u16; 32_768];
+            let mut ok = false;
             let mut length = path.len() as u32;
-            if unsafe { QueryFullProcessImageNameW(handle, 0, path.as_mut_ptr(), &mut length) } != 0
-            {
+            loop {
+                if unsafe { QueryFullProcessImageNameW(handle, 0, path.as_mut_ptr(), &mut length) }
+                    != 0
+                {
+                    ok = true;
+                    break;
+                }
+                if std::io::Error::last_os_error().raw_os_error() == Some(ERROR_INSUFFICIENT_BUFFER)
+                    && path.len() < 32_768
+                {
+                    path.resize((path.len() * 2).min(32_768), 0);
+                    length = path.len() as u32;
+                    continue;
+                }
+                break;
+            }
+            if ok {
                 if let Ok(name) = String::from_utf16(&path[..length as usize]) {
                     if name.to_ascii_lowercase().ends_with(".exe") {
                         result.push(PathBuf::from(name));
@@ -3080,10 +3202,33 @@ pub fn running_games(games: &Value) -> Result<Value, String> {
     Ok(json!(sorted))
 }
 
+fn has_trackable_activity_target(entries: &[Value]) -> bool {
+    entries.iter().any(|game| {
+        if field(game, "id").is_empty() {
+            return false;
+        }
+        let executable = field(game, "executable");
+        if !executable.is_empty() && Path::new(executable).is_absolute() {
+            return true;
+        }
+        let source = field(game, "source");
+        let folder = field(game, "install_path");
+        ["steam", "epic"].contains(&source) && Path::new(folder).is_absolute()
+    })
+}
+
 /// Process observation for launcher URI games. Two missing inventories are
 /// required before a session is finished, and query errors leave state intact.
 /// `started` and `finished` belong to the DB integration layer.
 pub fn poll_activity(games: &Value) -> Result<Value, String> {
+    let entries = games.as_array().ok_or("Expected a game list.")?;
+    let active_empty = activity()
+        .lock()
+        .map_err(|_| "Activity tracker unavailable.")?
+        .is_empty();
+    if active_empty && !has_trackable_activity_target(entries) {
+        return Ok(json!({"started":[],"finished":[],"runningIds":[],"checkpoints":[]}));
+    }
     let inventory = list_running_executables()?;
     let mut found = match_game_processes(games, &inventory);
     let direct_ids = direct()
@@ -3093,9 +3238,7 @@ pub fn poll_activity(games: &Value) -> Result<Value, String> {
         .cloned()
         .collect::<HashSet<_>>();
     suppress_store_for_direct_alias(games, &mut found, &direct_ids);
-    let eligible = games
-        .as_array()
-        .ok_or("Expected a game list.")?
+    let eligible = entries
         .iter()
         .filter_map(|g| g.get("id").and_then(Value::as_str))
         .map(str::to_string)
@@ -3474,6 +3617,7 @@ mod tests {
             DirectSession {
                 child,
                 clock: SessionClock::new(),
+                registered: true,
             },
         )]);
         let mut launching = HashSet::from([id.clone()]);
@@ -3863,5 +4007,56 @@ mod tests {
         png[20..24].copy_from_slice(&6200_u32.to_be_bytes());
         assert!(!is_portrait_image(&png));
         assert!(!is_portrait_image(b"not really a JPEG"));
+    }
+
+    #[test]
+    fn poll_activity_skips_process_snapshot_when_watchlist_and_activity_are_empty() {
+        // On non-Windows hosts list_running_executables() returns Err; skipping
+        // when nothing is trackable ensures Ok on all platforms and zero OS churn.
+        let empty = poll_activity(&json!([])).unwrap();
+        assert_eq!(empty["started"], json!([]));
+        assert_eq!(empty["finished"], json!([]));
+        let untrackable = poll_activity(&json!([
+            {"id":"g1","source":"manual","executable":"","install_path":""}
+        ]))
+        .unwrap();
+        assert_eq!(untrackable["runningIds"], json!([]));
+    }
+
+    #[test]
+    fn direct_session_reports_unregistered_until_acknowledged_and_forget_clears_state() {
+        let child = Command::new(std::env::current_exe().unwrap())
+            .arg("--list")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let id = "unregistered-direct".to_string();
+        let mut sessions = HashMap::from([(
+            id.clone(),
+            DirectSession {
+                child,
+                clock: SessionClock::new(),
+                registered: false,
+            },
+        )]);
+        let launching = HashSet::new();
+        // Either still running (in unregistered) or already fast-exited (in completed):
+        let poll = poll_direct_sessions(&mut sessions, &launching);
+        let in_unregistered = poll["unregistered"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(id));
+        let in_completed = poll["completed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["game_id"] == id && row["registered"] == false);
+        assert!(in_unregistered || in_completed);
+        if let Some(mut remaining) = sessions.remove(&id) {
+            let _ = remaining.child.wait();
+        }
+        // forget_game clears any active/direct entries cleanly.
+        forget_game(&id);
     }
 }

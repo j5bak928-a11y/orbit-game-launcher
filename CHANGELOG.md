@@ -2,6 +2,14 @@
 
 This changelog covers the changes users receive with Orbit's Windows editions. **Rust/Tauri is the recommended direction starting with 0.2.8**, but its separately named download remains an **experimental, unsigned preview** while installed Windows acceptance is incomplete. Electron remains a supported fallback with separate application data. Release files appear on [GitHub Releases](https://github.com/j5bak928-a11y/orbit-game-launcher/releases); check the version on the download before installing.
 
+## 0.3.3 — Rust recovery, tray and artwork reliability
+
+- Recover interrupted playtime sessions using their last checkpoint timestamp instead of relaunch time, preventing statistics distortion or dropped sessions after >7 days offline, and stop counting valid 0-second sessions as invalid.
+- Prevent automatic and manual online artwork scans from permanently starving after 8 unmatched titles, resolve all generated executable titles before scanning artwork, reuse the HTTP client, and preserve valid 5–15 MB user-chosen covers.
+- Move tray SQLite queries off the main Windows UI thread, cache tray translations, and preserve prior window bounds when Performance Guard hides a minimized window.
+- Synchronize background session polling with exit settlement, clean up active/pending state when removing a game, and retry direct-session DB registration if startup persistence fails transiently.
+- Decode portable `.orbit` backups before locking the database, make `save_artwork` staging atomic, serve uppercase `.PNG`/`.WEBP` `orbit-art` MIME types accurately, align `discoverGames` `alreadyAdded` with DB deduplication, discover Steam registry install paths, and skip idle process enumeration.
+
 ## 0.3.2 — Playtime and backup reliability
 
 - Preserve playtime tracking when a directly launched game closes during startup.

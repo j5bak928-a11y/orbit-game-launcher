@@ -286,11 +286,15 @@ fn statistics_from_rows(
             continue;
         };
         if raw < 0
-            || end <= start
+            || end < start
+            || (end == start && raw > 0)
             || end - start > MAX_SESSION_SECONDS * 1000
             || end > now.saturating_add(300_000)
         {
             invalid_sessions += 1;
+            continue;
+        }
+        if end == start && raw == 0 {
             continue;
         }
         let game = games
@@ -696,6 +700,85 @@ pub fn duplicate_key(game: &Value) -> String {
     String::new()
 }
 
+/// Fast in-memory index mirroring `find_duplicate_on` semantics so `discoverGames`
+/// accurately marks `alreadyAdded` according to `upsert` deduplication rules.
+pub struct LibraryDuplicateIndex {
+    keys: HashSet<String>,
+    all_executables: HashSet<String>,
+    alias_executables: HashSet<String>,
+    all_uris: HashSet<String>,
+    alias_uris: HashSet<String>,
+}
+
+impl LibraryDuplicateIndex {
+    pub fn from_games(games: &[Value]) -> Self {
+        let mut index = Self {
+            keys: HashSet::with_capacity(games.len()),
+            all_executables: HashSet::with_capacity(games.len()),
+            alias_executables: HashSet::new(),
+            all_uris: HashSet::with_capacity(games.len()),
+            alias_uris: HashSet::new(),
+        };
+        for game in games {
+            let key = duplicate_key(game);
+            if !key.is_empty() {
+                index.keys.insert(key);
+            }
+            let is_alias = !has_store_identity(game);
+            let executable = field(game, "executable");
+            if !executable.is_empty() {
+                let norm = normalized_path(executable);
+                index.all_executables.insert(norm.clone());
+                if is_alias {
+                    index.alias_executables.insert(norm);
+                }
+            }
+            let uri = field(game, "launch_uri");
+            if !uri.is_empty() {
+                let norm = uri.to_ascii_lowercase();
+                index.all_uris.insert(norm.clone());
+                if is_alias {
+                    index.alias_uris.insert(norm);
+                }
+            }
+        }
+        index
+    }
+
+    pub fn contains(&self, candidate: &Value) -> bool {
+        let key = duplicate_key(candidate);
+        if !key.is_empty() && self.keys.contains(&key) {
+            return true;
+        }
+        let alias_only = has_store_identity(candidate);
+        let executable = field(candidate, "executable");
+        if !executable.is_empty() {
+            let norm = normalized_path(executable);
+            let matched = if alias_only {
+                self.alias_executables.contains(&norm)
+            } else {
+                self.all_executables.contains(&norm)
+            };
+            if matched {
+                return true;
+            }
+        }
+        let uri = field(candidate, "launch_uri");
+        if !uri.is_empty() {
+            let norm = uri.to_ascii_lowercase();
+            let matched = if alias_only {
+                self.alias_uris.contains(&norm)
+            } else {
+                self.all_uris.contains(&norm)
+            };
+            if matched {
+                return true;
+            }
+        }
+        false
+    }
+}
+
 fn game_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     let mut game = Map::new();
     for field in [
@@ -893,6 +976,36 @@ pub struct LibraryDatabase {
     conn: Connection,
 }
 
+fn recovered_finished_at(
+    started_at: &str,
+    last_seen_at: Option<&str>,
+    seconds: i64,
+    fallback_now: &str,
+) -> String {
+    let Ok(started) = DateTime::parse_from_rfc3339(started_at) else {
+        return fallback_now.to_owned();
+    };
+    let started_utc = started.with_timezone(&Utc);
+    let max_end = started_utc + chrono::Duration::seconds(MAX_SESSION_SECONDS);
+    let cap = DateTime::parse_from_rfc3339(fallback_now)
+        .map(|now| now.with_timezone(&Utc).min(max_end))
+        .unwrap_or(max_end);
+    if let Some(seen) = last_seen_at.filter(|s| !s.is_empty()) {
+        if let Ok(parsed) = DateTime::parse_from_rfc3339(seen) {
+            return parsed
+                .with_timezone(&Utc)
+                .min(cap)
+                .max(started_utc)
+                .to_rfc3339_opts(SecondsFormat::Millis, true);
+        }
+    }
+    let estimated = started_utc + chrono::Duration::seconds(seconds.clamp(0, MAX_SESSION_SECONDS));
+    estimated
+        .min(cap)
+        .max(started_utc)
+        .to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
 impl LibraryDatabase {
     pub fn open(path: impl AsRef<Path>) -> DbResult<Self> {
         if let Some(parent) = path.as_ref().parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -1074,15 +1187,22 @@ impl LibraryDatabase {
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(error)
         };
-        let mut session = self.conn.prepare(
-            "SELECT g.id,g.name,s.started_at FROM sessions s
+        let mut session = self
+            .conn
+            .prepare(
+                "SELECT g.id,g.name,s.started_at FROM sessions s
              JOIN games g ON g.id=s.game_id WHERE s.id=?1 AND s.finished_at IS NULL",
-        ).map_err(error)?;
+            )
+            .map_err(error)?;
         let mut active = Vec::new();
         for id in active_session_ids {
             let item = session
                 .query_row([id], |row| {
-                    Ok((row.get::<_, String>(2)?, row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    Ok((
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                    ))
                 })
                 .optional()
                 .map_err(error)?;
@@ -1718,7 +1838,7 @@ impl LibraryDatabase {
         let stale = {
             let mut stmt = tx
                 .prepare(
-                    "SELECT id,game_id,heartbeat_seconds FROM sessions WHERE finished_at IS NULL",
+                    "SELECT id,game_id,started_at,heartbeat_seconds,last_seen_at FROM sessions WHERE finished_at IS NULL",
                 )
                 .map_err(error)?;
             let rows = stmt
@@ -1726,7 +1846,9 @@ impl LibraryDatabase {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
-                        r.get::<_, i64>(2)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, i64>(3)?,
+                        r.get::<_, Option<String>>(4)?,
                     ))
                 })
                 .map_err(error)?;
@@ -1734,11 +1856,13 @@ impl LibraryDatabase {
         };
         let date = stamp();
         let mut count = 0;
-        for (id, game_id, heartbeat) in stale {
+        for (id, game_id, started_at, heartbeat, last_seen_at) in stale {
             let seconds = heartbeat.clamp(0, MAX_SESSION_SECONDS);
+            let finished_at =
+                recovered_finished_at(&started_at, last_seen_at.as_deref(), seconds, &date);
             if tx.execute(
                 "UPDATE sessions SET finished_at=?1,seconds=?2 WHERE id=?3 AND finished_at IS NULL",
-                params![date, seconds, id],
+                params![finished_at, seconds, id],
             ).map_err(error)? > 0 {
                 tx.execute(
                     "UPDATE games SET total_play_seconds=total_play_seconds+?1,updated_at=?2 WHERE id=?3",
@@ -1796,14 +1920,17 @@ impl LibraryDatabase {
             )
             .map_err(error)?;
         let mut rows = stmt
-            .query_map(params![game_id, SESSION_PAGE_SIZE + 1, page * SESSION_PAGE_SIZE], |row| {
-                Ok(json!({
-                    "id": row.get::<_, String>(0)?,
-                    "started_at": row.get::<_, String>(1)?,
-                    "finished_at": row.get::<_, String>(2)?,
-                    "seconds": row.get::<_, i64>(3)?,
-                }))
-            })
+            .query_map(
+                params![game_id, SESSION_PAGE_SIZE + 1, page * SESSION_PAGE_SIZE],
+                |row| {
+                    Ok(json!({
+                        "id": row.get::<_, String>(0)?,
+                        "started_at": row.get::<_, String>(1)?,
+                        "finished_at": row.get::<_, String>(2)?,
+                        "seconds": row.get::<_, i64>(3)?,
+                    }))
+                },
+            )
             .map_err(error)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(error)?;
@@ -2212,10 +2339,16 @@ mod tests {
             let tray = db.tray_games(&[active, finished]).unwrap();
             assert_eq!(tray["active"].as_array().unwrap().len(), 1);
             assert_eq!(tray["active"][0]["id"], first_id);
-            assert!(DateTime::parse_from_rfc3339(tray["active"][0]["started_at"].as_str().unwrap()).is_ok());
+            assert!(DateTime::parse_from_rfc3339(
+                tray["active"][0]["started_at"].as_str().unwrap()
+            )
+            .is_ok());
             assert_eq!(tray["favorites"][0]["id"], first_id);
             assert_eq!(tray["recent"][0]["id"], recent_id);
-            assert!(db.tray_games(&[]).unwrap()["active"].as_array().unwrap().is_empty());
+            assert!(db.tray_games(&[]).unwrap()["active"]
+                .as_array()
+                .unwrap()
+                .is_empty());
         });
     }
 
@@ -2571,10 +2704,7 @@ mod tests {
                 )
                 .unwrap();
             db.conn
-                .execute(
-                    "UPDATE games SET total_play_seconds=437 WHERE id=?1",
-                    [id],
-                )
+                .execute("UPDATE games SET total_play_seconds=437 WHERE id=?1", [id])
                 .unwrap();
             let active = db.start_session(id).unwrap();
             assert_eq!(
@@ -3182,5 +3312,93 @@ mod tests {
             );
         }
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn interrupted_session_recovers_using_last_seen_at_even_after_eight_days() {
+        with_database(|db, _| {
+            let game = db.upsert(&json!({"name":"Long Away"})).unwrap()["game"].clone();
+            let id = field(&game, "id").to_owned();
+            let start = "2026-11-01T18:00:00.000Z";
+            let last_seen = "2026-11-01T19:00:00.000Z";
+            db.conn
+                .execute(
+                    "INSERT INTO sessions(id,game_id,started_at,heartbeat_seconds,last_seen_at)
+                     VALUES ('crash-old',?1,?2,3600,?3)",
+                    params![id, start, last_seen],
+                )
+                .unwrap();
+            assert_eq!(db.recover_interrupted_sessions().unwrap(), 1);
+            let finished: String = db
+                .conn
+                .query_row(
+                    "SELECT finished_at FROM sessions WHERE id='crash-old'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(finished, last_seen);
+            let now = Local
+                .with_ymd_and_hms(2026, 11, 10, 12, 0, 0)
+                .single()
+                .unwrap();
+            let stats = db.get_statistics_at(30, now).unwrap();
+            assert_eq!(stats["meta"]["invalidSessions"], 0);
+            assert_eq!(stats["totals"]["allTime"], 3600);
+        });
+    }
+
+    #[test]
+    fn zero_second_completed_session_is_not_counted_as_invalid_in_statistics() {
+        with_database(|db, _| {
+            let game = db.upsert(&json!({"name":"Quick Exit"})).unwrap()["game"].clone();
+            let id = field(&game, "id");
+            let ts = "2026-11-04T10:00:00.000Z";
+            db.conn
+                .execute(
+                    "INSERT INTO sessions(id,game_id,started_at,finished_at,seconds)
+                     VALUES ('zero-ok',?1,?2,?2,0)",
+                    params![id, ts],
+                )
+                .unwrap();
+            let now = Local
+                .with_ymd_and_hms(2026, 11, 5, 12, 0, 0)
+                .single()
+                .unwrap();
+            let stats = db.get_statistics_at(7, now).unwrap();
+            assert_eq!(stats["meta"]["invalidSessions"], 0);
+            assert_eq!(stats["totals"]["allTime"], 0);
+            assert!(stats["recentGames"].as_array().unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn library_duplicate_index_matches_store_and_manual_alias_deduplication() {
+        let existing = vec![
+            json!({
+                "id":"m1","name":"Hollow Knight","source":"manual",
+                "executable":r"C:\Games\Hollow Knight\hollow_knight.exe"
+            }),
+            json!({
+                "id":"s1","name":"Shared A","source":"epic","source_id":"epic-a",
+                "executable":r"C:\Games\Shared\Game.exe","launch_uri":"com.epicgames.launcher://apps/a"
+            }),
+        ];
+        let index = LibraryDuplicateIndex::from_games(&existing);
+        // A discovered store game sharing an executable with an existing manual entry matches upsert deduplication.
+        assert!(index.contains(&json!({
+            "name":"Hollow Knight","source":"gog","source_id":"1450711444",
+            "executable":r"C:/Games/Hollow Knight/Sub/../hollow_knight.exe"
+        })));
+        // A distinct verified store product sharing a storefront executable does not falsely coalesce.
+        assert!(!index.contains(&json!({
+            "name":"Shared B","source":"epic","source_id":"epic-b",
+            "executable":r"C:\Games\Shared\Game.exe","launch_uri":"com.epicgames.launcher://apps/a"
+        })));
+        // A discovered folder entry pointing at an existing store game's executable is marked added.
+        assert!(index.contains(&json!({
+            "name":"Shared Folder","source":"folder",
+            "executable":r"C:\Games\Shared\Game.exe"
+        })));
     }
 }

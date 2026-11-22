@@ -1,12 +1,11 @@
-// Keep the renderer's existing Electron preload API when running under Tauri.
+// Desktop IPC bridge between the Orbit UI and the Rust/Tauri backend.
 // Tauri injects __TAURI__ before deferred page scripts when withGlobalTauri=true.
 (() => {
   if (window.orbit || !window.__TAURI__?.core?.invoke) return;
 
   const {core, event} = window.__TAURI__;
-  // Wry/WebView2 registers custom protocols on a local HTTP(S) origin rather
-  // than as a navigable orbit-art: scheme. Convert local artwork URLs only
-  // under Windows Tauri; Electron and other platforms keep the original URI.
+  // Wry/WebView2 registers custom protocols on a local HTTP(S) origin on
+  // Windows rather than as a navigable orbit-art: scheme.
   window.OrbitArtworkUrl = token => {
     if (!/^[a-f\d-]{36}\.(jpg|jpeg|png|webp)$/.test(token || '')) return null;
     const onWindows = /^Win/i.test(window.navigator?.platform || '') ||

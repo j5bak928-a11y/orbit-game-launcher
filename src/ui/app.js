@@ -579,7 +579,7 @@ function openGameActions(trigger){
  menu.querySelector('[role=menuitem]')?.focus({preventScroll:true});
 }
 function openModal(type,meta={}){pauseDesktopPadEntry();closeGameActions();if(!state.modal){modalReturnFocus=document.activeElement;modalReturnFocusAction=modalReturnFocus?.dataset.action?{action:modalReturnFocus.dataset.action,id:modalReturnFocus.dataset.id,kind:['game-card','game-row','continue-card','game-menu'].find(name=>modalReturnFocus.classList.contains(name))}:null;}state.modal={type,...meta};renderModal()}
-const WHATS_NEW_VERSION='0.3.3';
+const WHATS_NEW_VERSION='0.3.4';
 const WHATS_NEW_KEY='orbit.whatsNew.lastAcknowledgedVersion';
 let whatsNewPending=false;
 function markWhatsNewSeen(){
@@ -601,9 +601,11 @@ function whatsNewDialog(){
  const points=(items)=>items.map(item=>`<li>${tr(item)}</li>`).join('');
  return `<div class="dialog-scrim" data-action="scrim"><section class="dialog wide whats-new-dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="whats-new-intro">
  <div class="whats-new-header"><span class="whats-new-eyebrow">${ic('sparkles',15)} ORBIT · v${WHATS_NEW_VERSION}</span><button class="ghost-btn whats-new-close" data-action="close-modal" aria-label="${tr('Close release notes')}">${ic('close',20)}</button>
- <h2 id="dialog-title">${tr("What's new in Orbit")}</h2><p id="whats-new-intro">${tr('Highlights from 0.2.7 through 0.3.3')}</p></div>
+ <h2 id="dialog-title">${tr("What's new in Orbit")}</h2><p id="whats-new-intro">${tr('Highlights from 0.2.7 through 0.3.4')}</p></div>
  <div class="whats-new-content">
- <section class="whats-new-version"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.3.3 — New')}</span><h3>${tr('Stronger Rust recovery, tray and artwork checks')}</h3></div>
+ <section class="whats-new-version"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.3.4 — New')}</span><h3>${tr('Rust is now the only Orbit desktop edition')}</h3></div>
+ <ul>${points(['Removed the legacy Electron edition and promoted the native Rust + Tauri desktop app as the main Orbit Launcher.','First launch automatically copies existing Rust Preview or legacy Electron libraries and artwork without modifying old files.'])}</ul></section>
+ <section class="whats-new-version whats-new-history"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.3.3 — New')}</span><h3>${tr('Stronger Rust recovery, tray and artwork checks')}</h3></div>
  <ul>${points(['Interrupted playtime recovers from the last saved checkpoint without distorting statistics, and backups decode before locking the library.','Automatic cover scans stop starving later titles, keep larger custom covers intact, and skip idle process checks.','Tray menu updates and window placement restoration stay responsive while Orbit shuts down or minimizes cleanly.'])}</ul></section>
  <section class="whats-new-version whats-new-history"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.3.2 — New')}</span><h3>${tr('More reliable playtime and backups')}</h3></div>
  <ul>${points(['Orbit handles games that close during startup and reports playtime tracking problems.','JSON backups take less memory to restore, and Xbox artwork uses one verified manifest.'])}</ul></section>
@@ -624,7 +626,7 @@ function whatsNewDialog(){
  <h3>${tr('Controller experience')}</h3><ul>${points(['Standard gamepads: Menu/Options entry, safer focus, triggers and right-stick scrolling.'])}</ul>
  <h3>${tr('Language and accessibility')}</h3><ul>${points(['English, Nederlands, Deutsch, Français and Español with automatic language selection.'])}</ul>
  <h3>${tr('Data safety and performance')}</h3><ul>${points(['Safer portable backups, completed play-session history and first-run library migration.','Stronger artwork handling, offline cover repair and session recovery.'])}</ul></section>
- <p class="whats-new-warning">${ic('info',15)} ${tr('Rust and Electron keep separate profiles. Back up before switching.')} ${tr('Windows builds are unsigned; automatic update installation remains disabled.')}</p>
+ <p class="whats-new-warning">${ic('info',15)} ${tr('Existing Rust Preview and Electron libraries are imported automatically once on first launch; back up before upgrading if needed.')} ${tr('Windows builds are unsigned; automatic update installation remains disabled.')}</p>
  </div><div class="whats-new-footer"><span>${tr('You can reopen this screen in Settings.')}</span><button class="primary-btn" data-action="close-modal">${tr('Continue to your library')} ${ic('arrow',16)}</button></div></section></div>`;
 }
 function closeModal(){if(state.modal?.type==='whats-new')markWhatsNewSeen();state.modal=null;el('modal-root').innerHTML='';const candidates=modalReturnFocusAction?[...document.querySelectorAll('[data-action]')].filter(node=>node.dataset.action===modalReturnFocusAction.action&&node.dataset.id===modalReturnFocusAction.id):[];const target=modalReturnFocus?.isConnected?modalReturnFocus:candidates.find(node=>modalReturnFocusAction.kind&&node.classList.contains(modalReturnFocusAction.kind))||candidates[0];target?.focus({preventScroll:true});modalReturnFocus=null;modalReturnFocusAction=null;wakeDesktopPadEntry();if(whatsNewPending){whatsNewPending=false;Promise.resolve().then(showWhatsNewAfterBoot);}}

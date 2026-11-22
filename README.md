@@ -4,9 +4,9 @@
 
 Orbit is a local-first desktop game launcher for finding, organizing, and playing installed games. It brings games from different storefronts into one library without replacing their launchers or moving their files.
 
-**Orbit 0.2.11 is Rust-first on Windows:** the standalone **Rust + Tauri 2 preview** is the recommended edition to try, using Orbit's familiar interface with a native Rust backend. The Rust build is still **experimental and unsigned** while installed Windows acceptance is incomplete. **Electron remains available as the fallback** and is not being removed.
+**Orbit `0.3.4` runs solely on Rust + Tauri 2:** the legacy Electron edition has been retired and removed from the repository, promoting the native Rust backend and WebView2 desktop shell to the main **Orbit Launcher** (`com.orbitlauncher.desktop`). On first launch, Orbit automatically copies an existing `com.orbitlauncher.rustpreview` library (or older Electron library) into the new profile via read-only SQLite `VACUUM INTO` without touching the original files.
 
-**[Download the latest Windows release](https://github.com/j5bak928-a11y/orbit-game-launcher/releases/latest)** — look for the separately named **Orbit Rust Preview 0.2.11** NSIS installer (recommended Windows download), MSI or portable ZIP, and **Orbit Launcher 0.2.11** Electron setup/portable EXE as a fallback. Check the release tag and file version before installing. [Read the complete changelog](CHANGELOG.md), including the **0.2.7–0.2.10 history** carried into v0.2.11. **Important when upgrading:** choose **Quit Orbit** from the system tray before installing or relaunching; closing the window alone leaves the older Rust process alive and can prevent the newer UI and changelog from opening.
+**[Download the latest Windows release](https://github.com/j5bak928-a11y/orbit-game-launcher/releases/latest)** — choose **Orbit Launcher Setup** (`Orbit-Launcher-Setup-<version>.exe`, recommended NSIS installer), MSI (`Orbit-Launcher-<version>.msi`), or portable ZIP (`Orbit-Launcher-Portable-<version>.zip`). Check the release tag and SHA-256 checksums before installing. [Read the complete changelog](CHANGELOG.md), including **0.3.4 and 0.2.7–0.3.3 history**. **Important when upgrading:** choose **Quit Orbit** from the system tray before installing or relaunching; closing the window alone leaves the Rust tray tracker alive and can prevent the newer UI and changelog from opening.
 
 ![Orbit library with game covers, filters, and search](docs/images/orbit-library-current.png)
 
@@ -30,24 +30,24 @@ Orbit is a local-first desktop game launcher for finding, organizing, and playin
 <tr><td><img src="docs/images/orbit-overview-current.png" alt="Orbit Overview with featured game and Continue playing"></td><td><img src="docs/images/orbit-settings-current.png" alt="Orbit appearance and performance settings"></td></tr>
 </table>
 
-## Current editions
+## Desktop runtime (`0.3.4`)
 
-| | Rust / Tauri 2 preview | Electron desktop |
-| --- | --- | --- |
-| Version in this repository | **0.3.3** | **0.3.3** |
-| Status | **Rust-first recommended Windows preview**; experimental, installed native acceptance incomplete | **Established fallback**, maintained during the Rust transition |
-| UI | Familiar Orbit HTML/CSS/JavaScript in WebView2 | Familiar Orbit HTML/CSS/JavaScript in Electron |
-| Backend | Native Rust for library, discovery, tracking, artwork and backups | Node.js/Electron, with a native Windows process helper |
-| Windows packaging | NSIS setup, MSI and portable ZIP with runtime DLLs | NSIS setup and portable EXE |
-| Game tracking in the tray | Rust keeps running while its WebView2 window is destroyed on close | Continues while the Electron window is hidden |
+| | Orbit Launcher (Rust / Tauri 2) |
+| --- | --- |
+| Version in this repository | **0.3.4** |
+| Application ID | `com.orbitlauncher.desktop` |
+| UI | Orbit HTML/CSS/JavaScript in WebView2 |
+| Backend | Native Rust for SQLite library, discovery, tracking, artwork and backups |
+| Windows packaging | NSIS setup, MSI and portable ZIP with bundled runtime DLLs |
+| Game tracking in the tray | Rust keeps running while its WebView2 window is destroyed on close |
 
-The editions have **different application IDs and data directories** (`com.orbitlauncher.rustpreview` and `com.orbitlauncher.desktop`). On first launch into an empty Rust profile, the Rust preview can snapshot an existing Electron library and copy compatible artwork without modifying the original database. Changes made later in one edition do **not** automatically sync to the other. Back up both libraries independently, and do not uninstall Electron solely because the Rust preview launches.
+Starting with **0.3.4**, the legacy Electron edition has been removed. On first launch into an empty `com.orbitlauncher.desktop` profile, Orbit imports an existing `com.orbitlauncher.rustpreview` library first (or legacy Electron `orbit-game-launcher` / `Orbit Launcher` directory) via read-only SQLite `VACUUM INTO` and compatible artwork copies without modifying original files.
 
-## Roadmap: Rust-first Orbit 1.0
+## Roadmap: Orbit 1.0
 
-**Direction:** starting with **0.2.8**, make the fast, local-first Rust/Tauri preview the **recommended Windows download to try**, then strengthen native reliability and develop library organization, a console-quality controller experience, and optional offline intelligence. Keep Electron as the fallback during the transition; do not sacrifice libraries or playtime history to accelerate a version bump.
+**Direction:** starting with **0.2.8**, Orbit moved toward a native Rust backend, and in **0.3.4** Rust became the sole main edition (`Orbit Launcher`, `com.orbitlauncher.desktop`). Subsequent releases focus on library organization, a console-quality controller experience, and optional offline intelligence without sacrificing libraries or playtime history.
 
-These are **engineering milestones, not promises of public binary availability or dates**. Electron and Rust currently use version `0.3.3` in source. Rust-first is a **release/download preference**, not a claim that native Windows parity is proven. Rust `0.2.7` established the preceding reliability groundwork; see the [full changelog](CHANGELOG.md).
+These are **engineering milestones, not promises of public binary availability or dates**. Orbit uses version `0.3.4` in source; see the [full changelog](CHANGELOG.md).
 
 | Milestone | Theme | Deliverable / exit criteria |
 | --- | --- | --- |
@@ -111,45 +111,34 @@ powershell -NoProfile -File scripts/windows/compare-launchers-readonly.ps1 -Samp
 
 It lists running processes, totals their **Working Set** (MiB) including known browser/helper descendants, and samples CPU as a percentage of all logical processors. Applications not running are reported as **Not running**, not as zero RAM. This script does not install, start, stop, sign in to, or modify any launcher or game. Repeat measurements after startup settles (e.g. 30 seconds), ideally three times, and report medians together with Windows version, launcher versions, library sizes and whether storefront/social features are enabled. Resident Working Set is **not** private/unique RAM: shared memory can be counted more than once. Startup latency, actual in-game overhead and installer size require separate measurements. Do not fill the table with guesses.
 
-## Run the recommended Rust / Tauri preview on Windows
+## Run and build Orbit on Windows
 
-For a standalone build, use the **Orbit Rust Preview** download listed for version 0.2.11 on [GitHub Releases](https://github.com/j5bak928-a11y/orbit-game-launcher/releases). The normal Windows choice is its NSIS setup; the MSI and portable ZIP are alternatives. **Before updating, select Quit Orbit in the system tray**, not just the window's X; an older single-instance process may otherwise keep running and display outdated UI. Start Orbit again and check the version. The portable ZIP must be extracted with `WebView2Loader.dll` and `libunwind.dll` alongside the EXE. These downloads do not need Node.js or a Rust compiler on the destination PC, but do require Microsoft Edge WebView2. This is still an unsigned preview; see [current limitations](CHANGELOG.md#updating-from-older-versions).
+For a standalone build, use the **Orbit Launcher** download (`Orbit-Launcher-Setup-<version>.exe`, MSI, or portable ZIP) on [GitHub Releases](https://github.com/j5bak928-a11y/orbit-game-launcher/releases). **Before updating, select Quit Orbit in the system tray**, not just the window's X; an older single-instance process may otherwise keep running and display outdated UI. Start Orbit again and check the version. The portable ZIP must be extracted with `WebView2Loader.dll` and `libunwind.dll` alongside `orbit-launcher.exe`. These downloads do not need Node.js or a Rust compiler on the destination PC, but do require Microsoft Edge WebView2.
 
-To run or build the Rust source yourself:
+To run or build from source:
 
 Install Node.js 22.13+, stable Rust with the MSVC target, Visual Studio C++ Build Tools with the Windows SDK, and Microsoft Edge WebView2.
-
-```bash
-npm ci
-npm run tauri:dev
-```
-
-To create a Windows preview installer:
-
-```bash
-npm run tauri:build
-```
-
-Tauri builds place the Windows NSIS and MSI packages under `src-tauri/target/release/bundle/`. CI is optional: **you do not need paid GitHub Actions or a code-signing certificate to build an unsigned local preview**. On Windows without MSVC Build Tools, install the `stable-x86_64-pc-windows-gnullvm` Rust toolchain, LLVM-MinGW, Node/npm and 7-Zip, then run:
-
-```powershell
-powershell -NoProfile -File scripts/windows/build-tauri-local-unsigned.ps1
-```
-
-The script runs native Rust tests, compiles the preview, bundles the GNU-LLVM runtime (`WebView2Loader.dll` and `libunwind.dll`) **beside** the executable in NSIS/MSI, verifies their inclusion, and generates a portable ZIP under `src-tauri/target/x86_64-pc-windows-gnullvm/release/local-distribution/`. A bare executable built with that toolchain cannot be distributed without its runtime DLLs. This script does not install or run Orbit and does not open application profiles. The [Tauri Windows CI workflow](https://github.com/j5bak928-a11y/orbit-game-launcher/actions/workflows/tauri-windows.yml) remains an optional build path, not a prerequisite for local testing.
-
-**Rust-first does not mean production parity is verified.** The preview remains unsigned and must not silently replace the Electron installation or its database. Its close-to-tray behavior frees the WebView2 UI window while retaining native tracking; use **Quit Orbit** in the tray to stop the application completely. Real-game launches, normal session tracking and upgrades are user-confirmed working on one tested setup; native tray reopen, sleep/crash recovery, physical controller input and cross-edition backup restores still need broader end-to-end acceptance.
-
-## Run the Electron fallback
-
-For the established Windows edition, download the separately named **Orbit Launcher** Electron setup or portable EXE. To run the Electron source, install [Node.js](https://nodejs.org/) **22.13 or newer** and npm, then:
 
 ```bash
 npm ci
 npm start
 ```
 
-For development tools, use `npm run dev`. Windows is the primary tested desktop platform; macOS and Linux are supported build targets, but storefront integration should be tested on each target system.
+To create a Windows installer:
+
+```bash
+npm run build
+```
+
+Tauri builds place the Windows NSIS and MSI packages under `src-tauri/target/release/bundle/`. CI is optional: **you do not need paid GitHub Actions or a code-signing certificate to build locally**. On Windows without MSVC Build Tools, install the `stable-x86_64-pc-windows-gnullvm` Rust toolchain, LLVM-MinGW, Node/npm and 7-Zip, then run:
+
+```powershell
+npm run build:win
+```
+
+The script runs native Rust tests, compiles Orbit, bundles the GNU-LLVM runtime (`WebView2Loader.dll` and `libunwind.dll`) **beside** the executable in NSIS/MSI, verifies their inclusion, and generates `Orbit-Launcher-Portable-<version>.zip` under `src-tauri/target/x86_64-pc-windows-gnullvm/release/local-distribution/`. A bare executable built with that toolchain cannot be distributed without its runtime DLLs. This script does not install or run Orbit and does not open application profiles. The [Tauri Windows CI workflow](https://github.com/j5bak928-a11y/orbit-game-launcher/actions/workflows/tauri-windows.yml) remains an optional build path, not a prerequisite for local testing.
+
+Orbit remains unsigned; closing the window to the tray frees the WebView2 UI window while retaining native tracking. Use **Quit Orbit** in the tray to stop the application completely.
 
 ## Finding and launching games
 
@@ -226,20 +215,19 @@ Orbit does not require an Orbit account or upload game executables. Online artwo
 ```bash
 npm run check
 npm test
+npm run test:rust
 npm run lint
 npm run test:controller
 npm run test:languages
+npm run test:whats-new
 npm run test:visual
 npm run test:renderer
 npm run test:experience
 npm run test:cinematic
 npm run test:cards
-npm run bench
 ```
 
-Renderer and experience tests use Playwright and an installed Chromium-compatible browser. `npm run test:visual` checks responsive layouts, translated labels, keyboard focus and touch actions across five languages, both themes and five viewport sizes using synthetic data. These checks do not prove that real games launch successfully or that packaged Windows WebView2/Electron rendering is identical.
-
-Package the Electron edition on the matching operating system with `npm run dist:win`, `npm run dist:mac`, or `npm run dist:linux`. On Windows, packaged Electron builds also need the native process-inventory helper; GitHub's [Windows build workflow](https://github.com/j5bak928-a11y/orbit-game-launcher/actions/workflows/windows-build.yml) compiles it automatically. Review builds do **not** publish a release; publishing requires the explicit manual workflow option.
+Renderer and experience tests use Playwright and an installed Chromium-compatible browser. `npm run test:visual` checks responsive layouts, translated labels, keyboard focus and touch actions across five languages, both themes and five viewport sizes using synthetic data. These checks do not prove that real games launch successfully or that packaged Windows WebView2 rendering is identical.
 
 Windows installers are currently unsigned and may trigger Windows SmartScreen warnings. Automatic update installation is disabled until trusted signing and update verification are ready. Published binaries should be checked against the accompanying SHA-256 manifest. Do not treat a successful CI build as proof of real-world storefront, tracking, or controller compatibility.
 

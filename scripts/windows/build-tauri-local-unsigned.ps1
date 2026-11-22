@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
- Build and bundle an unsigned Rust/Tauri Windows preview without GitHub Actions.
+ Build and bundle an unsigned Rust/Tauri Windows release without GitHub Actions.
 .NOTES
  Requires the installed stable-x86_64-pc-windows-gnullvm Rust toolchain,
  LLVM-MinGW (clang.exe and libunwind.dll), Node/npm and 7-Zip. This script
@@ -125,7 +125,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $release 'orbit-launcher.exe') -Destination $portable -Force
     Copy-Item -LiteralPath (Join-Path $runtime 'libunwind.dll') -Destination $portable -Force
     Copy-Item -LiteralPath (Join-Path $runtime 'WebView2Loader.dll') -Destination $portable -Force
-    $zip = Join-Path $dist "Orbit-Rust-$version-portable.zip"
+    $zip = Join-Path $dist "Orbit-Launcher-Portable-$version.zip"
     Compress-Archive -Path (Join-Path $portable '*') -DestinationPath $zip -CompressionLevel Optimal -Force
     $manifest = @($nsis, $msi, $zip) | ForEach-Object {
         [pscustomobject]@{path=$_;bytes=(Get-Item -LiteralPath $_).Length;sha256=(Get-Sha256 $_)}

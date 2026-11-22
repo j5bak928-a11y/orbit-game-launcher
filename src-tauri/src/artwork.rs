@@ -10,11 +10,13 @@ use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
 const IMAGE_LIMIT: usize = 5 * 1024 * 1024;
+const MAX_USER_IMAGE: usize = 15 * 1024 * 1024;
 const ICON_LIMIT: usize = 2 * 1024 * 1024;
 const SEARCH_LIMIT: usize = 256 * 1024;
 const JSON_LIMIT: usize = 1024 * 1024;
@@ -57,13 +59,18 @@ fn valid_title(s: &str) -> bool {
     (3..=140).contains(&s.chars().count()) && !s.chars().any(char::is_control) && key(s).len() >= 4
 }
 fn client() -> Result<Client, String> {
-    Client::builder()
-        .connect_timeout(Duration::from_secs(2))
-        .timeout(Duration::from_secs(4))
-        .redirect(Policy::none())
-        .user_agent("OrbitLauncher/0.2.6")
-        .build()
-        .map_err(|e| e.to_string())
+    static HTTP_CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
+    HTTP_CLIENT
+        .get_or_init(|| {
+            Client::builder()
+                .connect_timeout(Duration::from_secs(2))
+                .timeout(Duration::from_secs(4))
+                .redirect(Policy::none())
+                .user_agent(concat!("OrbitLauncher/", env!("CARGO_PKG_VERSION")))
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .clone()
 }
 fn approved_url(raw: &str) -> bool {
     let Ok(u) = Url::parse(raw) else { return false };
@@ -834,9 +841,14 @@ fn steam_roots(install: Option<&str>) -> Vec<PathBuf> {
         add_root(&mut roots, PathBuf::from(root));
     }
     #[cfg(windows)]
-    for var in ["ProgramFiles(x86)", "ProgramFiles", "ProgramW6432"] {
-        if let Some(root) = std::env::var_os(var) {
-            add_root(&mut roots, PathBuf::from(root).join("Steam"));
+    {
+        for root in native::steam_registry_roots() {
+            add_root(&mut roots, root);
+        }
+        for var in ["ProgramFiles(x86)", "ProgramFiles", "ProgramW6432"] {
+            if let Some(root) = std::env::var_os(var) {
+                add_root(&mut roots, PathBuf::from(root).join("Steam"));
+            }
         }
     }
     #[cfg(not(windows))]
@@ -1078,7 +1090,7 @@ fn needs_cover(game: &Value, dir: &Path) -> bool {
     if !artwork_token(cover) {
         return false;
     }
-    let Some(bytes) = read_capped(&dir.join(cover), IMAGE_LIMIT).ok().flatten() else {
+    let Some(bytes) = read_capped(&dir.join(cover), MAX_USER_IMAGE).ok().flatten() else {
         return true;
     };
     // Preserve user's chosen PNG/WebP assets. Repair identifiable landscape JPEG.
@@ -1154,6 +1166,7 @@ fn repair_artwork_impl(
     let mut attempted = 0usize;
     let mut online_count = 0usize;
     let mut updates = vec![];
+    let mut online_attempted = Vec::<String>::new();
     let mut failures = Vec::<String>::new();
     let mut seen = HashSet::<String>::new();
     let mut truncated = false;
@@ -1222,7 +1235,16 @@ fn repair_artwork_impl(
                 && started.elapsed() < REPAIR_TIME
                 && allowed()
             {
-                online_count += 1;
+                let has_online_query = steam_id.is_some()
+                    || (game["source"] == "epic"
+                        && (epic_identity(game).is_some()
+                            || valid_title(field(game, "name").trim())
+                            || key(field(game, "name")) == "rocketleague"))
+                    || valid_title(field(game, "name").trim());
+                if has_online_query {
+                    online_count += 1;
+                    online_attempted.push(id.to_owned());
+                }
                 let http = http.as_ref().unwrap();
                 let deadline = Some(started + REPAIR_TIME);
                 let result: Result<Option<(Vec<u8>, &'static str)>, String> =
@@ -1298,7 +1320,7 @@ fn repair_artwork_impl(
     }
     Ok(json!({"found":found,"attempted":attempted,"icons":icons,
         "onlineEnabled":online_enabled,"paused":online_enabled&&paused,
-        "updates":updates,"failures":failures,"truncated":truncated}))
+        "updates":updates,"onlineAttempted":online_attempted,"failures":failures,"truncated":truncated}))
 }
 
 #[cfg(test)]
@@ -1760,5 +1782,29 @@ mod tests {
         enabled.store(true, Ordering::SeqCst);
         assert!(!epic_request_budget(&mut remaining, &allowed, Some(Instant::now())).unwrap());
         assert_eq!(remaining, EPIC_REQUEST_LIMIT - 1);
+    }
+
+    #[test]
+    fn user_cover_above_5mb_within_15mb_is_preserved_by_needs_cover() {
+        let dir = std::env::temp_dir().join(format!("orbit-art-large-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut big = jpeg(600, 900);
+        big.resize(6 * 1024 * 1024, 0);
+        let token = format!("{}.jpg", uuid::Uuid::new_v4());
+        fs::write(dir.join(&token), &big).unwrap();
+        assert!(!needs_cover(&json!({"cover": token}), &dir));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn invalid_short_title_does_not_consume_online_artwork_budget() {
+        let dir = std::env::temp_dir().join(format!("orbit-art-short-{}", uuid::Uuid::new_v4()));
+        let mut games = (0..8)
+            .map(|i| json!({"id": format!("short-{i}"), "source": "manual", "name": "a", "cover": "", "icon": ""}))
+            .collect::<Vec<_>>();
+        games.push(json!({"id": "valid-short-follow", "source": "manual", "name": "ab", "cover": "", "icon": ""}));
+        let result = repair_artwork_guarded(&games, &dir, true, false, &|| true).unwrap();
+        assert_eq!(result["onlineAttempted"], json!([]));
+        assert!(!dir.exists());
     }
 }

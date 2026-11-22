@@ -14,8 +14,7 @@ param([ValidateRange(1,30)][int]$SampleSeconds=5)
 
 $ErrorActionPreference='Stop'
 $launchers=@(
-    @{Name='Orbit Electron'; Executables=@('Orbit Launcher.exe')},
-    @{Name='Orbit Rust Preview'; Executables=@('orbit-launcher.exe')},
+    @{Name='Orbit Launcher'; Executables=@('orbit-launcher.exe')},
     @{Name='Steam'; Executables=@('steam.exe','steamwebhelper.exe')},
     @{Name='Epic Games Launcher'; Executables=@('EpicGamesLauncher.exe','EpicWebHelper.exe')},
     @{Name='Playnite'; Executables=@('Playnite.DesktopApp.exe','Playnite.FullscreenApp.exe')},

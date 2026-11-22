@@ -1,6 +1,8 @@
-# Orbit Launcher native Rust / Tauri migration
+# Orbit Launcher native Rust / Tauri architecture
 
-This repository includes a separate Tauri 2 executable backed by Rust, reusing Orbit's existing accessible JavaScript desktop interface. The Rust preview uses its own application identifier so it can be installed alongside the Electron release. The Electron release scripts and app remain available while the native version is validated. **The unsigned Rust build is experimental; merging the preview code did not publish or replace the Electron release.**
+> **Update (v0.3.4):** The legacy Electron edition has been removed from this repository. Orbit Launcher now ships solely as the native Rust + Tauri 2 desktop application (`Orbit Launcher`, `com.orbitlauncher.desktop`). On first launch with an empty `com.orbitlauncher.desktop` profile, Orbit automatically imports from `com.orbitlauncher.rustpreview` first (or legacy Electron `orbit-game-launcher` / `Orbit Launcher` directories) via read-only `VACUUM INTO`.
+
+Below is the historical migration and benchmark context leading up to retiring Electron in `0.3.4`:
 
 ## Why migrate to Rust?
 

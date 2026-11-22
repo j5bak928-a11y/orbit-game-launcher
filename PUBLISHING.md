@@ -20,6 +20,6 @@ If Git prompts for authentication, use Git Credential Manager or `gh auth login`
 
 ## Verification
 
-After pushing, open https://github.com/j5bak928-a11y/orbit-game-launcher and confirm that `src`, `tests`, `assets`, `package.json`, and `.github/workflows/ci.yml` are present. GitHub Actions runs `npm run check` and `npm test`.
+After pushing, open https://github.com/j5bak928-a11y/orbit-game-launcher and confirm that `src`, `src-tauri`, `tests`, `assets`, `package.json`, and `.github/workflows/ci.yml` are present. GitHub Actions provides optional manual workflows for UI checks and Rust/Tauri Windows builds.
 
-Native Electron installation and Windows game launches still require separate testing.
+Native Windows installation and game launches still require local testing.

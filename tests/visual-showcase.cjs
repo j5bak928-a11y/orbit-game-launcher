@@ -72,7 +72,8 @@ test('cinematic showcase preserves launch, favorite, focus and responsive artwor
  await page.evaluate(()=>window.orbit.saveSettings({accent:'#8b7aff'}));
  assert.match(await showcase.locator('.detail-playtime-value').textContent(),/3h 0m played/);
  assert.match(await showcase.locator('.showcase-last-played strong').textContent(),/2026/);
- assert.equal(await showcase.locator('[data-action=edit],[data-action=remove-confirm]').count(),0,'management stays in the game-card dropdown');
+ assert.equal(await showcase.locator('.showcase-manage [data-action=edit]').count(),1,'Game details exposes Edit game');
+ assert.equal(await showcase.locator('.showcase-manage [data-action=remove-confirm]').count(),1,'Game details exposes Remove');
  assert.equal(await showcase.locator('.showcase-poster .cover-image.fit-contain.position-top').count(),1,'cover layout flags remain intact');
  const overlay=await showcase.evaluate(dialog=>{
   const hero=dialog.querySelector('.showcase-hero').getBoundingClientRect();
@@ -101,7 +102,7 @@ test('cinematic showcase preserves launch, favorite, focus and responsive artwor
  await page.keyboard.press('Escape');
  assert.equal(await showcase.count(),0);
  assert.equal(await page.evaluate(()=>document.activeElement?.dataset?.action),'detail','Escape restores a card action after a live favorite update');
- assert(await page.evaluate(()=>document.activeElement?.classList?.contains('game-card')),'Escape restores focus to the originating card after a library re-render');
+ assert(await page.evaluate(()=>document.activeElement?.classList?.contains('card-open-trigger')),'Escape restores focus to the originating card trigger after a library re-render');
 
  await page.locator('.home-games .game-card').first().click();
  await showcase.waitFor();

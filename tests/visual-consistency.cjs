@@ -219,7 +219,7 @@ async function inspectControl(page, selector, label, findings, context, containe
       await page.evaluate(target=>{
         const card=document.querySelector('.game-card');
         if (!card)return;
-        if(target==='detail') {card.click();return;}
+        if(target==='detail') {card.querySelector('.card-open-trigger')?.click();return;}
         card.querySelector('[data-action="game-actions"]').click();
         document.querySelector(`#game-actions-popup [data-action="${target==='edit'?'edit':'remove-confirm'}"]`)?.click();
       },type);
@@ -257,7 +257,7 @@ async function inspectControl(page, selector, label, findings, context, containe
               await inspectControl(page,'.library-controls #sort-by','library sort',findings,`${prefix}/${route}`);
               const card=page.locator('.game-card').first();
               if(await card.count()) {
-                await card.focus();
+                await card.locator('.card-open-trigger').focus();
                 await inspectControl(page,'.game-card:first-child .cover-play','focused poster Play',findings,`${prefix}/${route}`);
                 await card.hover();
                 const caption=await card.locator('.game-label').evaluate(node=>({

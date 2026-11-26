@@ -12,6 +12,7 @@ body[data-controller-mode="true"] #toast-root {
 	--tv-muted: #a1a1b1;
 	--tv-focus: var(--accent, #8b7aff);
 	--tv-accent: var(--accent-text, var(--accent, #b6a7e9));
+	--tv-ambient-opacity: 0.44;
 	position: fixed;
 	inset: 0;
 	z-index: 90;
@@ -28,6 +29,7 @@ body[data-theme="light"] .controller-shell {
 	--tv-muted: #4b5058;
 	--tv-focus: var(--accent-text, var(--accent, #503fd1));
 	--tv-accent: var(--accent-text, var(--accent, #503fd1));
+	--tv-ambient-opacity: 0.3;
 }
 .tv-stage {
 	height: 100%;
@@ -155,7 +157,7 @@ body[data-theme="light"] .controller-shell {
 	flex: 0 0 min(285px, 28vw);
 }
 :where(.tv-recent) .tv-card-art {
-	aspect-ratio: 2 / 1;
+	aspect-ratio: 16 / 9;
 }
 .tv-library-heading {
 	display: flex;
@@ -233,7 +235,7 @@ body[data-theme="light"] .controller-shell {
 }
 .tv-card-art {
 	position: relative;
-	aspect-ratio: 16 / 8;
+	aspect-ratio: 2 / 3;
 	background:
 		linear-gradient(135deg, #8b7aff16, transparent 75%), var(--tv-panel);
 	overflow: hidden;
@@ -258,33 +260,50 @@ body[data-theme=light] .tv-fallback-light{display:block;mix-blend-mode:darken;fi
 .tv-card-art.has-art .tv-card-fallback {
 	display: none;
 }
+.tv-art-ambient {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	filter: blur(18px) saturate(1.2);
+	transform: scale(1.18);
+	opacity: 0;
+	display: none;
+	pointer-events: none;
+	z-index: 0;
+}
+.tv-card-art.has-ambient .tv-art-ambient:not([hidden]) {
+	display: block;
+	opacity: var(--tv-ambient-opacity);
+}
 .tv-game-art {
 	display: block;
 	width: 100%;
 	height: 100%;
 	position: absolute;
 	inset: 0;
-}
-.tv-game-art.is-banner {
-	/* A wide banner is often wider than the 2:1 card frame. Never cut off
-	   artwork or logos just to fill the available rectangle. */
+	z-index: 1;
 	object-fit: contain;
-	background: var(--tv-panel);
+	object-position: center;
+	background: transparent;
 }
-.tv-game-art.is-cover {
-	object-fit: contain;
-	background: var(--tv-bg);
+.tv-game-art.is-fit-cover {
+	object-fit: cover;
 }
 .tv-game-art[hidden] {
 	display: none;
 }
+.tv-card-art.has-ambient .tv-game-art {
+	filter: drop-shadow(0 8px 20px rgba(0, 0, 0, 0.45));
+}
 .tv-card-copy {
 	display: block;
-	padding: 15px 17px 16px;
+	padding: 13px 15px 14px;
 }
 .tv-card-copy > strong {
 	display: block;
-	font-size: 17px;
+	font-size: 16px;
 	font-weight: 620;
 	white-space: nowrap;
 	overflow: hidden;
@@ -294,15 +313,23 @@ body[data-theme=light] .tv-fallback-light{display:block;mix-blend-mode:darken;fi
 .tv-card-copy > span {
 	display: flex;
 	align-items: center;
-	gap: 10px;
+	gap: 8px;
 	justify-content: space-between;
 	color: var(--tv-muted);
 	font-size: 12px;
-	margin-top: 9px;
+	margin-top: 7px;
+	min-width: 0;
+}
+.tv-card-source {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 .tv-card-copy i {
 	font-style: normal;
 	white-space: nowrap;
+	flex: none;
 	color: var(--tv-accent);
 }
 .tv-pagination {
@@ -436,12 +463,13 @@ body[data-theme=light] .tv-fallback-light{display:block;mix-blend-mode:darken;fi
 .tv-sheet-layout {
 	position: relative;
 	display: grid;
-	grid-template-columns: minmax(0, 42%) minmax(0, 1fr);
+	grid-template-columns: minmax(0, 34%) minmax(0, 1fr);
 	align-items: center;
-	gap: clamp(24px, 4vw, 60px);
-	min-height: min(54vh, 410px);
+	gap: clamp(24px, 4vw, 56px);
+	min-height: min(54dvh, 410px);
 }
 .tv-sheet-art {
+	--tv-sheet-ratio: 2 / 3;
 	display: flex;
 	align-items: stretch;
 	border-radius: 18px;
@@ -449,14 +477,17 @@ body[data-theme=light] .tv-fallback-light{display:block;mix-blend-mode:darken;fi
 	background: #12121e;
 	box-shadow: 0 22px 55px #0007, 0 0 0 1px #ffffff20;
 	min-width: 0;
+	width: min(100%, 300px);
+	justify-self: center;
+}
+.tv-sheet-art.is-landscape {
+	--tv-sheet-ratio: 16 / 9;
+	width: 100%;
 }
 .tv-sheet-art > .tv-card-art {
 	width: 100%;
 	min-height: 0;
-	aspect-ratio: 4 / 4.5;
-}
-.tv-sheet-art .is-cover,.tv-sheet-art .is-banner {
-	object-fit: contain;
+	aspect-ratio: var(--tv-sheet-ratio);
 	background: #12121e;
 }
 .tv-sheet-copy {
@@ -561,11 +592,8 @@ body[data-theme="light"] .tv-sheet .tv-fallback-dark {
 	:where(.tv-recent) .tv-card {
 		flex-basis: 320px;
 	}
-	.tv-library .tv-card-art {
-		aspect-ratio: 16 / 9;
-	}
 	.tv-card-copy > strong {
-		font-size: 19px;
+		font-size: 18px;
 	}
 	.tv-hints > span {
 		font-size: 12px;
@@ -664,11 +692,14 @@ body[data-theme="light"] .tv-sheet .tv-fallback-dark {
 		font-size: 13px;
 		overflow-wrap: anywhere;
 	}
-	.tv-library .tv-card-art {
-		aspect-ratio: 16 / 7;
+	.tv-library {
+		gap: 14px;
+	}
+	.tv-card-copy {
+		padding: 10px 11px 11px;
 	}
 	.tv-card-copy > strong {
-		font-size: 16px;
+		font-size: 14px;
 	}
 	.tv-footer {
 		padding: 12px 18px;
@@ -696,6 +727,7 @@ body[data-theme="light"] .tv-sheet .tv-fallback-dark {
 		min-height: 0;
 	}
 	.tv-sheet-art {
+		width: 100%;
 		max-width: 100%;
 		max-height: 180px;
 		border-radius: 11px;
@@ -703,6 +735,13 @@ body[data-theme="light"] .tv-sheet .tv-fallback-dark {
 	.tv-sheet-art > .tv-card-art {
 		min-height: 160px;
 		aspect-ratio: auto;
+	}
+	.tv-sheet-art .tv-game-art.is-fit-cover {
+		object-fit: contain;
+	}
+	.tv-sheet-art .tv-card-art.has-art .tv-art-ambient:not([hidden]) {
+		display: block;
+		opacity: var(--tv-ambient-opacity);
 	}
 	.tv-sheet h2 {
 		font-size: clamp(26px, 7.5vw, 34px);
@@ -890,24 +929,27 @@ body[data-theme="light"] .tv-sheet .tv-fallback-dark {
 	pointer-events: none;
 }
 .tv-spotlight-image {
-	width: min(100%, 540px);
-	height: 100%;
-	max-height: 280px;
+	width: min(100%, 376px);
+	aspect-ratio: 16 / 9;
+	height: auto;
+	max-height: 210px;
 	position: relative;
 	border-radius: 13px;
 	box-shadow: 0 16px 56px #0007, 0 0 0 1px #ffffff27;
 	transform: perspective(1000px) rotateY(-6deg) rotateX(2deg);
 	overflow: hidden;
 }
+.tv-spotlight-image.is-portrait {
+	width: auto;
+	height: min(210px, 100%);
+	max-height: 210px;
+	aspect-ratio: 2 / 3;
+}
 .tv-spotlight-image .tv-card-art {
 	height: 100%;
 	width: 100%;
 	aspect-ratio: auto;
 	background: #11121b;
-}
-.tv-spotlight-image .tv-game-art {
-	object-fit: contain;
-	background: #101019;
 }
 .tv-spotlight .tv-card-fallback img {
 	width: 84px;
@@ -950,10 +992,10 @@ body[data-theme="light"] .tv-sheet .tv-fallback-dark {
 	margin-bottom: 13px;
 }
 :where(.tv-recent) .tv-card {
-	flex-basis: clamp(270px, 25vw, 365px);
+	flex-basis: clamp(248px, 21vw, 310px);
 }
 .tv-recent .tv-card-art {
-	aspect-ratio: 16 / 7.2;
+	aspect-ratio: 16 / 8.5;
 }
 .tv-card {
 	border-color: #ffffff1e;
@@ -1046,7 +1088,13 @@ body[data-theme="light"] .tv-card {
 	}
 	.tv-spotlight-image {
 		transform: none;
-		max-height: 180px;
+		width: 100%;
+		max-height: 150px;
+	}
+	.tv-spotlight-image.is-portrait {
+		width: min(100%, 100px);
+		height: auto;
+		max-height: 150px;
 	}
 	.tv-spotlight-kicker {
 		letter-spacing: 1.2px;
@@ -1082,13 +1130,19 @@ body[data-theme="light"] .tv-card {
 		margin-top: 9px;
 	}
 	.tv-spotlight-image {
-		max-height: 140px;
+		width: min(100%, 234px);
+		max-height: 132px;
+	}
+	.tv-spotlight-image.is-portrait {
+		width: auto;
+		height: 132px;
+		max-height: 132px;
 	}
 	.tv-continue .tv-section-heading {
 		margin-bottom: 8px;
 	}
 	.tv-recent .tv-card-art {
-		aspect-ratio: 16 / 6;
+		aspect-ratio: 16 / 7;
 	}
 	.tv-recent .tv-card-copy {
 		padding-block: 12px;
@@ -1141,10 +1195,19 @@ body[data-theme="light"] .tv-card {
 		gap: 7px;
 	}
 	.tv-sheet-art {
+		width: 100%;
 		max-height: 70px;
 	}
 	.tv-sheet-art > .tv-card-art {
 		min-height: 70px;
+		aspect-ratio: auto;
+	}
+	.tv-sheet-art .tv-game-art.is-fit-cover {
+		object-fit: contain;
+	}
+	.tv-sheet-art .tv-card-art.has-art .tv-art-ambient:not([hidden]) {
+		display: block;
+		opacity: var(--tv-ambient-opacity);
 	}
 	.tv-sheet-copy .tv-eyebrow {
 		margin-bottom: 5px;
@@ -1253,6 +1316,62 @@ body[data-reduce-motion="true"] .controller-shell .tv-spotlight-image {
 .tv-card-badge-hidden {
 	border-color: rgba(255, 255, 255, 0.32);
 	background: rgba(24, 24, 34, 0.92);
+}
+.tv-card-fav {
+	position: absolute;
+	top: 10px;
+	right: 10px;
+	z-index: 2;
+	width: 30px;
+	height: 30px;
+	border-radius: 999px;
+	display: grid;
+	place-items: center;
+	color: var(--tv-focus);
+	background: rgba(14, 15, 22, 0.78);
+	backdrop-filter: blur(8px);
+	border: 1px solid rgba(var(--accent-rgb, 139, 122, 255), 0.65);
+	box-shadow: 0 4px 14px rgba(0, 0, 0, 0.42);
+	pointer-events: none;
+}
+.tv-card-fav .tv-heart-icon {
+	width: 15px;
+	height: 15px;
+	fill: currentColor;
+	stroke: currentColor;
+}
+.tv-sheet-actions > .tv-favorite-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	overflow-wrap: anywhere;
+}
+.tv-sheet-actions > .tv-favorite-btn .tv-heart-icon {
+	width: 17px;
+	height: 17px;
+	flex: none;
+	fill: none;
+	stroke: var(--accent, #8b7aff);
+	transition:
+		transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
+		fill 0.16s ease;
+}
+.tv-sheet-actions > .tv-favorite-btn.is-favorite {
+	background: rgba(var(--accent-rgb, 139, 122, 255), 0.22);
+	border-color: rgba(var(--accent-rgb, 139, 122, 255), 0.72);
+	color: #f6f2ff;
+	box-shadow:
+		0 6px 18px rgba(var(--accent-rgb, 139, 122, 255), 0.18),
+		inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+.tv-sheet-actions > .tv-favorite-btn.is-favorite .tv-heart-icon {
+	fill: var(--accent, #8b7aff);
+	stroke: var(--accent, #8b7aff);
+}
+.tv-sheet-actions > .tv-favorite-btn:hover .tv-heart-icon,
+.tv-sheet-actions > .tv-favorite-btn:focus .tv-heart-icon {
+	transform: scale(1.1);
 }
 .tv-banner {
 	display: flex;
@@ -1652,7 +1771,15 @@ body[data-theme="light"] .tv-overlay-surface {
 	.controller-shell .tv-drawer-surface {
 		animation: none;
 	}
+	.controller-shell .tv-sheet-actions > .tv-favorite-btn .tv-heart-icon {
+		transition: none;
+		transform: none;
+	}
 }
 body[data-reduce-motion="true"] .controller-shell .tv-drawer-surface {
 	animation: none;
+}
+body[data-reduce-motion="true"] .controller-shell .tv-sheet-actions > .tv-favorite-btn .tv-heart-icon {
+	transition: none;
+	transform: none;
 }

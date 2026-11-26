@@ -830,6 +830,16 @@ body[data-theme=light] .detail-showcase .detail-live{color:var(--accent-text,var
 .toast-close{margin-left:auto;flex:none;width:28px;height:28px;border:0;border-radius:7px;background:transparent;color:var(--muted);display:grid;place-items:center}
 .toast-close:hover{background:var(--panel3);color:var(--text)}
 
+.sidebar .update-shortcut-btn{color:var(--text);background:rgba(var(--accent-rgb),.14);border-color:rgba(var(--accent-rgb),.34)}
+.sidebar .update-shortcut-btn:hover:not(:disabled){background:rgba(var(--accent-rgb),.22);border-color:rgba(var(--accent-rgb),.5)}
+.sidebar .update-shortcut-btn:disabled{opacity:.55;cursor:not-allowed}
+.update-shortcut-badge{margin-left:auto;padding:2px 6px;border-radius:5px;font-size:11px;font-weight:650;background:rgba(var(--accent-rgb),.22);color:var(--accent-text,var(--accent))}
+.update-progress-wrap{margin-top:8px}
+.update-progress{height:6px;width:100%;max-width:260px;border-radius:999px;background:var(--panel3);overflow:hidden;border:1px solid var(--border)}
+.update-progress-fill{height:100%;border-radius:inherit;background:var(--accent);transition:width .2s ease}
+.update-progress.indeterminate .update-progress-fill{animation:orbitUpdatePulse 1.4s ease-in-out infinite}
+@keyframes orbitUpdatePulse{0%{transform:translateX(-70%)}100%{transform:translateX(190%)}}
+
 @media(max-width:500px){
   .continue-open-trigger{padding:8px;gap:9px}
   .continue-card .continue-play{margin-right:8px}

@@ -4,6 +4,7 @@ mod database;
 mod files;
 mod native;
 mod tray;
+mod updates;
 
 #[cfg(test)]
 mod migration_reliability_tests;
@@ -307,7 +308,7 @@ fn valid_art_name(name: &str) -> bool {
         && name.len() <= 42
 }
 
-fn emit(app: &tauri::AppHandle, payload: Value) {
+pub(crate) fn emit(app: &tauri::AppHandle, payload: Value) {
     let menu_changed = payload["type"] == "settingsChanged"
         || (payload["type"] == "gamesChanged" && payload["reason"] != "artwork");
     let _ = app.emit("orbit:event", payload);
@@ -407,6 +408,25 @@ fn running_ids(state: &OrbitState) -> Vec<String> {
     let mut ids: Vec<String> = active.keys().cloned().collect();
     ids.sort();
     ids
+}
+
+pub(crate) fn has_busy_game(app: &tauri::AppHandle) -> bool {
+    let Some(state) = app.try_state::<OrbitState>() else {
+        return false;
+    };
+    if !running_ids(&state).is_empty() || !launch_pending(&state).is_empty() {
+        return true;
+    }
+    state
+        .launching
+        .lock()
+        .is_ok_and(|launching| !launching.is_empty())
+}
+
+pub(crate) fn auto_updates_enabled(app: &tauri::AppHandle) -> bool {
+    app.try_state::<OrbitState>()
+        .and_then(|state| state.db.lock().ok().and_then(|db| db.get_settings().ok()))
+        .is_some_and(|settings| settings["autoUpdates"] == true)
 }
 
 struct LaunchReservation<'a> {
@@ -1338,15 +1358,9 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             Ok(result)
         }
         "launchGame" => launch_game(app, game_id(args)?),
-        "getUpdateStatus" => Ok(
-            json!({"state":"unsupported","message":"Update installation is unavailable in this unsigned build."}),
-        ),
-        "checkForUpdates" => Ok(
-            json!({"state":"unsupported","message":"Update installation is unavailable in this unsigned build."}),
-        ),
-        "installUpdate" => {
-            Err("Automatic updates require a signed release and trusted update feed".into())
-        }
+        "getUpdateStatus" => Ok(updates::current_status(app)),
+        "checkForUpdates" => Ok(updates::start_check(app)),
+        "installUpdate" => updates::install_prepared(app).map(|()| json!({"started":true})),
         "findOnlineCover" => {
             let settings = lock_or_err(&state.db, "database")?.get_settings()?;
             if settings["useSteamArtwork"] != true {
@@ -1863,7 +1877,7 @@ fn poll_sessions(app: &tauri::AppHandle, diagnostics: &mut TrackingDiagnostics) 
     }
 }
 
-fn settle_sessions(app: &tauri::AppHandle) {
+pub(crate) fn settle_sessions(app: &tauri::AppHandle) {
     let Some(state) = app.try_state::<OrbitState>() else {
         return;
     };
@@ -2097,6 +2111,7 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(move |window, event| {
             // Destroying the UI window is not quitting Orbit. In particular,
             // don't stop process tracking or settle playtime on Destroyed.
@@ -2174,10 +2189,12 @@ pub fn run() {
                 .map_err(std::io::Error::other)?;
             app.manage(ControllerReturn::default());
             app.manage(OrbitState::new(db, data_dir, artwork_dir));
+            app.manage(updates::UpdateManager::new());
             sync_saved_window_theme(app.handle());
             #[cfg(target_os = "windows")]
             tray::install_tray(app).map_err(std::io::Error::other)?;
             queue_artwork_scan(app.handle());
+            updates::maybe_start_background_check(app.handle());
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 let mut diagnostics = TrackingDiagnostics::default();

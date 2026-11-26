@@ -162,26 +162,37 @@ test('Rust-primary 0.2.11 What\'s New dialog retains 0.2.7–0.2.10 history in a
 
 test('known Rust update-status messages are translated without changing unknown backend errors', () => {
   const { i18n } = createRuntime();
-  const rustSource = fs.readFileSync(path.join(renderer, '../../src-tauri/src/lib.rs'), 'utf8');
-  const rustStatus = 'Update installation is unavailable in this unsigned build.';
-  const rustInstallError = 'Automatic updates require a signed release and trusted update feed';
-  assert.ok(rustSource.includes(rustStatus), 'Rust status is still the expected fixed message');
-  assert.ok(rustSource.includes(rustInstallError), 'Rust updater error remains a known fixed message');
-  const statuses = ['Update check not started.', rustStatus, rustInstallError];
-  const expected = {
-    nl: 'Updates installeren is niet beschikbaar in deze niet-ondertekende build.',
-    de: 'Die Update-Installation ist in dieser unsignierten Version nicht verfügbar.',
-    fr: 'L’installation des mises à jour n’est pas disponible dans cette version non signée.',
-    es: 'La instalación de actualizaciones no está disponible en esta compilación sin firmar.',
-  };
+  const updatesSource = fs.readFileSync(path.join(renderer, '../../src-tauri/src/updates.rs'), 'utf8');
+  const rustMessages = [...updatesSource.matchAll(/pub\(crate\) const MSG_[A-Z0-9_]+: &str =\s*"([^"]+)";/g)]
+    .map(match => match[1]);
+  assert.ok(rustMessages.length >= 14, `Expected at least 14 Rust updater messages, found ${rustMessages.length}`);
+  const uiMessages = [
+    'Update check not started.',
+    'Check and download signed Orbit updates in the background.',
+    'Downloading v{version} ({percent}%)…',
+    'Downloading v{version}…',
+    'Update v{version} is ready to install.',
+    'Update v{version} is ready. Finish running games to install.',
+    'Installing v{version}…',
+    'Install v{version}',
+    'Install & restart',
+    'Game running…',
+    'Ready',
+    'Install verified update and restart Orbit',
+    'Update download progress',
+    'In-app updates verify Ed25519 release signatures before installing; Windows SmartScreen may still prompt for manual installers.',
+  ];
+  const statuses = [...new Set([...rustMessages, ...uiMessages])];
+  const placeholderNames = value => [...value.matchAll(/\{([A-Za-z][A-Za-z0-9_]*)\}/g)]
+    .map(match => match[1]).sort();
   const unexpectedBackendError = 'Updater request failed: HTTP 418 <retry in 30s>';
   for (const code of ['en', 'nl', 'de', 'fr', 'es']) {
     i18n.setLanguage(code);
-    assert.equal(i18n.t(rustStatus), code === 'en' ? rustStatus : expected[code]);
     for (const message of statuses) {
       const translated = i18n.t(message);
-      assert.ok(translated.length, code + ': ' + message);
-      if (code !== 'en') assert.notEqual(translated, message, 'missing known status translation: ' + code + ': ' + message);
+      assert.ok(translated.length, `${code}: ${message}`);
+      assert.deepEqual(placeholderNames(translated), placeholderNames(message), `${code}: placeholders for ${message}`);
+      if (code !== 'en') assert.notEqual(translated, message, `missing known status translation: ${code}: ${message}`);
     }
     assert.equal(i18n.t(unexpectedBackendError), unexpectedBackendError,
       'unexpected backend failures must remain opaque');

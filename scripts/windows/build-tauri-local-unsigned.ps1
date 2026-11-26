@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
- Build and bundle an unsigned Rust/Tauri Windows release without GitHub Actions.
+ Build and bundle a Rust/Tauri Windows release without GitHub Actions.
 .NOTES
  Requires the installed stable-x86_64-pc-windows-gnullvm Rust toolchain,
  LLVM-MinGW (clang.exe and libunwind.dll), Node/npm and 7-Zip. This script
@@ -24,7 +24,7 @@ $version = [string]$conf.version
 
 foreach ($tool in @('cargo.exe', 'npx.cmd', 'clang.exe')) {
     if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
-        throw "Missing $tool (required for local unsigned Tauri packaging)."
+        throw "Missing $tool (required for local Tauri packaging)."
     }
 }
 $sevenZipCommand = Get-Command '7z.exe' -ErrorAction SilentlyContinue
@@ -40,7 +40,7 @@ if (-not (Test-Path -LiteralPath $unwind)) {
 }
 
 $before = @{}
-foreach ($key in @('RUSTUP_TOOLCHAIN', 'CARGO_BUILD_JOBS', 'CC', 'CXX')) {
+foreach ($key in @('RUSTUP_TOOLCHAIN', 'CARGO_BUILD_JOBS', 'CC', 'CXX', 'RUSTFLAGS', 'TAURI_SIGNING_PRIVATE_KEY', 'TAURI_SIGNING_PRIVATE_KEY_PATH', 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD')) {
     $before[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
 }
 
@@ -58,6 +58,21 @@ try {
     $env:CC = 'clang.exe'
     $env:CXX = 'clang++.exe'
 
+    $signingKey = [Environment]::GetEnvironmentVariable('TAURI_SIGNING_PRIVATE_KEY', 'Process')
+    $updaterKeyPath = [Environment]::GetEnvironmentVariable('TAURI_SIGNING_PRIVATE_KEY_PATH', 'Process')
+    if ([string]::IsNullOrWhiteSpace($signingKey) -and [string]::IsNullOrWhiteSpace($updaterKeyPath)) {
+        $defaultUpdaterKey = Join-Path $env:USERPROFILE '.tauri\orbit-updater.key'
+        if (Test-Path -LiteralPath $defaultUpdaterKey) {
+            $updaterKeyPath = $defaultUpdaterKey
+            $env:TAURI_SIGNING_PRIVATE_KEY_PATH = $updaterKeyPath
+            if ($null -eq [Environment]::GetEnvironmentVariable('TAURI_SIGNING_PRIVATE_KEY_PASSWORD', 'Process')) {
+                $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ''
+            }
+        }
+    }
+    $hasUpdaterKey = (-not [string]::IsNullOrWhiteSpace($signingKey)) -or
+        ((-not [string]::IsNullOrWhiteSpace($updaterKeyPath)) -and (Test-Path -LiteralPath $updaterKeyPath))
+
     & npm.cmd run tauri:stage
     if ($LASTEXITCODE -ne 0) { throw 'Tauri frontend staging failed.' }
 
@@ -67,6 +82,20 @@ try {
             & cargo.exe test --locked --lib
             if ($LASTEXITCODE -ne 0) { throw 'Native Rust tests failed; refusing to bundle.' }
         } finally { Pop-Location }
+    }
+
+    # Strip user profile and workspace paths from release panic/source strings.
+    $cargoHome = if (-not [string]::IsNullOrWhiteSpace($env:CARGO_HOME)) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE '.cargo' }
+    $remapFlags = @(
+        "--remap-path-prefix=$root=/orbit",
+        "--remap-path-prefix=$cargoHome=/cargo",
+        "--remap-path-prefix=$($env:USERPROFILE)=/user"
+    )
+    $existingRustflags = $before['RUSTFLAGS']
+    $env:RUSTFLAGS = if ([string]::IsNullOrWhiteSpace($existingRustflags)) {
+        $remapFlags -join ' '
+    } else {
+        "$existingRustflags $($remapFlags -join ' ')"
     }
 
     # Build once without bundling so the WebView2 SDK loader is generated.
@@ -84,15 +113,20 @@ try {
     foreach ($nameOfDll in @('libunwind.dll', 'WebView2Loader.dll')) {
         $resources[(Join-Path $runtime $nameOfDll)] = $nameOfDll
     }
+    $bundleOverlay = @{resources=$resources}
+    if ($hasUpdaterKey) {
+        $bundleOverlay.createUpdaterArtifacts = $true
+    }
     $overlay = Join-Path $release 'local-bundle-resources.json'
-    @{bundle=@{resources=$resources}} | ConvertTo-Json -Depth 6 |
+    @{bundle=$bundleOverlay} | ConvertTo-Json -Depth 6 |
         Set-Content -LiteralPath $overlay -Encoding UTF8
-
-    & npx.cmd tauri build --target $target --bundles nsis,msi --no-sign --ci --config $overlay
-    if ($LASTEXITCODE -ne 0) { throw 'Tauri NSIS/MSI packaging failed.' }
 
     $nsis = Join-Path $release "bundle/nsis/${name}_${version}_x64-setup.exe"
     $msi = Join-Path $release "bundle/msi/${name}_${version}_x64_en-US.msi"
+    Remove-Item -LiteralPath "$nsis.sig" -Force -ErrorAction SilentlyContinue
+
+    & npx.cmd tauri build --target $target --bundles nsis,msi --no-sign --ci --config $overlay
+    if ($LASTEXITCODE -ne 0) { throw 'Tauri NSIS/MSI packaging failed.' }
     foreach ($file in @($nsis, $msi)) {
         if (-not (Test-Path -LiteralPath $file)) { throw "Missing installer: $file" }
     }
@@ -127,12 +161,54 @@ try {
     Copy-Item -LiteralPath (Join-Path $runtime 'WebView2Loader.dll') -Destination $portable -Force
     $zip = Join-Path $dist "Orbit-Launcher-Portable-$version.zip"
     Compress-Archive -Path (Join-Path $portable '*') -DestinationPath $zip -CompressionLevel Optimal -Force
-    $manifest = @($nsis, $msi, $zip) | ForEach-Object {
+
+    $artifacts = @($nsis, $msi, $zip)
+    if ($hasUpdaterKey) {
+        $nsisSig = "$nsis.sig"
+        if (-not (Test-Path -LiteralPath $nsisSig)) {
+            if (-not [string]::IsNullOrWhiteSpace($updaterKeyPath)) {
+                & npx.cmd tauri signer sign --private-key-path $updaterKeyPath --app-version $version $nsis
+            } else {
+                & npx.cmd tauri signer sign --app-version $version $nsis
+            }
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $nsisSig)) {
+                throw "Missing or failed updater signature: $nsisSig"
+            }
+        }
+        $distSetup = Join-Path $dist "Orbit-Launcher-Setup-$version.exe"
+        $distSig = Join-Path $dist "Orbit-Launcher-Setup-$version.exe.sig"
+        Copy-Item -LiteralPath $nsis -Destination $distSetup -Force
+        Copy-Item -LiteralPath $nsisSig -Destination $distSig -Force
+        $signature = (Get-Content -LiteralPath $distSig -Raw).Trim()
+        if ([string]::IsNullOrWhiteSpace($signature)) {
+            throw "Updater signature file is empty: $distSig"
+        }
+        $latestJsonObj = [ordered]@{
+            version = $version
+            notes = "Orbit Launcher v$version"
+            pub_date = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+            platforms = [ordered]@{
+                'windows-x86_64' = [ordered]@{
+                    signature = $signature
+                    url = "https://github.com/j5bak928-a11y/orbit-game-launcher/releases/download/v$version/Orbit-Launcher-Setup-$version.exe"
+                }
+            }
+        }
+        $latestJsonPath = Join-Path $dist 'latest.json'
+        [IO.File]::WriteAllText($latestJsonPath, ($latestJsonObj | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
+        $artifacts += @($distSetup, $distSig, $latestJsonPath)
+    }
+
+    $manifest = $artifacts | ForEach-Object {
         [pscustomobject]@{path=$_;bytes=(Get-Item -LiteralPath $_).Length;sha256=(Get-Sha256 $_)}
     }
     $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $dist 'manifest.json') -Encoding UTF8
     $manifest | Format-Table -AutoSize | Out-String | Write-Output
-    Write-Output "PASS: unsigned local Tauri Rust $version; both installers contain the runtime DLLs."
+    if ($hasUpdaterKey) {
+        Write-Output "PASS: local Tauri Rust $version with signed updater artifacts ($distSetup, $distSig, latest.json); both installers contain the runtime DLLs."
+    } else {
+        Write-Output "PASS: unsigned local Tauri Rust $version; both installers contain the runtime DLLs."
+    }
 } finally {
     Pop-Location
     foreach ($key in $before.Keys) {

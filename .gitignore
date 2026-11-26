@@ -12,9 +12,13 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+*.key
+*.sig
 *.pem
 *.p12
 *.pfx
+latest.json
+local-distribution/
 
 # Runtime library data and backups
 *.sqlite

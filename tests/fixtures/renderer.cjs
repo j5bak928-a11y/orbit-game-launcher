@@ -8,8 +8,11 @@ function installFixture({ count }) {
     launch_uri: '', cover: '', banner: '', icon: '', genre: 'Adventure', tags: ['Fixture'],
     favorite: false, total_play_seconds: 0, last_played_at: null,
     created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
-    launch_args: [], working_dir: '',
+    launch_args: [], working_dir: '', play_status: '', hidden: false,
+    launch_env: {}, launch_profiles: [],
   }));
+  const collections = [];
+  let nextColId = 0;
   let revision = 0;
   let nextId = count;
   let runningIds = [];
@@ -20,13 +23,15 @@ function installFixture({ count }) {
   const counts = { listGames:0, snapshot:0, runningGames:0, events:0, pageRebuilds:0 };
   const copy = value => JSON.parse(JSON.stringify(value));
   const emit = event => { counts.events++; for (const listener of listeners) listener(copy(event)); };
-  const snapshot = () => ({ games:copy(games), runningIds:runningIds.slice(), revision });
+  const snapshot = () => ({ games:copy(games), collections:copy(collections), runningIds:runningIds.slice(), revision });
   const changed = (updates = [], removedIds = []) => emit({
     type:'gamesChanged', games:updates, removedIds, runningIds, revision:++revision,
   });
+  const collectionsChanged = () => emit({ type:'collectionsChanged', collections:copy(collections) });
   const add = data => {
     const game = { ...games[0], ...data, id:`00000000-0000-4000-8000-${String(++nextId).padStart(12, '0')}`,
-      favorite:false, tags:data.tags || [], total_play_seconds:0 };
+      favorite:false, hidden:false, play_status:data.play_status || '', launch_env:data.launch_env || {},
+      launch_profiles:data.launch_profiles || [], tags:data.tags || [], total_play_seconds:0 };
     games.push(game); changed([game]); return { game:copy(game), added:true };
   };
   window.orbit = {
@@ -40,13 +45,70 @@ function installFixture({ count }) {
       const game = games.find(g => g.id === id); game.favorite = !game.favorite;
       game.updated_at = new Date().toISOString(); changed([game]); return copy(game);
     },
+    listCollections:async () => copy(collections),
+    createCollection:async raw => {
+      const name = String(raw?.name || '').trim();
+      if (!name) throw Error('Collection name is required.');
+      const col = { id:`col-${++nextColId}`, name, icon:raw?.icon || 'folder', color:raw?.color || '', position:collections.length, game_ids:[] };
+      collections.push(col); collectionsChanged(); return copy(col);
+    },
+    updateCollection:async (id, patch) => {
+      const col = collections.find(c => c.id === id); if (!col) throw Error('Collection not found.');
+      Object.assign(col, patch); collectionsChanged(); return copy(col);
+    },
+    deleteCollection:async id => {
+      const i = collections.findIndex(c => c.id === id); if (i < 0) return false;
+      collections.splice(i, 1); collectionsChanged(); return true;
+    },
+    setGameCollections:async (gameId, colIds) => {
+      const set = new Set(colIds || []);
+      for (const col of collections) {
+        col.game_ids = col.game_ids.filter(id => id !== gameId);
+        if (set.has(col.id)) col.game_ids.push(gameId);
+      }
+      collectionsChanged(); return copy(collections);
+    },
+    bulkUpdateGames:async (ids, action) => {
+      const updated = [];
+      for (const id of ids || []) {
+        const game = games.find(g => g.id === id); if (!game) continue;
+        if (Object.hasOwn(action, 'play_status')) game.play_status = action.play_status;
+        if (Object.hasOwn(action, 'hidden')) game.hidden = !!action.hidden;
+        if (Array.isArray(action.remove_tags)) {
+          const drop = new Set(action.remove_tags.map(t => t.toLowerCase()));
+          game.tags = (game.tags || []).filter(t => !drop.has(t.toLowerCase()));
+        }
+        if (Array.isArray(action.add_tags)) {
+          const have = new Set((game.tags || []).map(t => t.toLowerCase()));
+          for (const tag of action.add_tags) {
+            if (!have.has(tag.toLowerCase())) { have.add(tag.toLowerCase()); game.tags = [...(game.tags || []), tag]; }
+          }
+        }
+        if (action.add_collection_id) {
+          const col = collections.find(c => c.id === action.add_collection_id);
+          if (col && !col.game_ids.includes(id)) col.game_ids.push(id);
+        }
+        if (action.remove_collection_id) {
+          const col = collections.find(c => c.id === action.remove_collection_id);
+          if (col) col.game_ids = col.game_ids.filter(gid => gid !== id);
+        }
+        updated.push(game);
+      }
+      if (updated.length) changed(updated);
+      collectionsChanged();
+      return { updatedCount:updated.length, updatedGames:copy(updated), collections:copy(collections) };
+    },
     updateGame:async (id, patch) => {
       const game = games.find(g => g.id === id); Object.assign(game, patch);
       changed([game]); return copy(game);
     },
     addGame:async data => add(data),
-    removeGame:async id => { games.splice(games.findIndex(g => g.id === id), 1); changed([], [id]); return true; },
-    launchGame:async id => { runningIds = [id]; changed([]); return { tracked:true, message:'Fixture launched' }; },
+    removeGame:async id => {
+      games.splice(games.findIndex(g => g.id === id), 1);
+      for (const col of collections) col.game_ids = col.game_ids.filter(gid => gid !== id);
+      changed([], [id]); collectionsChanged(); return true;
+    },
+    launchGame:async (id, profileId) => { runningIds = [id]; changed([]); return { tracked:true, profileId:profileId || null, message:'Fixture launched' }; },
     saveSettings:async patch => { settings = { ...settings, ...patch }; emit({ type:'settingsChanged', settings }); return copy(settings); },
     chooseExecutable:async () => 'C:/Games/Test.exe', chooseArtwork:async () => null,
     inspectGameFile:async file => ({ executable:file, name:'Fixture', working_dir:'C:/Games', cover:'', icon:'' }),

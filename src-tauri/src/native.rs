@@ -1969,11 +1969,47 @@ fn xml_unescape_attribute(raw: &str) -> Option<String> {
 
 struct XboxManifest {
     id: String,
+    publisher: String,
+    app_id: Option<String>,
     title: String,
     owner: PathBuf,
     executable: PathBuf,
     visuals: XboxAttributes,
     executable_attributes: XboxAttributes,
+}
+
+/// Deterministic Windows AppxPackaging PublisherId: first 8 bytes of SHA-256
+/// over the UTF-16LE-encoded Identity Publisher, formatted as 13 Crockford
+/// Base32 characters (e.g., Microsoft Corporation -> "8wekyb3d8bbwe").
+fn compute_xbox_publisher_id(publisher: &str) -> String {
+    use sha2::{Digest, Sha256};
+    const ALPHABET: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
+    let mut utf16 = Vec::with_capacity(publisher.len() * 2);
+    for unit in publisher.encode_utf16() {
+        utf16.extend_from_slice(&unit.to_le_bytes());
+    }
+    let digest = Sha256::digest(&utf16);
+    let mut first8 = [0u8; 8];
+    first8.copy_from_slice(&digest[..8]);
+    let bits = u64::from_be_bytes(first8);
+    let mut out = String::with_capacity(13);
+    for i in 0..13 {
+        let idx = if i < 12 {
+            ((bits >> (59 - i * 5)) & 0x1F) as usize
+        } else {
+            ((bits & 0x0F) << 1) as usize
+        };
+        out.push(ALPHABET[idx] as char);
+    }
+    out
+}
+
+fn valid_xbox_app_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
 fn read_xbox_manifest(root: &Path, file: &Path) -> Option<XboxManifest> {
@@ -2016,8 +2052,14 @@ fn read_xbox_manifest(root: &Path, file: &Path) -> Option<XboxManifest> {
         .get("Name")
         .and_then(|name| contained_file(root, name))
         .filter(|file| extension(file) == "exe" && !ignored_executable(file))?;
+    let app_id = executable_attributes
+        .get("Id")
+        .filter(|v| valid_xbox_app_id(v))
+        .cloned();
     Some(XboxManifest {
         id: id.clone(),
+        publisher: publisher.clone(),
+        app_id,
         title,
         owner: owner.to_path_buf(),
         executable,
@@ -2028,10 +2070,27 @@ fn read_xbox_manifest(root: &Path, file: &Path) -> Option<XboxManifest> {
 
 fn xbox_from_manifest(root: &Path, file: &Path) -> Option<Value> {
     let manifest = read_xbox_manifest(root, file)?;
-    Some(
-        json!({"name":manifest.title,"source":"xbox","source_id":manifest.id,
-        "install_path":manifest.owner,"executable":manifest.executable,"tags":[]}),
-    )
+    let mut launch_uri = String::new();
+    if let Some(app_id) = manifest.app_id.as_deref() {
+        let pfn = format!(
+            "{}_{}",
+            manifest.id,
+            compute_xbox_publisher_id(&manifest.publisher)
+        );
+        let candidate = format!("shell:AppsFolder\\{pfn}!{app_id}");
+        if validate_shell_apps_folder_uri(&candidate) {
+            launch_uri = candidate;
+        }
+    }
+    Some(json!({
+        "name": manifest.title,
+        "source": "xbox",
+        "source_id": manifest.id,
+        "install_path": manifest.owner,
+        "executable": manifest.executable,
+        "launch_uri": launch_uri,
+        "tags": []
+    }))
 }
 
 /// Resolve official Microsoft GDK logo assets from the installed package's
@@ -2322,9 +2381,72 @@ pub fn discover_games(settings: &Value) -> Result<Value, String> {
     Ok(json!({"games":all,"warnings":warnings,"diagnostics":diagnostics}))
 }
 
+/// Strict validation for Windows packaged app launch targets:
+/// `shell:AppsFolder\<PackageFamilyName>!<AppId>`.
+/// Rejects arbitrary `shell:` CLSIDs, folder aliases, whitespace, traversal,
+/// and non-Crockford publisher hashes.
+fn validate_shell_apps_folder_uri(raw: &str) -> bool {
+    const PREFIX: &str = "shell:AppsFolder\\";
+    if raw.len() <= PREFIX.len() || raw.len() > 256 || !safe_text(raw, 256) {
+        return false;
+    }
+    if !raw[..PREFIX.len()].eq_ignore_ascii_case(PREFIX) {
+        return false;
+    }
+    let rest = &raw[PREFIX.len()..];
+    if rest
+        .chars()
+        .any(|c| c.is_whitespace() || matches!(c, '/' | '\\' | ':' | '"' | '\''))
+    {
+        return false;
+    }
+    let Some((pfn, app_id)) = rest.split_once('!') else {
+        return false;
+    };
+    if app_id.contains('!') || !valid_xbox_app_id(app_id) {
+        return false;
+    }
+    let Some((pkg_name, pub_id)) = pfn.rsplit_once('_') else {
+        return false;
+    };
+    if pkg_name.len() < 3
+        || pkg_name.len() > 50
+        || pkg_name.starts_with('.')
+        || pkg_name.ends_with('.')
+        || pkg_name.contains("..")
+        || !pkg_name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
+    {
+        return false;
+    }
+    pub_id.len() == 13
+        && pub_id.bytes().all(|b| {
+            matches!(
+                b.to_ascii_lowercase(),
+                b'0'..=b'9'
+                    | b'a'..=b'h'
+                    | b'j'
+                    | b'k'
+                    | b'm'
+                    | b'n'
+                    | b'p'..=b't'
+                    | b'v'..=b'z'
+            )
+        })
+}
+
 fn validate_uri(raw: &str) -> Result<(), String> {
     if !safe_text(raw, 2_048) || raw.chars().any(char::is_whitespace) {
         return Err("Invalid launch URI. Use a supported game-launcher link.".into());
+    }
+    if raw.len() >= 6 && raw[..6].eq_ignore_ascii_case("shell:") {
+        if validate_shell_apps_folder_uri(raw) {
+            return Ok(());
+        }
+        return Err(
+            "Invalid Windows AppsFolder URI. Use shell:AppsFolder\\PackageFamilyName!AppId.".into(),
+        );
     }
     let parsed = url::Url::parse(raw)
         .map_err(|_| "Invalid launch URI. Use a supported game-launcher link.".to_string())?;
@@ -2354,13 +2476,11 @@ struct DirectSession {
 
 struct SessionClock {
     started: u64,
-    paused_at: Option<u64>,
-    paused_total: u64,
 }
 
 // Windows QueryUnbiasedInterruptTime excludes time spent suspended, unlike
 // elapsed wall time. Ticks are in 100 ns units. On other systems use monotonic
-// time; suspend_sessions/resume_sessions can exclude sleep when invoked.
+// time.
 #[cfg(windows)]
 fn awake_ticks() -> u64 {
     #[link(name = "kernel32")]
@@ -2391,29 +2511,10 @@ impl SessionClock {
     fn new() -> Self {
         Self {
             started: awake_ticks(),
-            paused_at: None,
-            paused_total: 0,
         }
     }
     fn seconds(&self) -> u64 {
-        let until = self.paused_at.unwrap_or_else(awake_ticks);
-        (until
-            .saturating_sub(self.started)
-            .saturating_sub(self.paused_total)
-            / 10_000_000)
-            .min(7 * 24 * 3_600)
-    }
-    fn pause(&mut self) {
-        if self.paused_at.is_none() {
-            self.paused_at = Some(awake_ticks());
-        }
-    }
-    fn resume(&mut self) {
-        if let Some(at) = self.paused_at.take() {
-            self.paused_total = self
-                .paused_total
-                .saturating_add(awake_ticks().saturating_sub(at));
-        }
+        (awake_ticks().saturating_sub(self.started) / 10_000_000).min(7 * 24 * 3_600)
     }
 }
 
@@ -2422,22 +2523,101 @@ fn direct() -> &'static Mutex<HashMap<String, DirectSession>> {
     DIRECT.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn valid_launch_env_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    key.len() <= 128
+        && (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn collect_launch_env(
+    base: Option<&Value>,
+    extra: Option<&Value>,
+) -> Result<Vec<(String, String)>, String> {
+    let mut merged = std::collections::BTreeMap::new();
+    for source in [base, extra].into_iter().flatten() {
+        let Some(obj) = source.as_object() else {
+            if source.is_null() {
+                continue;
+            }
+            return Err("Environment variables are invalid.".into());
+        };
+        if obj.len() > 40 {
+            return Err("Too many environment variables configured.".into());
+        }
+        for (k, v) in obj {
+            let key = k.trim();
+            if !valid_launch_env_key(key) {
+                return Err(format!("Invalid environment variable name: {key}"));
+            }
+            let val = v
+                .as_str()
+                .ok_or("Environment variable values must be text.")?;
+            if val.chars().count() > 2_048 || val.chars().any(|c| matches!(c, '\0' | '\r' | '\n')) {
+                return Err(format!("Invalid environment variable value for {key}."));
+            }
+            merged.insert(key.to_owned(), val.to_owned());
+        }
+    }
+    if merged.len() > 40 {
+        return Err("Too many environment variables configured.".into());
+    }
+    Ok(merged.into_iter().collect())
+}
+
 /// Launches a validated URI in the system's registered protocol handler or
-/// starts an executable directly without a shell. The caller persists sessions.
-pub fn launch_game(game: &Value) -> Result<Value, String> {
+/// starts an executable directly without a shell. Supports optional per-game
+/// launch profile selection and environment variable overrides.
+pub fn launch_game_with_profile(game: &Value, profile_id: Option<&str>) -> Result<Value, String> {
     let id = field(game, "id");
     if id.is_empty() || id.len() > 256 {
         return Err("Invalid game identifier.".into());
     }
-    let uri = field(game, "launch_uri");
+    let profile = match profile_id.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(pid) => {
+            let found = game
+                .get("launch_profiles")
+                .and_then(Value::as_array)
+                .and_then(|arr| arr.iter().find(|p| field(p, "id") == pid));
+            match found {
+                Some(p) => Some(p),
+                None => return Err("Launch profile not found.".into()),
+            }
+        }
+        None => None,
+    };
+
+    let uri = if let Some(p) = profile {
+        let p_uri = field(p, "launch_uri");
+        let p_exe = field(p, "executable");
+        if !p_uri.is_empty() {
+            p_uri
+        } else if !p_exe.is_empty() {
+            ""
+        } else {
+            field(game, "launch_uri")
+        }
+    } else {
+        field(game, "launch_uri")
+    };
     if !uri.is_empty() {
         validate_uri(uri)?;
         open_external(uri)?;
-        return Ok(
-            json!({"mode":"external","tracked":false,"message":"Opened in the linked game launcher."}),
-        );
+        let message = if uri.len() >= 17 && uri[..17].eq_ignore_ascii_case("shell:AppsFolder\\") {
+            "Opened via Windows AppsFolder."
+        } else {
+            "Opened in the linked game launcher."
+        };
+        return Ok(json!({"mode":"external","tracked":false,"message":message}));
     }
-    let executable = field(game, "executable");
+
+    let executable = profile
+        .map(|p| field(p, "executable"))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| field(game, "executable"));
     if executable.is_empty() {
         return Err("Select a game executable in Edit Game before launching.".into());
     }
@@ -2445,19 +2625,34 @@ pub fn launch_game(game: &Value) -> Result<Value, String> {
     let fallback = exe
         .parent()
         .ok_or("Executable parent directory is unavailable.")?;
-    let working = if field(game, "working_dir").is_empty() {
+    let working_override = profile
+        .map(|p| field(p, "working_dir"))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| field(game, "working_dir"));
+    let working = if working_override.is_empty() {
         fallback.to_path_buf()
     } else {
-        PathBuf::from(field(game, "working_dir"))
+        PathBuf::from(working_override)
     };
     if !working.is_absolute() || !working.is_dir() {
         return Err("Working directory is missing or invalid.".into());
     }
-    let args = game
-        .get("launch_args")
-        .cloned()
-        .unwrap_or_else(|| json!([]));
-    let args = args.as_array().ok_or("Launch arguments are invalid.")?;
+    let profile_args = profile
+        .and_then(|p| p.get("launch_args"))
+        .and_then(Value::as_array)
+        .filter(|arr| !arr.is_empty());
+    let args = if let Some(arr) = profile_args {
+        arr.clone()
+    } else {
+        let raw_args = game
+            .get("launch_args")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+        raw_args
+            .as_array()
+            .ok_or("Launch arguments are invalid.")?
+            .clone()
+    };
     if args.len() > 80
         || args.iter().any(|v| {
             v.as_str()
@@ -2466,6 +2661,10 @@ pub fn launch_game(game: &Value) -> Result<Value, String> {
     {
         return Err("Launch arguments are invalid.".into());
     }
+    let env_vars = collect_launch_env(
+        game.get("launch_env"),
+        profile.and_then(|p| p.get("launch_env")),
+    )?;
     let mut active = direct()
         .lock()
         .map_err(|_| "Process tracker unavailable.")?;
@@ -2475,12 +2674,16 @@ pub fn launch_game(game: &Value) -> Result<Value, String> {
     if active.len() >= MAX_SESSIONS {
         return Err("Too many tracked game sessions.".into());
     }
-    let child = Command::new(&exe)
-        .args(args.iter().filter_map(Value::as_str))
+    let mut cmd = Command::new(&exe);
+    cmd.args(args.iter().filter_map(Value::as_str))
         .current_dir(working)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    for (k, v) in env_vars {
+        cmd.env(k, v);
+    }
+    let child = cmd
         .spawn()
         .map_err(|error| format!("Could not launch {}: {error}", field(game, "name")))?;
     let pid = child.id();
@@ -2552,38 +2755,6 @@ fn poll_direct_sessions(
         active.remove(field(result, "game_id"));
     }
     json!({"completed":completed,"runningIds":running,"checkpoints":checkpoints,"unregistered":unregistered,"error":first_error})
-}
-
-pub fn suspend_sessions() -> Result<Value, String> {
-    for session in direct()
-        .lock()
-        .map_err(|_| "Process tracker unavailable.")?
-        .values_mut()
-    {
-        session.clock.pause();
-    }
-    if let Ok(mut state) = activity().lock() {
-        for session in state.values_mut() {
-            session.clock.pause();
-        }
-    }
-    Ok(json!(true))
-}
-
-pub fn resume_sessions() -> Result<Value, String> {
-    for session in direct()
-        .lock()
-        .map_err(|_| "Process tracker unavailable.")?
-        .values_mut()
-    {
-        session.clock.resume();
-    }
-    if let Ok(mut state) = activity().lock() {
-        for session in state.values_mut() {
-            session.clock.resume();
-        }
-    }
-    Ok(json!(true))
 }
 
 /// Called on app shutdown. The processes remain alive; the returned durations
@@ -3177,29 +3348,6 @@ fn observe_activity_session(sessions: &mut HashMap<String, ActivitySession>, id:
         },
     );
     true
-}
-
-pub fn running_games(games: &Value) -> Result<Value, String> {
-    let inventory = list_running_executables()?;
-    let mut running = match_game_processes(games, &inventory);
-    let mut direct = direct()
-        .lock()
-        .map_err(|_| "Process tracker unavailable.")?;
-    for (id, session) in direct.iter_mut() {
-        if session
-            .child
-            .try_wait()
-            .map_err(|e| e.to_string())?
-            .is_none()
-        {
-            running.insert(id.clone());
-        }
-    }
-    let direct_ids = direct.keys().cloned().collect::<HashSet<_>>();
-    suppress_store_for_direct_alias(games, &mut running, &direct_ids);
-    let mut sorted = running.into_iter().collect::<Vec<_>>();
-    sorted.sort();
-    Ok(json!(sorted))
 }
 
 fn has_trackable_activity_target(entries: &[Value]) -> bool {
@@ -4058,5 +4206,67 @@ mod tests {
         }
         // forget_game clears any active/direct entries cleanly.
         forget_game(&id);
+    }
+
+    #[test]
+    fn xbox_publisher_id_and_apps_folder_uri_validation() {
+        // Known Microsoft AppxPackaging publisher hash test vector.
+        assert_eq!(
+            compute_xbox_publisher_id(
+                "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
+            ),
+            "8wekyb3d8bbwe"
+        );
+        assert!(
+            validate_uri(r"shell:AppsFolder\Microsoft.HaloInfinite_8wekyb3d8bbwe!Game").is_ok()
+        );
+        assert!(validate_uri(r"shell:AppsFolder\Mojang.Minecraft_8wekyb3d8bbwe!App.Main").is_ok());
+        // Reject arbitrary shell: aliases, CLSIDs, traversal, whitespace, or malformed PublisherId.
+        assert!(validate_uri("shell:startup").is_err());
+        assert!(validate_uri("shell:::{20D04FE0-3AEA-1069-A2D8-08002B30309D}").is_err());
+        assert!(validate_uri(r"shell:AppsFolder\..\evil!App").is_err());
+        assert!(validate_uri(r"shell:AppsFolder\BadPkg_short!App").is_err());
+        assert!(validate_uri(r"shell:AppsFolder\Pkg_8wekyb3d8bbwe!App arg").is_err());
+    }
+
+    #[test]
+    fn xbox_manifest_with_app_id_emits_verified_apps_folder_launch_uri() {
+        let root = std::env::temp_dir().join(format!("orbit-xbox-aumid-{}", std::process::id()));
+        let content = root.join("Content");
+        std::fs::create_dir_all(&content).unwrap();
+        std::fs::write(content.join("Game.exe"), b"stub").unwrap();
+        let manifest = r#"<?xml version="1.0" encoding="utf-8"?>
+<Game configVersion="1">
+  <Identity Name="Microsoft.TestGame" Publisher="CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US" Version="1.0.0.0" />
+  <ShellVisuals DefaultDisplayName="Orbit Test Xbox" />
+  <ExecutableList>
+    <Executable Name="Game.exe" Id="Game" />
+  </ExecutableList>
+</Game>"#;
+        let manifest_path = content.join("MicrosoftGame.config");
+        std::fs::write(&manifest_path, manifest).unwrap();
+        let discovered = xbox_from_manifest(&content, &manifest_path).unwrap();
+        assert_eq!(discovered["source"], "xbox");
+        assert_eq!(
+            discovered["launch_uri"],
+            r"shell:AppsFolder\Microsoft.TestGame_8wekyb3d8bbwe!Game"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn collect_launch_env_merges_base_and_profile_overrides() {
+        let base = json!({"DXVK_HUD": "fps", "SHARED": "base"});
+        let extra = json!({"SHARED": "profile", "MOD_DEBUG": "1"});
+        let pairs = collect_launch_env(Some(&base), Some(&extra)).unwrap();
+        assert_eq!(
+            pairs,
+            vec![
+                ("DXVK_HUD".into(), "fps".into()),
+                ("MOD_DEBUG".into(), "1".into()),
+                ("SHARED".into(), "profile".into()),
+            ]
+        );
+        assert!(collect_launch_env(Some(&json!({"1BAD": "x"})), None).is_err());
     }
 }

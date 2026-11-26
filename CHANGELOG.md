@@ -1,6 +1,25 @@
 # Changelog
 
-This changelog covers the changes users receive with Orbit's Windows desktop releases. **Starting with 0.3.4, native Rust/Tauri 2 is the sole Orbit Launcher application** (Electron has been retired and removed). Unsigned installers and automatic update limitations remain documented below. Release files appear on [GitHub Releases](https://github.com/j5bak928-a11y/orbit-game-launcher/releases); check the version on the download before installing.
+This changelog covers the changes users receive with Orbit's Windows desktop releases. **Starting with 0.3.4, native Rust/Tauri 2 is the sole Orbit Launcher application** (Electron has been retired and removed). Starting with **0.3.6**, in-app updates verify Ed25519 signatures via GitHub Releases (`latest.json`), while manual installers remain Authenticode-unsigned. Release files appear on [GitHub Releases](https://github.com/j5bak928-a11y/orbit-game-launcher/releases); check the version and `SHA256SUMS.txt` before installing.
+
+## 0.4.0 — Your Gaming Library
+
+- **Play status, hidden games & custom collections:** Organize games with built-in statuses (**Currently Playing**, **Backlog**, **Completed**, **On Hold**), per-game hidden state, and custom SQLite collections with color/icon pickers that round-trip through `.orbit` and JSON backups. Launching a **Backlog** game automatically promotes it to **Currently Playing**.
+- **Multi-filter bar, smart search operators & Bulk Action Dock:** Combine storefront, status, collection, tag, category, playtime (`Never played`, `Under 2h`, `2h–10h`, `10h+`), and hidden filters alongside search operators (`status:`, `source:`, `tag:`, `in:`, `time:`, `is:hidden`, `is:fav`), multi-select mode (`Shift+Click` range selection), and a sticky Bulk Action Dock for atomic batch updates.
+- **Launch profiles, environment overrides & Xbox AppsFolder support:** Configure per-game working directories, `KEY=VALUE` environment variables, and up to 12 alternative launch profiles (mod loaders, DirectX modes, custom executables/URIs/args/env), plus deterministic `PublisherId` computation and validated `shell:AppsFolder\<PackageFamilyName>!<AppId>` launching for Xbox/GDK titles.
+
+## 0.3.6 — Signed automatic updates and release hardening
+
+- Added cryptographically signed in-app auto-updates using `tauri-plugin-updater` v2 with Ed25519 signature verification against GitHub Releases (`releases/latest/download/latest.json`).
+- Added background update checks on startup (configurable under **Settings → Automatic updates**), a sidebar update banner, live download progress, and automatic install protection while a game is running (`Install & restart` quits the tray cleanly before launching the passive NSIS upgrade).
+- Enabled `strip = true` in `src-tauri/Cargo.toml` and compiler `--remap-path-prefix` flags in `scripts/windows/build-tauri-local-unsigned.ps1` so release executables omit local workspace and user-profile paths.
+- Enforced a restrictive Tauri-level Content Security Policy (`app.security.csp`) in `src-tauri/tauri.conf.json`, ignored updater signing keys/manifests in `.gitignore`, and translated all updater status and `0.3.6` What's New strings across all 5 languages (`en`, `nl`, `de`, `fr`, `es`).
+
+## 0.3.5 — Overview layout, poster cards and accessibility
+
+- Refined Overview hero artwork alignment (`0 px²` overlap across `1440×900` and `910×610`), deduplicated the featured Hero game from `Continue playing`, enabled in-place platform filtering, and translated all library and playtime counters.
+- Aligned poster-card corner controls, added a persistent live `Playing` badge during active sessions, replaced nested interactive buttons with sibling triggers, added 2D arrow-key grid navigation and right-click context menus, and isolated `#app` with `inert` while modals are open.
+- Added quick management actions in Game Details, plain CLI flag parsing for launch arguments, `Hours` & `Minutes` play-session duration editing, dismissible toasts with hover/focus pause, native Windows dark/light titlebar sync, a `>=12px` typography floor, and WCAG AA contrast in both light and dark themes.
 
 ## 0.3.4 — Native Rust main edition (Electron removed)
 

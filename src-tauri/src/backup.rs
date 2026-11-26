@@ -75,7 +75,56 @@ fn games(library: &Value) -> Result<&Vec<Value>, String> {
         return Err(err("Invalid games in Orbit library."));
     }
     validate_sessions(library, rows)?;
+    validate_collections(library)?;
     Ok(rows)
+}
+
+fn validate_collections(library: &Value) -> Result<(), String> {
+    let Some(value) = library.get("collections") else {
+        return Ok(());
+    };
+    let items = value
+        .as_array()
+        .ok_or_else(|| err("Invalid collections in Orbit library."))?;
+    if items.len() > 100 {
+        return Err(err("Orbit collections exceed the 100-collection limit."));
+    }
+    let mut seen = BTreeSet::new();
+    for item in items {
+        let obj = item
+            .as_object()
+            .ok_or_else(|| err("Invalid collection entry in Orbit library."))?;
+        let id = obj
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| valid_session_id(id))
+            .ok_or_else(|| err("Invalid collection ID in Orbit library."))?;
+        if !seen.insert(id) {
+            return Err(err("Duplicate collection ID in Orbit library."));
+        }
+        let name = obj
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|n| {
+                !n.is_empty() && n.chars().count() <= 60 && !n.chars().any(char::is_control)
+            });
+        if name.is_none() {
+            return Err(err("Invalid collection name in Orbit library."));
+        }
+        let game_ids = obj
+            .get("game_ids")
+            .and_then(Value::as_array)
+            .ok_or_else(|| err("Invalid collection games in Orbit library."))?;
+        if game_ids.len() > MAX_LIBRARY_ROWS
+            || game_ids
+                .iter()
+                .any(|gid| gid.as_str().map_or(true, |s| !valid_session_id(s)))
+        {
+            return Err(err("Invalid collection game ID in Orbit library."));
+        }
+    }
+    Ok(())
 }
 
 /// An absent sessions property is valid for original orbit.library.v1 backups.
@@ -400,6 +449,7 @@ impl StagedBackup {
         }
     }
 
+    #[cfg(test)]
     fn into_library(mut self) -> Value {
         self.committed = true;
         std::mem::take(&mut self.library)
@@ -501,6 +551,7 @@ fn decode_artwork(
 /// Validates an untrusted .orbit archive, installs only referenced artwork,
 /// and returns the orbit.library.v1 object for database restoration. Artwork
 /// fields are rewritten to locally installed filenames or cleared.
+#[cfg(test)]
 pub fn import_backup(input: &Path, artwork_dir: &Path) -> Result<Value, String> {
     import_backup_checked(input, artwork_dir, |_| Ok(()))
 }
@@ -508,6 +559,7 @@ pub fn import_backup(input: &Path, artwork_dir: &Path) -> Result<Value, String> 
 /// The caller must validate database identity/session conflicts before any
 /// artwork is installed. A malformed library must not leave arbitrary assets
 /// behind when its eventual DB restore fails. Old archives remain readable.
+#[cfg(test)]
 pub fn import_backup_checked<F>(
     input: &Path,
     artwork_dir: &Path,

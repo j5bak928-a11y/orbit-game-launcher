@@ -1,9 +1,14 @@
 name: Verify source
 
 on:
-  # Local validation is the default while hosted Actions are billing-blocked.
-  # Keep the workflow for optional manual use, without automatic run spam.
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
+
+concurrency:
+  group: orbit-ci-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -61,6 +66,12 @@ jobs:
         run: npm run test:controller
         env:
           ORBIT_QA_OUTPUT: ${{ runner.temp }}/orbit-browser
+      - name: Check multilingual renderer switching
+        run: npm run test:languages
+      - name: Check What's New dialog and version acknowledgments
+        run: npm run test:whats-new
+      - name: Check visual consistency across languages, themes and viewports
+        run: npm run test:visual
       - uses: actions/upload-artifact@v4
         id: browser_artifacts
         if: always()

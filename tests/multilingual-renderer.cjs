@@ -56,8 +56,12 @@ const server=http.createServer((request,response)=>{
   await language.selectOption('de');
   await page.locator('[data-route="library"]').first().click();
   const gameId=await page.evaluate(()=>window.fixture.id(1));
+  const previousName=await page.locator(`.game-card[data-id="${gameId}"] .game-name`).textContent();
   await page.evaluate(id=>window.fixture.patch(id,{name:'Settings'}),gameId);
-  await page.locator('.game-card .game-name').first().waitFor();
+  await page.waitForFunction(({id,prev})=>{
+   const el=document.querySelector(`.game-card[data-id="${id}"] .game-name`);
+   return el&&el.textContent!==prev;
+  },{id:gameId,prev:previousName});
   assert.equal(await page.locator(`.game-card[data-id="${gameId}"] .game-name`).textContent(),'Settings','user game names must never be translated');
   await page.locator(`.game-card[data-id="${gameId}"]`).click();
   const detail=page.locator('[role="dialog"].detail-showcase');

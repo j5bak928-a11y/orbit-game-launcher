@@ -4,9 +4,9 @@
 
 Orbit is a local-first desktop game launcher for finding, organizing, and playing installed games. It brings games from different storefronts into one library without replacing their launchers or moving their files.
 
-**Orbit `0.3.4` runs solely on Rust + Tauri 2:** the legacy Electron edition has been retired and removed from the repository, promoting the native Rust backend and WebView2 desktop shell to the main **Orbit Launcher** (`com.orbitlauncher.desktop`). On first launch, Orbit automatically copies an existing `com.orbitlauncher.rustpreview` library (or older Electron library) into the new profile via read-only SQLite `VACUUM INTO` without touching the original files.
+**Orbit `0.4.0` runs solely on Rust + Tauri 2 with signed in-app auto-updates:** the legacy Electron edition was retired in `0.3.4`, promoting the native Rust backend and WebView2 desktop shell to the main **Orbit Launcher** (`com.orbitlauncher.desktop`). On first launch, Orbit automatically copies an existing `com.orbitlauncher.rustpreview` library (or older Electron library) into the new profile via read-only SQLite `VACUUM INTO` without touching the original files.
 
-**[Download the latest Windows release](https://github.com/j5bak928-a11y/orbit-game-launcher/releases/latest)** — choose **Orbit Launcher Setup** (`Orbit-Launcher-Setup-<version>.exe`, recommended NSIS installer), MSI (`Orbit-Launcher-<version>.msi`), or portable ZIP (`Orbit-Launcher-Portable-<version>.zip`). Check the release tag and SHA-256 checksums before installing. [Read the complete changelog](CHANGELOG.md), including **0.3.4 and 0.2.7–0.3.3 history**. **Important when upgrading:** choose **Quit Orbit** from the system tray before installing or relaunching; closing the window alone leaves the Rust tray tracker alive and can prevent the newer UI and changelog from opening.
+**[Download the latest Windows release](https://github.com/j5bak928-a11y/orbit-game-launcher/releases/latest)** — choose **Orbit Launcher Setup** (`Orbit-Launcher-Setup-<version>.exe`, recommended NSIS installer), MSI (`Orbit-Launcher-<version>.msi`), or portable ZIP (`Orbit-Launcher-Portable-<version>.zip`). Check the release tag and SHA-256 checksums before installing. [Read the complete changelog](CHANGELOG.md), including **0.4.0 and 0.2.7–0.3.6 history**. Starting with `0.3.6`, installed copies check for signed updates automatically in the background; when upgrading manually from an older installer, choose **Quit Orbit** from the system tray first so no older tray instance stays running.
 
 ![Orbit library with game covers, filters, and search](docs/images/orbit-library-current.png)
 
@@ -21,8 +21,9 @@ Orbit is a local-first desktop game launcher for finding, organizing, and playin
 - **Track playtime:** record supported direct-launch sessions and detect certain externally launched games on Windows. Tracking accuracy depends on how a game starts and which processes can be identified.
 - **Show game artwork:** look for validated portrait artwork in bounded neighboring folders, use cached covers and icons offline, optionally look up online artwork, or select your own cover, banner, and icon.
 - **Play with a controller:** navigate the fullscreen library and game details with a standard-mapped Xbox or PlayStation controller, including page triggers, right-stick scrolling, reconnect handling and a Menu / Options entry shortcut; keyboard and mouse remain available.
-- **Choose your language:** use Orbit in English, Nederlands, Deutsch, Français or Español; follow the system language automatically or select one in Settings. Both desktop editions save this preference locally.
-- **See what's new:** the first start of v0.2.11 shows the release highlights for 0.2.11 through 0.2.7. Its narrow rounded scrollbar matches your accent color. The close X aligns with the header; no purple outline surrounds the full window. Dismiss the dialog once per version, or reopen it from the sidebar or Settings. This uses local browser/WebView2 storage, not your game database; restart the actual new executable after fully quitting an older tray process.
+- **Choose your language:** use Orbit in English, Nederlands, Deutsch, Français or Español; follow the system language automatically or select one in Settings. Orbit saves this preference locally.
+- **Stay up to date safely:** check for signed GitHub releases automatically in the background (configurable in Settings), verify Ed25519 release signatures before installing, pause installation while any game is running, and restart cleanly from Settings or the sidebar.
+- **See what's new:** the first start after updating shows the release highlights from `0.2.7` through `0.4.0`. Dismiss the dialog once per version, or reopen it anytime from the sidebar or Settings.
 - **Review gaming statistics:** recorded-session totals for recent days and weeks, a daily activity chart, recent games and a period-best day. Overlapping records for a single game are deduplicated in reports without rewriting play history.
 - **Keep your data local:** store games, settings, and play history in SQLite; export and restore library backups.
 
@@ -30,15 +31,16 @@ Orbit is a local-first desktop game launcher for finding, organizing, and playin
 <tr><td><img src="docs/images/orbit-overview-current.png" alt="Orbit Overview with featured game and Continue playing"></td><td><img src="docs/images/orbit-settings-current.png" alt="Orbit appearance and performance settings"></td></tr>
 </table>
 
-## Desktop runtime (`0.3.4`)
+## Desktop runtime (`0.4.0`)
 
 | | Orbit Launcher (Rust / Tauri 2) |
 | --- | --- |
-| Version in this repository | **0.3.4** |
+| Version in this repository | **0.4.0** |
 | Application ID | `com.orbitlauncher.desktop` |
-| UI | Orbit HTML/CSS/JavaScript in WebView2 |
-| Backend | Native Rust for SQLite library, discovery, tracking, artwork and backups |
-| Windows packaging | NSIS setup, MSI and portable ZIP with bundled runtime DLLs |
+| UI | Orbit HTML/CSS/JavaScript in WebView2 with restrictive Tauri CSP |
+| Backend | Native Rust for SQLite library, discovery, tracking, artwork, backups and signed updates |
+| Windows packaging | NSIS setup, MSI and portable ZIP with bundled runtime DLLs (`strip = true` + remapped build paths) |
+| In-app updates | Ed25519-signed updates via `tauri-plugin-updater` and GitHub Releases `latest.json` |
 | Game tracking in the tray | Rust keeps running while its WebView2 window is destroyed on close |
 
 Starting with **0.3.4**, the legacy Electron edition has been removed. On first launch into an empty `com.orbitlauncher.desktop` profile, Orbit imports an existing `com.orbitlauncher.rustpreview` library first (or legacy Electron `orbit-game-launcher` / `Orbit Launcher` directory) via read-only SQLite `VACUUM INTO` and compatible artwork copies without modifying original files.
@@ -47,7 +49,7 @@ Starting with **0.3.4**, the legacy Electron edition has been removed. On first 
 
 **Direction:** starting with **0.2.8**, Orbit moved toward a native Rust backend, and in **0.3.4** Rust became the sole main edition (`Orbit Launcher`, `com.orbitlauncher.desktop`). Subsequent releases focus on library organization, a console-quality controller experience, and optional offline intelligence without sacrificing libraries or playtime history.
 
-These are **engineering milestones, not promises of public binary availability or dates**. Orbit uses version `0.3.4` in source; see the [full changelog](CHANGELOG.md).
+These are **engineering milestones, not promises of public binary availability or dates**. Orbit uses version `0.4.0` in source; see the [full changelog](CHANGELOG.md).
 
 | Milestone | Theme | Deliverable / exit criteria |
 | --- | --- | --- |
@@ -57,7 +59,8 @@ These are **engineering milestones, not promises of public binary availability o
 | **0.2.10 — Focused interface polish** | Cleaner game posters and changelog | Keep selected favorites visible but show unsaved hearts only on hover/keyboard focus (always accessible on touch); restyle the release notes scrollbar with a rounded, accent-colored thumb without disabling scrolling. |
 | **0.2.11 — Changelog window polish** | Clear, accessible modal | Align the X control with the header and remove the purple focus ring around the full dialog without removing keyboard focus indicators from the actual controls. |
 | **0.3.0 — Native confidence** | Finish Windows parity | Prioritize physical-controller reliability, tray reopen and close behavior, crash/sleep recovery, artwork/discovery accuracy, backup restore and measured background performance. Actual game launches, session tracking and upgrades are already reported working by the user; retain them as regression checks, not unresolved baseline defects. Validate remaining behaviors on representative Windows installations before retiring Electron as the fallback. |
-| **0.4.0 — Your Gaming Library** | Organization and personalization | Smart collections (**Currently Playing**, **Backlog**, **Completed**), custom collections, advanced filtering, tags, favorites, per-game launch preferences, and responsive libraries with 5,000+ games. |
+| **0.3.4–0.3.6 — Standalone Rust & signed updates** | Public release readiness | Retired legacy Electron edition (`0.3.4`), refined Overview/poster-card/accessibility UX (`0.3.5`), and shipped Ed25519-signed in-app auto-updates, stripped/path-remapped release binaries, and Tauri CSP hardening (`0.3.6`). |
+| **0.4.0 — Your Gaming Library** | Delivered in 0.4.0 | Play statuses (**Currently Playing**, **Backlog**, **Completed**, **On Hold**), hidden games, custom SQLite collections synced across `.orbit`/JSON backups, multi-filter bar + smart search operators, Bulk Action Dock, per-game environment variables & alternative launch profiles, and Xbox AppsFolder launching. |
 | **0.5.0 — Console Experience** | Controller Mode 2.0 | A polished fullscreen/couch interface, immersive game details, robust controller ownership and focus recovery, plus efficient idle gamepad polling. |
 | **0.6.0 — Orbit Intelligence** | Useful local insights | Offline playtime insights, activity heatmaps, game suggestions, neglected-backlog prompts and optional milestones. No mandatory accounts, constantly running AI service or new background overhead. |
 | **1.0.0 — Orbit Complete** | Stable release | Verified install/upgrade/uninstall, safe migration and full backup round trips, reliable session recovery, accessible polished UI, repeatable performance results and documented limitations. |
@@ -69,9 +72,9 @@ These are **engineering milestones, not promises of public binary availability o
 1. **Protect performance.** Use the maintainer's observations of roughly **5 MB in tracking-only background use** and **130–180 MB with the UI open** as *reference measurements*, not hard guarantees. Compare whole process trees (including WebView2), startup time, game-launch latency and CPU on matched workloads. Reject unnecessary services, unbounded scans and regressions.
 2. **Protect data.** Never silently alter or double-count historical playtime. Test SQLite migrations, backups, restores and crash/sleep recovery using disposable profiles. Do not run separate Electron/Rust trackers against the same game during migration testing without establishing ownership.
 3. **Ship useful functionality, not cosmetic version bumps.** Keep the existing Orbit visual identity and use restrained animation. Features must work with actual games and native Windows behavior, not just browser mocks.
-4. **Keep local builds available.** Paid GitHub Actions and code signing are **not prerequisites for locally tested, unsigned preview builds**. Signing and trusted update distribution can be considered separately for future public releases; automatic unsigned updates remain disabled.
+4. **Keep local builds available.** Paid code-signing certificates are **not prerequisites for locally tested builds**. In-app updates verify Ed25519 release signatures (`tauri-plugin-updater`); Windows Authenticode signing for SmartScreen trust remains optional and separate.
 
-**Repository maintenance:** GitHub Actions workflows are preserved as optional `workflow_dispatch` tools, but are not triggered by every push, pull request or scheduled run while hosted builds are billing-blocked. Run `npm run check`, `npm test`, `npm run lint`, the browser tests and the native Rust tests locally for each release candidate; do not infer green checks from a skipped hosted workflow.
+**Repository maintenance:** GitHub Actions CI (`ci.yml`, `tauri-windows.yml`, and `security-audit.yml`) runs automatically on pull requests and pushes to `main` (plus weekly security audits). You can also run `npm run check`, `npm test`, `npm run lint`, the browser tests, and native Rust tests locally for every change.
 
 ### Memory usage (maintainer observations)
 
@@ -138,7 +141,7 @@ npm run build:win
 
 The script runs native Rust tests, compiles Orbit, bundles the GNU-LLVM runtime (`WebView2Loader.dll` and `libunwind.dll`) **beside** the executable in NSIS/MSI, verifies their inclusion, and generates `Orbit-Launcher-Portable-<version>.zip` under `src-tauri/target/x86_64-pc-windows-gnullvm/release/local-distribution/`. A bare executable built with that toolchain cannot be distributed without its runtime DLLs. This script does not install or run Orbit and does not open application profiles. The [Tauri Windows CI workflow](https://github.com/j5bak928-a11y/orbit-game-launcher/actions/workflows/tauri-windows.yml) remains an optional build path, not a prerequisite for local testing.
 
-Orbit remains unsigned; closing the window to the tray frees the WebView2 UI window while retaining native tracking. Use **Quit Orbit** in the tray to stop the application completely.
+Orbit installers remain Authenticode-unsigned (Windows SmartScreen may prompt on first manual download), while in-app updates verify Ed25519 signatures before installing. Closing the window to the tray frees the WebView2 UI window while retaining native tracking. Use **Quit Orbit** in the tray to stop the application completely.
 
 ## Finding and launching games
 
@@ -156,7 +159,7 @@ Use **Find installed games** to preview discoveries before importing them, or **
 
 Discovery is read-only and does not launch games. **Downloads is not scanned automatically.** Some Xbox PC/GDK games require registered Windows app-launch through Gaming Services to obtain title identity; discovering their executable does **not** guarantee that direct EXE launch will work. Protected Microsoft Store installations and unusual launchers may require manual setup. Optional **Scan at startup** is off by default.
 
-Storefront entries still require their respective client and any game-specific authentication. Direct executables are launched without shell command interpolation; advanced launch arguments use a JSON array, for example `["--fullscreen"]`.
+Storefront entries still require their respective client and any game-specific authentication. Direct executables are launched without shell command interpolation; advanced launch arguments accept plain CLI flags (for example `--fullscreen --skip-intro`) as well as JSON arrays (`["--fullscreen"]`).
 
 ## Artwork and library organization
 
@@ -166,7 +169,7 @@ If a cover is missing or incorrect, choose **Settings → Repair library covers*
 
 You can customize how covers fit and align, choose library density, switch between light/dark/system themes, and use reduced-motion settings.
 
-The **poster grid** is artwork-first: covers fill a 2:3 card, with a favorite button at the **top left**, a compact game actions menu at the **top right**, and a wide accent-colored **Spelen** button along the bottom on hover, keyboard focus, or touch. Only the cards use this visual treatment; Orbit's sidebar, filters, statistics, details dialog, list view and controller screen remain their own layouts. Cards still use one lazily loaded cover each, with an executable icon or named placeholder when artwork is missing.
+The **poster grid** is artwork-first: covers fill a 2:3 card, with a favorite button at the **top left**, a compact game actions menu at the **top right**, and a wide accent-colored **Play** button along the bottom on hover, keyboard focus, or touch. Only the cards use this visual treatment; Orbit's sidebar, filters, statistics, details dialog, list view and controller screen remain their own layouts. Cards still use one lazily loaded cover each, with an executable icon or named placeholder when artwork is missing.
 
 **Updated in 0.2.9:** unsaved hearts have a **transparent center and a purple/configured-accent outline**, while saved hearts have a **fully solid accent fill and matching outline** in poster cards, list rows and game details, even on hover or keyboard focus. The poster heart stays **top-left** and is moved upward to align with the existing **top-right** actions menu. **Rocket League's leftover EAC helper** no longer keeps a Steam/Epic game falsely marked Playing after the real game exits. Rust's verified Xbox GDK logos can appear as **square icon fallbacks** when portrait art is missing; this does not yet provide Xbox portrait covers or protected packaged-only UWP detection ([issue #47](https://github.com/j5bak928-a11y/orbit-game-launcher/issues/47)). See [the full 0.2.9, 0.2.8 and 0.2.7 changelog](CHANGELOG.md).
 
@@ -229,7 +232,7 @@ npm run test:cards
 
 Renderer and experience tests use Playwright and an installed Chromium-compatible browser. `npm run test:visual` checks responsive layouts, translated labels, keyboard focus and touch actions across five languages, both themes and five viewport sizes using synthetic data. These checks do not prove that real games launch successfully or that packaged Windows WebView2 rendering is identical.
 
-Windows installers are currently unsigned and may trigger Windows SmartScreen warnings. Automatic update installation is disabled until trusted signing and update verification are ready. Published binaries should be checked against the accompanying SHA-256 manifest. Do not treat a successful CI build as proof of real-world storefront, tracking, or controller compatibility.
+In-app updates verify Ed25519 release signatures before installing, while Windows installers remain Authenticode-unsigned and may trigger Windows SmartScreen warnings on first manual download. Published binaries should be checked against the accompanying SHA-256 manifest. Do not treat a successful CI build as proof of real-world storefront, tracking, or controller compatibility.
 
 For detailed validation and limits, see [controller-mode verification](docs/VERIFICATION-controller-mode.md), [Tauri migration](docs/TAURI-MIGRATION.md), and [Windows tray lifecycle tests](docs/VERIFICATION-TAURI-TRAY-WEBVIEW.md).
 

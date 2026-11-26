@@ -11,7 +11,7 @@ use std::path::Path;
 use std::time::Duration;
 use uuid::Uuid;
 
-const GAME_COLUMNS: &str = "id,name,source,source_id,executable,launch_uri,install_path,cover,banner,icon,genre,tags,favorite,total_play_seconds,last_played_at,created_at,updated_at,launch_args,working_dir,cover_fit,cover_position";
+const GAME_COLUMNS: &str = "id,name,source,source_id,executable,launch_uri,install_path,cover,banner,icon,genre,tags,favorite,total_play_seconds,last_played_at,created_at,updated_at,launch_args,working_dir,cover_fit,cover_position,play_status,hidden,launch_env,launch_profiles";
 const GAME_FIELDS: [&str; 9] = [
     "source_id",
     "executable",
@@ -23,6 +23,21 @@ const GAME_FIELDS: [&str; 9] = [
     "genre",
     "working_dir",
 ];
+const PLAY_STATUSES: [&str; 5] = ["", "playing", "backlog", "completed", "on_hold"];
+const COLLECTION_ICONS: [&str; 8] = [
+    "folder",
+    "sparkles",
+    "heart",
+    "trophy",
+    "gamepad",
+    "clock",
+    "lightning",
+    "library",
+];
+const MAX_COLLECTIONS: usize = 100;
+const MAX_LAUNCH_ENV: usize = 40;
+const MAX_LAUNCH_PROFILES: usize = 12;
+const MAX_BULK_IDS: usize = 5_000;
 const SETTING_KEYS: [&str; 14] = [
     "theme",
     "accent",
@@ -64,6 +79,254 @@ struct BackupSession {
     started_at: String,
     finished_at: String,
     seconds: i64,
+}
+
+#[derive(Clone, Debug)]
+struct BackupCollection {
+    id: String,
+    name: String,
+    icon: String,
+    color: String,
+    position: i64,
+    game_ids: Vec<String>,
+}
+
+fn valid_env_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    key.len() <= 128
+        && (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn clean_launch_env(value: &Value) -> DbResult<Value> {
+    let parsed = if value.is_null() {
+        json!({})
+    } else if let Some(text) = value.as_str() {
+        if text.trim().is_empty() {
+            json!({})
+        } else {
+            serde_json::from_str(text)
+                .map_err(|_| "Environment variables must be a JSON object.".to_string())?
+        }
+    } else {
+        value.clone()
+    };
+    let obj = parsed
+        .as_object()
+        .ok_or("Environment variables must be an object.")?;
+    if obj.len() > MAX_LAUNCH_ENV {
+        return Err("At most 40 environment variables are allowed per game.".into());
+    }
+    let mut out = Map::new();
+    for (k, v) in obj {
+        let key = k.trim();
+        if !valid_env_key(key) {
+            return Err(format!("Invalid environment variable name: {key}"));
+        }
+        let val = v
+            .as_str()
+            .ok_or_else(|| format!("Environment variable {key} must be a string."))?;
+        if string_length(val) > 2_048 || val.chars().any(|c| c == '\0' || c == '\r' || c == '\n') {
+            return Err(format!("Environment variable {key} value is invalid."));
+        }
+        out.insert(key.to_owned(), Value::String(val.to_owned()));
+    }
+    Ok(Value::Object(out))
+}
+
+fn clean_launch_args_value(value: &Value) -> DbResult<Value> {
+    let mut args = if value.is_null() {
+        json!([])
+    } else {
+        value.clone()
+    };
+    if let Some(text) = args.as_str() {
+        args = serde_json::from_str(text)
+            .map_err(|_| "Launch arguments must be a JSON array.".to_string())?;
+    }
+    match args.as_array() {
+        Some(items)
+            if items.len() <= 80
+                && items.iter().all(|a| {
+                    a.as_str()
+                        .is_some_and(|s| string_length(s) <= 1024 && !s.contains('\0'))
+                }) =>
+        {
+            Ok(args)
+        }
+        _ => Err("Launch arguments must be an array of short strings.".into()),
+    }
+}
+
+fn clean_launch_profiles(value: &Value) -> DbResult<Value> {
+    let parsed = if value.is_null() {
+        json!([])
+    } else if let Some(text) = value.as_str() {
+        if text.trim().is_empty() {
+            json!([])
+        } else {
+            serde_json::from_str(text)
+                .map_err(|_| "Launch profiles must be a JSON array.".to_string())?
+        }
+    } else {
+        value.clone()
+    };
+    let items = parsed
+        .as_array()
+        .ok_or("Launch profiles must be an array.")?;
+    if items.len() > MAX_LAUNCH_PROFILES {
+        return Err("At most 12 alternative launch profiles are allowed per game.".into());
+    }
+    let mut seen = HashSet::new();
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let obj = item
+            .as_object()
+            .ok_or("Each launch profile must be an object.")?;
+        let raw_id = obj
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        let id = if raw_id.is_empty() {
+            Uuid::new_v4().to_string()
+        } else if valid_backup_id(raw_id) {
+            raw_id.to_owned()
+        } else {
+            return Err("Invalid launch profile identifier.".into());
+        };
+        if !seen.insert(id.clone()) {
+            return Err("Duplicate launch profile identifier.".into());
+        }
+        let name = obj
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        if name.is_empty() || string_length(name) > 80 || name.chars().any(char::is_control) {
+            return Err("Launch profile name must contain 1–80 characters.".into());
+        }
+        let mut executable = obj
+            .get("executable")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_owned();
+        if string_length(&executable) > 4_000 || executable.chars().any(char::is_control) {
+            return Err("Launch profile executable path is invalid.".into());
+        }
+        if Path::new(&executable).is_absolute() {
+            executable = normalized_executable(&executable);
+        }
+        let launch_uri = obj
+            .get("launch_uri")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_owned();
+        if string_length(&launch_uri) > 2_048 || launch_uri.chars().any(char::is_control) {
+            return Err("Launch profile URI is invalid.".into());
+        }
+        let working_dir = obj
+            .get("working_dir")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_owned();
+        if string_length(&working_dir) > 4_000 || working_dir.chars().any(char::is_control) {
+            return Err("Launch profile working directory is invalid.".into());
+        }
+        let launch_args = clean_launch_args_value(obj.get("launch_args").unwrap_or(&Value::Null))?;
+        let launch_env = clean_launch_env(obj.get("launch_env").unwrap_or(&Value::Null))?;
+        out.push(json!({
+            "id": id,
+            "name": name,
+            "executable": executable,
+            "launch_uri": launch_uri,
+            "working_dir": working_dir,
+            "launch_args": launch_args,
+            "launch_env": launch_env,
+        }));
+    }
+    Ok(Value::Array(out))
+}
+
+fn validate_backup_collections(payload: &Value) -> DbResult<Option<Vec<BackupCollection>>> {
+    let Some(raw) = payload.get("collections") else {
+        return Ok(None);
+    };
+    let items = raw
+        .as_array()
+        .ok_or("Backup collections must be an array.")?;
+    if items.len() > MAX_COLLECTIONS {
+        return Err("Backup exceeds the 100-collection safety limit.".into());
+    }
+    let mut seen = HashSet::new();
+    let mut validated = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let obj = item
+            .as_object()
+            .ok_or_else(|| format!("Invalid backup collection at index {index}."))?;
+        let id = obj
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| valid_backup_id(id))
+            .ok_or_else(|| format!("Invalid backup collection ID at index {index}."))?;
+        if !seen.insert(id) {
+            return Err(format!("Duplicate backup collection ID: {id}."));
+        }
+        let name = obj
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|n| !n.is_empty() && string_length(n) <= 60 && !n.chars().any(char::is_control))
+            .ok_or_else(|| format!("Invalid backup collection name at index {index}."))?;
+        let icon = obj
+            .get("icon")
+            .and_then(Value::as_str)
+            .filter(|i| COLLECTION_ICONS.contains(i))
+            .unwrap_or("folder");
+        let color = obj
+            .get("color")
+            .filter(|c| c.as_str() == Some("") || valid_accent(c))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let position = obj
+            .get("position")
+            .and_then(Value::as_i64)
+            .unwrap_or(index as i64)
+            .clamp(0, 10_000);
+        let raw_game_ids = obj
+            .get("game_ids")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("Backup collection {id} game_ids must be an array."))?;
+        if raw_game_ids.len() > BACKUP_MAX_GAMES {
+            return Err(format!("Backup collection {id} exceeds game limit."));
+        }
+        let mut game_ids = Vec::with_capacity(raw_game_ids.len());
+        let mut seen_games = HashSet::new();
+        for gid in raw_game_ids {
+            let gid = gid
+                .as_str()
+                .filter(|s| valid_backup_id(s))
+                .ok_or_else(|| format!("Backup collection {id} has an invalid game ID."))?;
+            if seen_games.insert(gid) {
+                game_ids.push(gid.to_owned());
+            }
+        }
+        validated.push(BackupCollection {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            icon: icon.to_owned(),
+            color: color.to_owned(),
+            position,
+            game_ids,
+        });
+    }
+    Ok(Some(validated))
 }
 
 /// Stable IDs in old Orbit libraries may predate UUIDs. Use the original
@@ -572,21 +835,17 @@ pub fn clean_game(raw: &Value, previous: Option<&Value>) -> DbResult<Value> {
         }
         result.insert(key.into(), Value::String(s));
     }
-    let mut args = picked(raw, previous, "launch_args")
-        .cloned()
-        .unwrap_or_else(|| json!([]));
-    if let Some(text) = args.as_str() {
-        args = serde_json::from_str(text)
-            .map_err(|_| "Launch arguments must be a JSON array.".to_string())?;
+    let args =
+        clean_launch_args_value(picked(raw, previous, "launch_args").unwrap_or(&Value::Null))?;
+    let play_status = picked(raw, previous, "play_status")
+        .map(js_string)
+        .unwrap_or_default();
+    if !PLAY_STATUSES.contains(&play_status.as_str()) {
+        return Err("Unsupported play status.".into());
     }
-    match args.as_array() {
-        Some(items)
-            if items.len() <= 80
-                && items
-                    .iter()
-                    .all(|a| a.as_str().is_some_and(|s| string_length(s) <= 1024)) => {}
-        _ => return Err("Launch arguments must be an array of short strings.".into()),
-    }
+    let launch_env = clean_launch_env(picked(raw, previous, "launch_env").unwrap_or(&Value::Null))?;
+    let launch_profiles =
+        clean_launch_profiles(picked(raw, previous, "launch_profiles").unwrap_or(&Value::Null))?;
     let raw_tags = picked(raw, previous, "tags")
         .cloned()
         .unwrap_or_else(|| json!([]));
@@ -631,10 +890,19 @@ pub fn clean_game(raw: &Value, previous: Option<&Value>) -> DbResult<Value> {
     result.insert("launch_args".into(), args);
     result.insert("cover_fit".into(), json!(fit));
     result.insert("cover_position".into(), json!(position));
+    result.insert("play_status".into(), json!(play_status));
+    result.insert("launch_env".into(), launch_env);
+    result.insert("launch_profiles".into(), launch_profiles);
     result.insert(
         "favorite".into(),
         json!(js_truthy(raw.get("favorite").unwrap_or_else(|| {
             previous.get("favorite").unwrap_or(&Value::Null)
+        }))),
+    );
+    result.insert(
+        "hidden".into(),
+        json!(js_truthy(raw.get("hidden").unwrap_or_else(|| {
+            previous.get("hidden").unwrap_or(&Value::Null)
         }))),
     );
     Ok(Value::Object(result))
@@ -798,6 +1066,7 @@ fn game_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "working_dir",
         "cover_fit",
         "cover_position",
+        "play_status",
     ] {
         game.insert(field.into(), json!(row.get::<_, String>(field)?));
     }
@@ -805,6 +1074,7 @@ fn game_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "favorite".into(),
         json!(row.get::<_, i64>("favorite")? != 0),
     );
+    game.insert("hidden".into(), json!(row.get::<_, i64>("hidden")? != 0));
     game.insert(
         "total_play_seconds".into(),
         json!(row.get::<_, i64>("total_play_seconds")?),
@@ -813,13 +1083,18 @@ fn game_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "last_played_at".into(),
         json!(row.get::<_, Option<String>>("last_played_at")?),
     );
-    for field in ["tags", "launch_args"] {
+    for field in ["tags", "launch_args", "launch_profiles"] {
         let value = row.get::<_, String>(field)?;
         game.insert(
             field.into(),
             serde_json::from_str(&value).unwrap_or_else(|_| json!([])),
         );
     }
+    let env_raw = row.get::<_, String>("launch_env")?;
+    game.insert(
+        "launch_env".into(),
+        serde_json::from_str(&env_raw).unwrap_or_else(|_| json!({})),
+    );
     Ok(Value::Object(game))
 }
 
@@ -848,6 +1123,8 @@ fn migrate(conn: &mut Connection) -> DbResult<()> {
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
             launch_args TEXT NOT NULL DEFAULT '[]', working_dir TEXT NOT NULL DEFAULT '',
             cover_fit TEXT NOT NULL DEFAULT 'cover', cover_position TEXT NOT NULL DEFAULT 'center',
+            play_status TEXT NOT NULL DEFAULT '', hidden INTEGER NOT NULL DEFAULT 0,
+            launch_env TEXT NOT NULL DEFAULT '{}', launch_profiles TEXT NOT NULL DEFAULT '[]',
             duplicate_key TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -856,7 +1133,20 @@ fn migrate(conn: &mut Connection) -> DbResult<()> {
             started_at TEXT NOT NULL, finished_at TEXT, seconds INTEGER NOT NULL DEFAULT 0,
             heartbeat_seconds INTEGER NOT NULL DEFAULT 0, last_seen_at TEXT
         );
-        CREATE INDEX IF NOT EXISTS idx_sessions_game ON sessions(game_id);",
+        CREATE TABLE IF NOT EXISTS collections (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL,
+            icon TEXT NOT NULL DEFAULT 'folder', color TEXT NOT NULL DEFAULT '',
+            position INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS collection_games (
+            collection_id TEXT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+            game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+            added_at TEXT NOT NULL,
+            PRIMARY KEY (collection_id, game_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_sessions_game ON sessions(game_id);
+        CREATE INDEX IF NOT EXISTS idx_collection_games_game ON collection_games(game_id);",
     )
     .map_err(error)?;
     let columns = column_names(&tx, "games")?;
@@ -887,6 +1177,13 @@ fn migrate(conn: &mut Connection) -> DbResult<()> {
         (
             "cover_position",
             "cover_position TEXT NOT NULL DEFAULT 'center'",
+        ),
+        ("play_status", "play_status TEXT NOT NULL DEFAULT ''"),
+        ("hidden", "hidden INTEGER NOT NULL DEFAULT 0"),
+        ("launch_env", "launch_env TEXT NOT NULL DEFAULT '{}'"),
+        (
+            "launch_profiles",
+            "launch_profiles TEXT NOT NULL DEFAULT '[]'",
         ),
         ("duplicate_key", "duplicate_key TEXT NOT NULL DEFAULT ''"),
     ] {
@@ -1020,10 +1317,6 @@ impl LibraryDatabase {
             .map_err(error)?;
         migrate(&mut conn)?;
         Ok(Self { conn })
-    }
-
-    pub fn new(path: impl AsRef<Path>) -> DbResult<Self> {
-        Self::open(path)
     }
 
     pub fn get_settings(&self) -> DbResult<Value> {
@@ -1253,6 +1546,8 @@ impl LibraryDatabase {
         .map(|v| v.unwrap_or(Value::Null))
     }
 
+    // Used by unit tests and examples/benchmark.rs.
+    #[allow(dead_code)]
     pub fn count(&self) -> DbResult<i64> {
         self.conn
             .query_row("SELECT COUNT(*) FROM games", [], |r| r.get(0))
@@ -1334,14 +1629,6 @@ fn has_store_identity(game: &Value) -> bool {
         && !["manual", "folder"].contains(&field(game, "source"))
 }
 
-fn find_executable_duplicate_on(
-    conn: &Connection,
-    executable: &str,
-    except: &str,
-) -> DbResult<Option<String>> {
-    find_executable_duplicate_for(conn, executable, except, false)
-}
-
 fn find_executable_duplicate_for(
     conn: &Connection,
     executable: &str,
@@ -1370,10 +1657,6 @@ fn find_executable_duplicate_for(
     )
     .optional()
     .map_err(error)
-}
-
-fn find_uri_duplicate_on(conn: &Connection, uri: &str, except: &str) -> DbResult<Option<String>> {
-    find_uri_duplicate_for(conn, uri, except, false)
 }
 
 fn find_uri_duplicate_for(
@@ -1438,14 +1721,18 @@ fn insert_on(
     let tags = game["tags"].to_string();
     let args = game["launch_args"].to_string();
     let favorite = i64::from(js_truthy(&game["favorite"]));
+    let hidden = i64::from(js_truthy(&game["hidden"]));
+    let launch_env = game["launch_env"].to_string();
+    let launch_profiles = game["launch_profiles"].to_string();
     conn.execute(
         "INSERT INTO games (
             id,name,source,source_id,executable,launch_uri,install_path,cover,banner,icon,
             genre,tags,favorite,total_play_seconds,last_played_at,created_at,updated_at,
-            launch_args,working_dir,cover_fit,cover_position,duplicate_key
+            launch_args,working_dir,cover_fit,cover_position,play_status,hidden,
+            launch_env,launch_profiles,duplicate_key
         ) VALUES (
             ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0,NULL,?14,?15,
-            ?16,?17,?18,?19,?20
+            ?16,?17,?18,?19,?20,?21,?22,?23,?24
         )",
         params![
             id,
@@ -1467,6 +1754,10 @@ fn insert_on(
             field(game, "working_dir"),
             field(game, "cover_fit"),
             field(game, "cover_position"),
+            field(game, "play_status"),
+            hidden,
+            launch_env,
+            launch_profiles,
             key
         ],
     )
@@ -1523,12 +1814,15 @@ fn update_on(conn: &Connection, id: &str, patch: &Value) -> DbResult<Value> {
     let date = stamp();
     let tags = game["tags"].to_string();
     let args = game["launch_args"].to_string();
+    let launch_env = game["launch_env"].to_string();
+    let launch_profiles = game["launch_profiles"].to_string();
     conn.execute(
         "UPDATE games SET
             name=?1,source=?2,source_id=?3,executable=?4,launch_uri=?5,install_path=?6,
             cover=?7,banner=?8,icon=?9,genre=?10,tags=?11,favorite=?12,
             launch_args=?13,working_dir=?14,cover_fit=?15,cover_position=?16,
-            duplicate_key=?17,updated_at=?18 WHERE id=?19",
+            play_status=?17,hidden=?18,launch_env=?19,launch_profiles=?20,
+            duplicate_key=?21,updated_at=?22 WHERE id=?23",
         params![
             field(&game, "name"),
             field(&game, "source"),
@@ -1546,6 +1840,10 @@ fn update_on(conn: &Connection, id: &str, patch: &Value) -> DbResult<Value> {
             field(&game, "working_dir"),
             field(&game, "cover_fit"),
             field(&game, "cover_position"),
+            field(&game, "play_status"),
+            i64::from(js_truthy(&game["hidden"])),
+            launch_env,
+            launch_profiles,
             key,
             date,
             id
@@ -1642,22 +1940,8 @@ fn same_backup_game(existing: &Value, incoming: &Value) -> bool {
 }
 
 impl LibraryDatabase {
-    pub fn find_executable_duplicate(&self, executable: &str, except_id: &str) -> DbResult<Value> {
-        find_executable_duplicate_on(&self.conn, executable, except_id)
-            .map(|id| id.map_or(Value::Null, |id| json!({"id": id})))
-    }
-
-    pub fn find_uri_duplicate(&self, uri: &str, except_id: &str) -> DbResult<Value> {
-        find_uri_duplicate_on(&self.conn, uri, except_id)
-            .map(|id| id.map_or(Value::Null, |id| json!({"id": id})))
-    }
-
     pub fn upsert(&mut self, raw: &Value) -> DbResult<Value> {
         upsert_on(&self.conn, raw, false)
-    }
-
-    pub fn upsert_with_option(&mut self, raw: &Value, update_existing: bool) -> DbResult<Value> {
-        upsert_on(&self.conn, raw, update_existing)
     }
 
     pub fn upsert_batch(&mut self, items: &[Value]) -> DbResult<Value> {
@@ -1746,6 +2030,463 @@ impl LibraryDatabase {
             .map_err(error)
     }
 
+    pub fn list_collections(&self) -> DbResult<Value> {
+        Self::list_collections_on(&self.conn)
+    }
+
+    fn list_collections_on(conn: &Connection) -> DbResult<Value> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id,name,icon,color,position,created_at,updated_at
+                 FROM collections ORDER BY position ASC, name COLLATE NOCASE ASC",
+            )
+            .map_err(error)?;
+        let mut collections = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })
+            .map_err(error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(error)?;
+        let mut members: HashMap<String, Vec<String>> = HashMap::new();
+        let mut mem_stmt = conn
+            .prepare("SELECT collection_id, game_id FROM collection_games ORDER BY added_at ASC")
+            .map_err(error)?;
+        let rows = mem_stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(error)?;
+        for row in rows {
+            let (cid, gid) = row.map_err(error)?;
+            members.entry(cid).or_default().push(gid);
+        }
+        let result = collections
+            .drain(..)
+            .map(
+                |(id, name, icon, color, position, created_at, updated_at)| {
+                    let game_ids = members.remove(&id).unwrap_or_default();
+                    json!({
+                        "id": id,
+                        "name": name,
+                        "icon": icon,
+                        "color": color,
+                        "position": position,
+                        "created_at": created_at,
+                        "updated_at": updated_at,
+                        "game_ids": game_ids,
+                    })
+                },
+            )
+            .collect::<Vec<_>>();
+        Ok(Value::Array(result))
+    }
+
+    pub fn create_collection(&mut self, raw: &Value) -> DbResult<Value> {
+        if !raw.is_object() {
+            return Err("Invalid collection data.".into());
+        }
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM collections", [], |r| r.get(0))
+            .map_err(error)?;
+        if count as usize >= MAX_COLLECTIONS {
+            return Err("You can create at most 100 custom collections.".into());
+        }
+        let name = raw
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        if name.is_empty() || string_length(name) > 60 || name.chars().any(char::is_control) {
+            return Err("Collection name must contain 1–60 characters.".into());
+        }
+        let exists: i64 = self
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM collections WHERE name=?1 COLLATE NOCASE)",
+                [name],
+                |r| r.get(0),
+            )
+            .map_err(error)?;
+        if exists != 0 {
+            return Err("A collection with this name already exists.".into());
+        }
+        let icon = raw
+            .get("icon")
+            .and_then(Value::as_str)
+            .filter(|i| COLLECTION_ICONS.contains(i))
+            .unwrap_or("folder");
+        let color = match raw.get("color") {
+            None | Some(Value::Null) => "",
+            Some(v) if v.as_str() == Some("") => "",
+            Some(v) if valid_accent(v) => v.as_str().unwrap_or(""),
+            _ => return Err("Invalid collection color.".into()),
+        };
+        let id = Uuid::new_v4().to_string();
+        let date = stamp();
+        let next_pos: i64 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(MAX(position), -1) + 1 FROM collections",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(error)?;
+        self.conn
+            .execute(
+                "INSERT INTO collections (id,name,icon,color,position,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                params![id, name, icon, color, next_pos, date, date],
+            )
+            .map_err(error)?;
+        Ok(json!({
+            "id": id,
+            "name": name,
+            "icon": icon,
+            "color": color,
+            "position": next_pos,
+            "created_at": date,
+            "updated_at": date,
+            "game_ids": [],
+        }))
+    }
+
+    pub fn update_collection(&mut self, id: &str, patch: &Value) -> DbResult<Value> {
+        if !valid_backup_id(id) || !patch.is_object() {
+            return Err("Invalid collection update.".into());
+        }
+        let existing: Option<(String, String, String, i64, String)> = self
+            .conn
+            .query_row(
+                "SELECT name,icon,color,position,created_at FROM collections WHERE id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .optional()
+            .map_err(error)?;
+        let Some((old_name, old_icon, old_color, old_pos, created_at)) = existing else {
+            return Err("Collection not found.".into());
+        };
+        let name = if let Some(val) = patch.get("name") {
+            let trimmed = val.as_str().map(str::trim).unwrap_or("");
+            if trimmed.is_empty()
+                || string_length(trimmed) > 60
+                || trimmed.chars().any(char::is_control)
+            {
+                return Err("Collection name must contain 1–60 characters.".into());
+            }
+            let duplicate: i64 = self
+                .conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM collections WHERE name=?1 COLLATE NOCASE AND id!=?2)",
+                    params![trimmed, id],
+                    |r| r.get(0),
+                )
+                .map_err(error)?;
+            if duplicate != 0 {
+                return Err("A collection with this name already exists.".into());
+            }
+            trimmed.to_owned()
+        } else {
+            old_name
+        };
+        let icon = if let Some(val) = patch.get("icon") {
+            let icon = val.as_str().unwrap_or("");
+            if !COLLECTION_ICONS.contains(&icon) {
+                return Err("Invalid collection icon.".into());
+            }
+            icon.to_owned()
+        } else {
+            old_icon
+        };
+        let color = if let Some(val) = patch.get("color") {
+            if val.is_null() || val.as_str() == Some("") {
+                String::new()
+            } else if valid_accent(val) {
+                val.as_str().unwrap_or("").to_owned()
+            } else {
+                return Err("Invalid collection color.".into());
+            }
+        } else {
+            old_color
+        };
+        let position = patch
+            .get("position")
+            .and_then(Value::as_i64)
+            .unwrap_or(old_pos)
+            .clamp(0, 10_000);
+        let date = stamp();
+        self.conn
+            .execute(
+                "UPDATE collections SET name=?1,icon=?2,color=?3,position=?4,updated_at=?5 WHERE id=?6",
+                params![name, icon, color, position, date, id],
+            )
+            .map_err(error)?;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT game_id FROM collection_games WHERE collection_id=?1 ORDER BY added_at ASC",
+            )
+            .map_err(error)?;
+        let game_ids = stmt
+            .query_map([id], |r| r.get::<_, String>(0))
+            .map_err(error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(error)?;
+        Ok(json!({
+            "id": id,
+            "name": name,
+            "icon": icon,
+            "color": color,
+            "position": position,
+            "created_at": created_at,
+            "updated_at": date,
+            "game_ids": game_ids,
+        }))
+    }
+
+    pub fn delete_collection(&mut self, id: &str) -> DbResult<bool> {
+        if !valid_backup_id(id) {
+            return Err("Invalid collection identifier.".into());
+        }
+        self.conn
+            .execute("DELETE FROM collections WHERE id=?1", [id])
+            .map(|count| count > 0)
+            .map_err(error)
+    }
+
+    pub fn set_game_collections(
+        &mut self,
+        game_id: &str,
+        collection_ids: &[String],
+    ) -> DbResult<Value> {
+        if !valid_backup_id(game_id) {
+            return Err("Invalid game identifier.".into());
+        }
+        if collection_ids.len() > MAX_COLLECTIONS {
+            return Err("Too many collections selected.".into());
+        }
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(error)?;
+        if Self::get_on(&tx, game_id)?.is_null() {
+            return Err("Game not found.".into());
+        }
+        tx.execute("DELETE FROM collection_games WHERE game_id=?1", [game_id])
+            .map_err(error)?;
+        let date = stamp();
+        for cid in collection_ids {
+            if !valid_backup_id(cid) {
+                return Err("Invalid collection identifier.".into());
+            }
+            let exists: i64 = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM collections WHERE id=?1)",
+                    [cid],
+                    |r| r.get(0),
+                )
+                .map_err(error)?;
+            if exists != 0 {
+                tx.execute(
+                    "INSERT OR IGNORE INTO collection_games (collection_id, game_id, added_at) VALUES (?1,?2,?3)",
+                    params![cid, game_id, date],
+                )
+                .map_err(error)?;
+            }
+        }
+        let collections = Self::list_collections_on(&tx)?;
+        tx.commit().map_err(error)?;
+        Ok(collections)
+    }
+
+    pub fn bulk_update_games(&mut self, ids: &[String], action: &Value) -> DbResult<Value> {
+        if ids.is_empty() {
+            return Err("Select at least one game.".into());
+        }
+        if ids.len() > MAX_BULK_IDS {
+            return Err("Bulk action limit is 5000 games.".into());
+        }
+        let Some(obj) = action.as_object() else {
+            return Err("Invalid bulk action payload.".into());
+        };
+        let play_status = if let Some(val) = obj.get("play_status") {
+            let status = val.as_str().ok_or("Invalid play status.")?;
+            if !PLAY_STATUSES.contains(&status) {
+                return Err("Unsupported play status.".into());
+            }
+            Some(status.to_owned())
+        } else {
+            None
+        };
+        let hidden = if let Some(val) = obj.get("hidden") {
+            Some(val.as_bool().ok_or("Hidden value must be boolean.")?)
+        } else {
+            None
+        };
+        let add_tags = if let Some(val) = obj.get("add_tags") {
+            let arr = val.as_array().ok_or("add_tags must be an array.")?;
+            if arr.len() > 20 {
+                return Err("At most 20 tags can be added at once.".into());
+            }
+            let mut parsed = Vec::new();
+            for item in arr {
+                let tag = item.as_str().map(str::trim).unwrap_or("");
+                if !tag.is_empty() {
+                    if string_length(tag) > 36 || tag.chars().any(char::is_control) {
+                        return Err("Tags must be 36 characters or shorter.".into());
+                    }
+                    parsed.push(tag.to_owned());
+                }
+            }
+            Some(parsed)
+        } else {
+            None
+        };
+        let remove_tags = if let Some(val) = obj.get("remove_tags") {
+            let arr = val.as_array().ok_or("remove_tags must be an array.")?;
+            let parsed = arr
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|s| s.trim().to_ascii_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect::<HashSet<_>>();
+            Some(parsed)
+        } else {
+            None
+        };
+        let add_collection_id = obj
+            .get("add_collection_id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        let remove_collection_id = obj
+            .get("remove_collection_id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        if let Some(ref cid) = add_collection_id {
+            if !valid_backup_id(cid) {
+                return Err("Invalid collection identifier.".into());
+            }
+        }
+        if let Some(ref cid) = remove_collection_id {
+            if !valid_backup_id(cid) {
+                return Err("Invalid collection identifier.".into());
+            }
+        }
+
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(error)?;
+        if let Some(ref cid) = add_collection_id {
+            let exists: i64 = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM collections WHERE id=?1)",
+                    [cid],
+                    |r| r.get(0),
+                )
+                .map_err(error)?;
+            if exists == 0 {
+                return Err("Collection not found.".into());
+            }
+        }
+        let date = stamp();
+        let mut seen = HashSet::with_capacity(ids.len());
+        let mut updated_games = Vec::new();
+        for id in ids {
+            if !valid_backup_id(id) || !seen.insert(id.as_str()) {
+                continue;
+            }
+            let existing = Self::get_on(&tx, id)?;
+            if existing.is_null() {
+                continue;
+            }
+            let mut changed_row = false;
+            let next_status = if let Some(ref status) = play_status {
+                changed_row = true;
+                status.as_str()
+            } else {
+                field(&existing, "play_status")
+            };
+            let next_hidden = if let Some(flag) = hidden {
+                changed_row = true;
+                i64::from(flag)
+            } else {
+                i64::from(js_truthy(&existing["hidden"]))
+            };
+            let mut tags = existing["tags"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if let Some(ref removals) = remove_tags {
+                let before = tags.len();
+                tags.retain(|tag| !removals.contains(&tag.to_ascii_lowercase()));
+                if tags.len() != before {
+                    changed_row = true;
+                }
+            }
+            if let Some(ref additions) = add_tags {
+                let mut existing_lower: HashSet<String> =
+                    tags.iter().map(|t| t.to_ascii_lowercase()).collect();
+                for tag in additions {
+                    if tags.len() >= 40 {
+                        break;
+                    }
+                    if existing_lower.insert(tag.to_ascii_lowercase()) {
+                        tags.push(tag.clone());
+                        changed_row = true;
+                    }
+                }
+            }
+            if changed_row {
+                let tags_json =
+                    Value::Array(tags.into_iter().map(Value::String).collect()).to_string();
+                tx.execute(
+                    "UPDATE games SET play_status=?1, hidden=?2, tags=?3, updated_at=?4 WHERE id=?5",
+                    params![next_status, next_hidden, tags_json, date, id],
+                )
+                .map_err(error)?;
+            }
+            if let Some(ref cid) = add_collection_id {
+                tx.execute(
+                    "INSERT OR IGNORE INTO collection_games (collection_id, game_id, added_at) VALUES (?1,?2,?3)",
+                    params![cid, id, date],
+                )
+                .map_err(error)?;
+            }
+            if let Some(ref cid) = remove_collection_id {
+                tx.execute(
+                    "DELETE FROM collection_games WHERE collection_id=?1 AND game_id=?2",
+                    params![cid, id],
+                )
+                .map_err(error)?;
+            }
+            updated_games.push(Self::get_on(&tx, id)?);
+        }
+        let collections = Self::list_collections_on(&tx)?;
+        tx.commit().map_err(error)?;
+        Ok(json!({
+            "updatedCount": updated_games.len(),
+            "updatedGames": updated_games,
+            "collections": collections,
+        }))
+    }
+
     pub fn start_session(&mut self, game_id: &str) -> DbResult<String> {
         if self.get(game_id)?.is_null() {
             return Err("Game not found.".into());
@@ -1775,7 +2516,7 @@ impl LibraryDatabase {
         )
         .map_err(error)?;
         tx.execute(
-            "UPDATE games SET last_played_at=?1,updated_at=?1 WHERE id=?2",
+            "UPDATE games SET last_played_at=?1,updated_at=?1,play_status=CASE WHEN play_status='backlog' THEN 'playing' ELSE play_status END WHERE id=?2",
             params![date, game_id],
         )
         .map_err(error)?;
@@ -1793,7 +2534,7 @@ impl LibraryDatabase {
         let date = stamp();
         self.conn
             .execute(
-                "UPDATE games SET last_played_at=?1,updated_at=?1 WHERE id=?2",
+                "UPDATE games SET last_played_at=?1,updated_at=?1,play_status=CASE WHEN play_status='backlog' THEN 'playing' ELSE play_status END WHERE id=?2",
                 params![date, id],
             )
             .map_err(error)?;
@@ -2058,21 +2799,78 @@ impl LibraryDatabase {
         {
             return Err("Session history contains a missing game reference.".into());
         }
+        let collections = Self::list_collections_on(&tx)?;
         let result = json!({
             "format": "orbit.library.v1",
             "exported_at": stamp(),
             "settings": self.get_settings()?,
             "games": games,
-            "sessions": sessions
+            "sessions": sessions,
+            "collections": collections
         });
         tx.commit().map_err(error)?;
         Ok(result)
+    }
+
+    fn restore_collections_on(
+        tx: &Transaction<'_>,
+        collections: &[BackupCollection],
+        id_map: &HashMap<String, String>,
+    ) -> DbResult<usize> {
+        let date = stamp();
+        let mut restored = 0_usize;
+        for col in collections {
+            let existing_by_id: Option<String> = tx
+                .query_row("SELECT id FROM collections WHERE id=?1", [&col.id], |r| {
+                    r.get(0)
+                })
+                .optional()
+                .map_err(error)?;
+            let target_id = if let Some(id) = existing_by_id {
+                id
+            } else if let Some(existing_by_name) = tx
+                .query_row(
+                    "SELECT id FROM collections WHERE name=?1 COLLATE NOCASE",
+                    [&col.name],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(error)?
+            {
+                existing_by_name
+            } else {
+                let count: i64 = tx
+                    .query_row("SELECT COUNT(*) FROM collections", [], |r| r.get(0))
+                    .map_err(error)?;
+                if count as usize >= MAX_COLLECTIONS {
+                    continue;
+                }
+                tx.execute(
+                    "INSERT INTO collections (id,name,icon,color,position,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                    params![col.id, col.name, col.icon, col.color, col.position, date, date],
+                )
+                .map_err(error)?;
+                restored += 1;
+                col.id.clone()
+            };
+            for source_gid in &col.game_ids {
+                if let Some(dest_gid) = id_map.get(source_gid) {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO collection_games (collection_id, game_id, added_at) VALUES (?1,?2,?3)",
+                        params![target_id, dest_gid, date],
+                    )
+                    .map_err(error)?;
+                }
+            }
+        }
+        Ok(restored)
     }
 
     fn restore_with_sessions(
         &mut self,
         games: &[Value],
         sessions: &[BackupSession],
+        collections: Option<&[BackupCollection]>,
         settings: Option<&Value>,
         dry_run: bool,
     ) -> DbResult<Value> {
@@ -2188,6 +2986,11 @@ impl LibraryDatabase {
                 sessions_imported += 1;
             }
         }
+        let collections_restored = if let Some(cols) = collections {
+            Self::restore_collections_on(&tx, cols, &id_map)?
+        } else {
+            0
+        };
         if dry_run {
             // Exercise the exact same game-ID remapping and session collision
             // checks as a real restore, but roll back every temporary write.
@@ -2209,7 +3012,8 @@ impl LibraryDatabase {
             "imported":imported, "skipped":skipped, "errors":errors,
             "settingsRestored":settings_restored,
             "sessionsImported":sessions_imported,
-            "sessionsSkipped":sessions_skipped
+            "sessionsSkipped":sessions_skipped,
+            "collectionsRestored":collections_restored
         }))
     }
 
@@ -2230,8 +3034,9 @@ impl LibraryDatabase {
         for game in games {
             clean_game(game, None)?;
         }
+        let collections = validate_backup_collections(payload)?;
         if let Some(sessions) = validate_backup_sessions(payload)? {
-            self.restore_with_sessions(games, &sessions, None, true)?;
+            self.restore_with_sessions(games, &sessions, collections.as_deref(), None, true)?;
         } else {
             // Old orbit.library.v1 files have no sessions property. Exercise
             // their actual game insert and metadata writes in a rollback-only
@@ -2241,11 +3046,19 @@ impl LibraryDatabase {
                 .conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(error)?;
+            let mut id_map = HashMap::new();
             for raw in games {
                 let result = upsert_on(&tx, raw, false)?;
-                if result["added"] == true {
-                    restore_metadata_on(&tx, raw, field(&result["game"], "id"))?;
+                let dest_id = field(&result["game"], "id").to_owned();
+                if let Some(src_id) = raw.get("id").and_then(Value::as_str) {
+                    id_map.insert(src_id.to_owned(), dest_id.clone());
                 }
+                if result["added"] == true {
+                    restore_metadata_on(&tx, raw, &dest_id)?;
+                }
+            }
+            if let Some(cols) = collections.as_deref() {
+                Self::restore_collections_on(&tx, cols, &id_map)?;
             }
             tx.rollback().map_err(error)?;
         }
@@ -2266,18 +3079,35 @@ impl LibraryDatabase {
         if games.len() > BACKUP_MAX_GAMES {
             return Err("Unrecognized Orbit backup format.".into());
         }
+        let collections = validate_backup_collections(payload)?;
         let sessions = validate_backup_sessions(payload)?;
         if let Some(sessions) = sessions {
-            return self.restore_with_sessions(games, &sessions, payload.get("settings"), false);
+            return self.restore_with_sessions(
+                games,
+                &sessions,
+                collections.as_deref(),
+                payload.get("settings"),
+                false,
+            );
         }
         let games = games.clone();
         let settings = payload.get("settings").cloned();
         let (mut imported, mut skipped) = (0, 0);
         let mut errors = Vec::new();
+        let mut id_map = HashMap::new();
         for game in games {
+            let src_id = game.get("id").and_then(Value::as_str).map(str::to_owned);
             match self.restore_game(&game) {
-                Ok(result) if result["added"] == true => imported += 1,
-                Ok(_) => skipped += 1,
+                Ok(result) => {
+                    if let Some(src) = src_id {
+                        id_map.insert(src, field(&result["game"], "id").to_owned());
+                    }
+                    if result["added"] == true {
+                        imported += 1;
+                    } else {
+                        skipped += 1;
+                    }
+                }
                 Err(message) => {
                     let name = game
                         .get("name")
@@ -2290,6 +3120,11 @@ impl LibraryDatabase {
                     ));
                 }
             }
+        }
+        if let Some(cols) = collections.as_deref() {
+            let tx = self.conn.transaction().map_err(error)?;
+            let _ = Self::restore_collections_on(&tx, cols, &id_map)?;
+            tx.commit().map_err(error)?;
         }
         let mut settings_restored = false;
         if let Some(value) = settings.filter(Value::is_object) {
@@ -3400,5 +4235,174 @@ mod tests {
             "name":"Shared Folder","source":"folder",
             "executable":r"C:\Games\Shared\Game.exe"
         })));
+    }
+
+    #[test]
+    fn custom_collections_crud_membership_and_duplicate_rejection() {
+        with_database(|db, _| {
+            let g1 = db
+                .upsert(&json!({"name":"Hades","source":"manual","executable":r"C:\Games\hades.exe","play_status":"backlog"}))
+                .unwrap()["game"]
+                .clone();
+            let g2 = db
+                .upsert(&json!({"name":"Celeste","source":"manual","executable":r"C:\Games\celeste.exe"}))
+                .unwrap()["game"]
+                .clone();
+            let id1 = field(&g1, "id").to_owned();
+            let id2 = field(&g2, "id").to_owned();
+
+            let col = db
+                .create_collection(
+                    &json!({"name":"Weekend Picks","color":"#9c73ff","icon":"sparkles"}),
+                )
+                .unwrap();
+            let col_id = field(&col, "id").to_owned();
+            assert_eq!(col["name"], "Weekend Picks");
+            assert_eq!(col["icon"], "sparkles");
+
+            // Case-insensitive duplicate collection names must be rejected.
+            assert!(db
+                .create_collection(&json!({"name":"weekend picks"}))
+                .is_err());
+
+            let updated = db
+                .update_collection(
+                    &col_id,
+                    &json!({"name":"Co-op Night","color":"#34d399","icon":"heart"}),
+                )
+                .unwrap();
+            assert_eq!(updated["name"], "Co-op Night");
+
+            let cols = db.set_game_collections(&id1, &[col_id.clone()]).unwrap();
+            assert_eq!(cols.as_array().unwrap().len(), 1);
+            assert_eq!(cols[0]["game_ids"], json!([id1]));
+
+            // Bulk update assigns collection, tags, status, and hidden atomically.
+            let bulk = db
+                .bulk_update_games(
+                    &[id1.clone(), id2.clone()],
+                    &json!({
+                        "play_status": "on_hold",
+                        "hidden": true,
+                        "add_tags": ["Indie", "Deck"],
+                        "add_collection_id": col_id
+                    }),
+                )
+                .unwrap();
+            assert_eq!(bulk["updatedCount"], 2);
+            let loaded2 = db.get(&id2).unwrap();
+            assert_eq!(loaded2["play_status"], "on_hold");
+            assert_eq!(loaded2["hidden"], true);
+            assert_eq!(loaded2["tags"], json!(["Indie", "Deck"]));
+            let listed = db.list_collections().unwrap();
+            let members = listed[0]["game_ids"].as_array().unwrap();
+            assert_eq!(members.len(), 2);
+
+            // Bulk tag removal and collection removal work cleanly.
+            db.bulk_update_games(
+                &[id2.clone()],
+                &json!({"remove_tags": ["indie"], "remove_collection_id": col_id, "hidden": false}),
+            )
+            .unwrap();
+            let loaded2 = db.get(&id2).unwrap();
+            assert_eq!(loaded2["tags"], json!(["Deck"]));
+            assert_eq!(loaded2["hidden"], false);
+            assert_eq!(db.list_collections().unwrap()[0]["game_ids"], json!([id1]));
+
+            // Deleting a collection removes it without removing games.
+            db.delete_collection(&col_id).unwrap();
+            assert!(db
+                .list_collections()
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .is_empty());
+            assert!(db.get(&id1).is_ok());
+        });
+    }
+
+    #[test]
+    fn launching_a_backlog_game_auto_promotes_status_to_playing() {
+        with_database(|db, _| {
+            let g1 = db
+                .upsert(&json!({"name":"Backlog Title","source":"manual","executable":r"C:\Games\b.exe","play_status":"backlog"}))
+                .unwrap()["game"]
+                .clone();
+            let id1 = field(&g1, "id").to_owned();
+            assert_eq!(g1["play_status"], "backlog");
+            db.start_session(&id1).unwrap();
+            assert_eq!(db.get(&id1).unwrap()["play_status"], "playing");
+
+            let g2 = db
+                .upsert(&json!({"name":"Completed Title","source":"manual","executable":r"C:\Games\c.exe","play_status":"completed"}))
+                .unwrap()["game"]
+                .clone();
+            let id2 = field(&g2, "id").to_owned();
+            db.record_external_launch(&id2).unwrap();
+            // Completed games must NOT be overwritten when replayed.
+            assert_eq!(db.get(&id2).unwrap()["play_status"], "completed");
+
+            let g3 = db
+                .upsert(&json!({"name":"External Backlog","source":"steam","source_id":"999","launch_uri":"steam://rungameid/999","play_status":"backlog"}))
+                .unwrap()["game"]
+                .clone();
+            let id3 = field(&g3, "id").to_owned();
+            db.record_external_launch(&id3).unwrap();
+            assert_eq!(db.get(&id3).unwrap()["play_status"], "playing");
+        });
+    }
+
+    #[test]
+    fn backup_export_and_restore_roundtrip_preserves_collections_status_env_and_profiles() {
+        with_database(|source, _| {
+            let g = source
+                .upsert(&json!({
+                    "name": "Modded RPG",
+                    "source": "manual",
+                    "executable": r"C:\Games\ModdedRPG\game.exe",
+                    "play_status": "playing",
+                    "hidden": true,
+                    "launch_env": {"DXVK_HUD": "fps", "MANGOHUD": "1"},
+                    "launch_profiles": [{
+                        "name": "Mod Loader",
+                        "executable": r"C:\Games\ModdedRPG\skse_loader.exe",
+                        "launch_args": ["--modded"],
+                        "working_dir": r"C:\Games\ModdedRPG",
+                        "launch_env": {"MOD_DEBUG": "1"}
+                    }]
+                }))
+                .unwrap()["game"]
+                .clone();
+            let gid = field(&g, "id").to_owned();
+            let col = source
+                .create_collection(
+                    &json!({"name":"Modded Favorites","color":"#f472b6","icon":"lightning"}),
+                )
+                .unwrap();
+            let cid = field(&col, "id").to_owned();
+            source.set_game_collections(&gid, &[cid]).unwrap();
+
+            let exported = source.export_json().unwrap();
+            assert_eq!(exported["collections"].as_array().unwrap().len(), 1);
+
+            with_database(|target, _| {
+                let res = target.restore_json(&exported).unwrap();
+                assert_eq!(res["imported"], 1);
+                let restored_games = target.list("name").unwrap();
+                let games_arr = restored_games.as_array().unwrap();
+                assert_eq!(games_arr.len(), 1);
+                let rg = &games_arr[0];
+                assert_eq!(rg["play_status"], "playing");
+                assert_eq!(rg["hidden"], true);
+                assert_eq!(rg["launch_env"]["DXVK_HUD"], "fps");
+                assert_eq!(rg["launch_profiles"].as_array().unwrap().len(), 1);
+                assert_eq!(rg["launch_profiles"][0]["name"], "Mod Loader");
+
+                let restored_cols = target.list_collections().unwrap();
+                assert_eq!(restored_cols.as_array().unwrap().len(), 1);
+                assert_eq!(restored_cols[0]["name"], "Modded Favorites");
+                assert_eq!(restored_cols[0]["game_ids"], json!([rg["id"]]));
+            });
+        });
     }
 }

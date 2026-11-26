@@ -282,9 +282,8 @@ function sidebar(){const links=[['home','home','Overview'],['library','library',
  <div class="side-label">${tr('LIBRARY')}</div><nav class="nav" aria-label="${tr('Main navigation')}">${links.map(([id,icon,name])=>`<button type="button" class="nav-item ${state.route===id&&!(id==='library'&&state.collection!=='all')?'active':''}" data-action="navigate" data-route="${id}" title="${tr(name)}" ${state.route===id&&!(id==='library'&&state.collection!=='all')?'aria-current="page"':''}>${ic(icon,18)}<span>${tr(name)}</span>${id==='library'?`<span class="count">${formatNumber(visibleCount)}</span>`:''}</button>`).join('')}</nav>
  ${sidebarCollections()}
  <div class="side-divider"></div><nav class="nav" aria-label="${tr('More')}"><button type="button" class="nav-item" data-action="whats-new" title="${tr('See what\'s new')}" aria-label="${tr('See what\'s new')}">${ic('info',18)}<span>${tr("What's new")}</span></button><button type="button" class="nav-item ${state.route==='settings'?'active':''}" data-action="navigate" data-route="settings" title="${tr('Settings')}" ${state.route==='settings'?'aria-current="page"':''}>${ic('settings',18)}<span>${tr('Settings')}</span></button></nav>
- <div class="nav" id="update-shortcut">${updateShortcut()}</div>
- <div class="nav" id="discovery-shortcut">${discoveryShortcut()}</div>
- <div class="side-bottom"><div class="side-version"><span class="status-dot"></span><span>${tr(state.scanning?'Scanning your games…':'Local library')} <span class="version-number">v${esc(state.version)}</span></span></div></div></aside>`}
+ <div class="nav side-discovery-slot" id="discovery-shortcut">${discoveryShortcut()}</div>
+ <div class="side-bottom"><div class="side-update-slot" id="update-shortcut">${updateShortcut()}</div><div class="side-version"><span class="status-dot"></span><span>${tr(state.scanning?'Scanning your games…':'Local library')} <span class="version-number">v${esc(state.version)}</span></span></div></div></aside>`}
 function topbar(){return `<header class="topbar"><div class="breadcrumb">${state.query.trim()?tr('Search results'):''}</div>
  <div class="topbar-right"><label class="searchbox">${ic('search',18)}<input id="global-search" type="search" placeholder="${tr('Search your library')}" value="${esc(state.query)}" autocomplete="off" aria-label="${tr('Search games')}"/><kbd>Ctrl K</kbd></label>
  <button type="button" class="top-icon" data-action="controller-mode" title="${tr('Controller mode (F11 / Menu)')}" aria-label="${tr('Enter controller mode')}">${ic('gamepad',18)}</button>${['library','favorites','recent'].includes(state.route)?'':`<button type="button" class="top-icon" data-action="scan" title="${tr('Discover installed games')}" aria-label="${tr('Discover installed games')}">${ic('refresh',18)}</button>`}
@@ -525,7 +524,7 @@ function settingsView(){const s=state.settings,folders=s.libraryFolders||[];retu
  <div class="settings-card"><h2>${tr('Performance & updates')}</h2><p>${tr('Keep game performance first. Orbit remains available in the tray for playtime tracking.')}</p>
  <div class="setting-row"><div><div class="setting-name">${tr('Performance Guard')}</div><div class="setting-help">${tr("Hide Orbit's window after a confirmed game start on Windows, keeping your edits open.")}</div></div><button class="switch ${s.performanceGuard?'on':''}" data-action="setting-toggle" data-key="performanceGuard" role="switch" aria-checked="${!!s.performanceGuard}" aria-label="${tr('Performance Guard')}"></button></div>
  <div class="setting-row"><div><div class="setting-name">${tr('Automatic updates')}</div><div class="setting-help">${tr('Check and download signed Orbit updates in the background.')}</div></div><button type="button" class="switch ${s.autoUpdates?'on':''}" data-action="setting-toggle" data-key="autoUpdates" role="switch" aria-checked="${!!s.autoUpdates}" aria-label="${tr('Automatic updates')}" ${!state.updateStatus||state.updateStatus.state==='unsupported'?'disabled aria-disabled="true"':''}></button></div>
- <div class="setting-row"><div style="min-width:0;flex:1"><div class="setting-name">${tr('Update status')}</div><div class="setting-help" id="update-status" role="status" aria-live="polite">${esc(formatUpdateStatus(state.updateStatus))}</div><div id="update-progress-slot">${updateProgressMarkup(state.updateStatus)}</div></div><div class="setting-control" id="update-action-slot" style="display:flex;gap:8px">${updateActionButtons(state.updateStatus)}</div></div>
+ <div class="setting-row update-panel-row"><div class="update-panel-info"><div class="update-panel-head"><span id="update-state-dot" class="${updateDotClass(state.updateStatus)}" aria-hidden="true"></span><span class="setting-name">${tr('Update status')}</span>${state.version?`<span class="update-version-chip">v${esc(state.version)}</span>`:''}</div><div class="setting-help" id="update-status" role="status" aria-live="polite">${esc(formatUpdateStatus(state.updateStatus))}</div><div id="update-progress-slot">${updateProgressMarkup(state.updateStatus)}</div></div><div class="setting-control update-panel-actions" id="update-action-slot">${updateActionButtons(state.updateStatus)}</div></div>
  <div class="setting-row"><div><div class="setting-name">${tr("What's new")}</div><div class="setting-help">${tr('Release highlights appear once per version and can be reopened in Settings.')}</div></div><button class="secondary-btn" data-action="whats-new">${ic('sparkles',15)} ${tr("See what's new")}</button></div></div>
  <div class="settings-card"><h2>${tr('Library discovery')}</h2><p>${tr('Orbit searches installed game stores and folders you select. Downloads is never scanned automatically.')}</p>
  <div class="setting-row"><div><div class="setting-name">${tr('Scan at startup')}</div><div class="setting-help">${tr('Look for new games whenever Orbit starts.')}</div></div><button class="switch ${s.autoScan?'on':''}" data-action="setting-toggle" data-key="autoScan" role="switch" aria-checked="${s.autoScan}" aria-label="${tr('Scan at startup')}"></button></div>
@@ -746,7 +745,7 @@ function openGameActions(trigger,point=null){
  menu.querySelector('[role=menuitem],[role=menuitemradio]')?.focus({preventScroll:true});
 }
 function openModal(type,meta={}){pauseDesktopPadEntry();closeGameActions();if(!state.modal){modalReturnFocus=document.activeElement;modalReturnFocusAction=modalReturnFocus?.dataset.action?{action:modalReturnFocus.dataset.action,id:modalReturnFocus.dataset.id,kind:['card-open-trigger','row-open-trigger','continue-open-trigger','game-menu','hero-detail'].find(name=>modalReturnFocus.classList.contains(name))}:null;}state.modal={type,...meta};renderModal()}
-const WHATS_NEW_VERSION='0.4.0';
+const WHATS_NEW_VERSION='0.4.1';
 const WHATS_NEW_KEY='orbit.whatsNew.lastAcknowledgedVersion';
 let whatsNewPending=false;
 function markWhatsNewSeen(){
@@ -768,9 +767,11 @@ function whatsNewDialog(){
  const points=(items)=>items.map(item=>`<li>${tr(item)}</li>`).join('');
  return `<div class="dialog-scrim" data-action="scrim"><section class="dialog wide whats-new-dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="whats-new-intro">
  <div class="whats-new-header"><span class="whats-new-eyebrow">${ic('sparkles',15)} ORBIT · v${WHATS_NEW_VERSION}</span><button class="ghost-btn whats-new-close" data-action="close-modal" aria-label="${tr('Close release notes')}">${ic('close',20)}</button>
- <h2 id="dialog-title">${tr("What's new in Orbit")}</h2><p id="whats-new-intro">${tr('Highlights from 0.2.7 through 0.4.0')}</p></div>
+ <h2 id="dialog-title">${tr("What's new in Orbit")}</h2><p id="whats-new-intro">${tr('Highlights from 0.2.7 through 0.4.1')}</p></div>
  <div class="whats-new-content">
- <section class="whats-new-version"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.4.0 — New')}</span><h3>${tr('Your Gaming Library: statuses, collections, bulk actions and launch profiles')}</h3></div>
+ <section class="whats-new-version"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.4.1 — New')}</span><h3>${tr('Docked update controls and automatic checks on reopen')}</h3></div>
+ <ul>${points(['Moved the update button into the sidebar footer above the app version with live downloading, ready-to-install, and icon-rail indicator states.','Orbit now checks for signed updates automatically when reopening from the tray or restoring from minimized, while staying quiet during active games.'])}</ul></section>
+ <section class="whats-new-version whats-new-history"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.4.0 — New')}</span><h3>${tr('Your Gaming Library: statuses, collections, bulk actions and launch profiles')}</h3></div>
  <ul>${points(['Organize games with play statuses (Currently Playing, Backlog, Completed, On Hold), hidden state, and custom SQLite collections synced across backups.','Combine multi-filters, smart search operators (status:, source:, tag:, in:, time:, is:hidden), and multi-select bulk actions.','Configure per-game environment variables, alternative launch profiles, and native Windows AppsFolder launching for Xbox titles.'])}</ul></section>
  <section class="whats-new-version whats-new-history"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.3.6 — New')}</span><h3>${tr('Signed automatic updates and release hardening')}</h3></div>
  <ul>${points(['Orbit checks for signed updates automatically in the background and installs verified releases directly from Settings or the sidebar.','Updates pause automatically while a game is running and verify Ed25519 release signatures before restarting.','Release executables strip local build paths and enforce a restrictive Tauri security policy.'])}</ul></section>
@@ -984,27 +985,54 @@ function formatUpdateStatus(status){
  if(status.state==='installing'&&status.version)return t('Installing v{version}…',{version:status.version});
  return t(status.message||'Checking availability…');
 }
-function updateProgressMarkup(status){
+function updateDotClass(status){
+ const kind=status?.state||'idle';
+ if(kind==='ready')return 'update-state-dot is-ready';
+ if(kind==='downloading'||kind==='checking'||kind==='installing')return 'update-state-dot is-active';
+ if(kind==='error')return 'update-state-dot is-error';
+ if(kind==='up-to-date')return 'update-state-dot is-ok';
+ return 'update-state-dot';
+}
+function updateProgressMarkup(status,compact=false){
  if(status?.state!=='downloading')return '';
  const hasPct=Number.isFinite(status.progressPercent);
  const pct=hasPct?Math.max(0,Math.min(100,status.progressPercent)):0;
- return `<div class="update-progress-wrap"><div class="update-progress ${hasPct?'':'indeterminate'}" role="progressbar" aria-label="${tr('Update download progress')}" aria-valuemin="0" aria-valuemax="100" ${hasPct?`aria-valuenow="${pct}"`:''}><div class="update-progress-fill" style="width:${hasPct?pct:38}%"></div></div></div>`;
+ return `<div class="update-progress-wrap ${compact?'is-compact':''}"><progress class="update-progress" max="100" ${hasPct?`value="${pct}"`:''} aria-label="${tr('Update download progress')}"></progress></div>`;
 }
 function updateActionButtons(status){
  const busy=!!(state.runningIds?.length||state.pendingLaunches?.size);
  const checking=['checking','downloading','installing'].includes(status?.state);
- return `<button type="button" class="secondary-btn" data-action="check-update" ${checking?'disabled aria-busy="true"':''}>${tr('Check now')}</button>${status?.state==='ready'?`<button type="button" class="primary-btn" data-action="install-update" ${busy?'disabled aria-disabled="true"':''} title="${busy?tr('Finish running games before installing an update.'):''}">${tr(busy?'Game running…':'Install & restart')}</button>`:''}`;
+ const checkLabel=status?.state==='checking'?tr('Checking…'):tr('Check now');
+ const checkBtn=`<button type="button" class="secondary-btn update-check-btn ${checking?'is-busy':''}" data-action="check-update" ${checking?'disabled aria-busy="true"':''}>${ic('refresh',15)}<span>${checkLabel}</span></button>`;
+ if(status?.state==='ready'){
+  const installBtn=`<button type="button" class="primary-btn update-install-btn" data-action="install-update" ${busy?'disabled aria-disabled="true"':''} title="${busy?tr('Finish running games before installing an update.'):tr('Install verified update and restart Orbit')}">${ic(busy?'clock':'download',15)}<span>${tr(busy?'Game running…':'Install & restart')}</span></button>`;
+  return `${installBtn}${checkBtn}`;
+ }
+ return checkBtn;
 }
 function updateShortcut(){
  const status=state.updateStatus;
- if(status?.state!=='ready')return '';
+ if(!status||!['downloading','ready','installing'].includes(status.state))return '';
  const busy=!!(state.runningIds?.length||state.pendingLaunches?.size);
- const label=status.version?tr('Install v{version}',{version:status.version}):tr('Install update');
- return `<button type="button" class="nav-item update-shortcut-btn" data-action="install-update" ${busy?'disabled aria-disabled="true"':''} title="${tr(busy?'Finish running games before installing an update.':'Install verified update and restart Orbit')}" aria-label="${label}">${ic('download',18)}<span>${label}</span><span class="update-shortcut-badge">${tr('Ready')}</span></button>`;
+ if(status.state==='downloading'){
+  const hasPct=Number.isFinite(status.progressPercent);
+  const title=status.version?tr('Downloading v{version}',{version:status.version}):tr('Downloading update');
+  const meta=hasPct?`${formatNumber(status.progressPercent)}%`:tr('In background');
+  return `<button type="button" class="side-update-btn is-downloading" data-action="navigate" data-route="settings" title="${esc(formatUpdateStatus(status))}" aria-label="${esc(formatUpdateStatus(status))}"><span class="side-update-icon is-spinning">${ic('refresh',16)}</span><span class="side-update-copy"><span class="side-update-title">${title}</span><span class="side-update-sub">${esc(meta)}</span>${updateProgressMarkup(status,true)}</span></button>`;
+ }
+ if(status.state==='installing'){
+  const title=status.version?tr('Installing v{version}…',{version:status.version}):tr('Installing update…');
+  return `<button type="button" class="side-update-btn is-installing" disabled aria-busy="true" title="${title}" aria-label="${title}"><span class="side-update-icon is-spinning">${ic('refresh',16)}</span><span class="side-update-copy"><span class="side-update-title">${title}</span><span class="side-update-sub">${tr('Restarting Orbit')}</span></span></button>`;
+ }
+ const title=status.version?tr('Update to v{version}',{version:status.version}):tr('Install update');
+ const sub=busy?tr('Finish game to install'):tr('Restart to install');
+ const tip=busy?tr('Finish running games before installing an update.'):tr('Install verified update and restart Orbit');
+ return `<button type="button" class="side-update-btn is-ready ${busy?'is-busy':''}" data-action="install-update" ${busy?'disabled aria-disabled="true"':''} title="${tip}" aria-label="${title} — ${sub}"><span class="side-update-icon">${ic(busy?'clock':'download',16)}<span class="side-update-dot" aria-hidden="true"></span></span><span class="side-update-copy"><span class="side-update-title">${title}</span><span class="side-update-sub">${sub}</span></span></button>`;
 }
 function syncUpdateUi(){
  const status=state.updateStatus;
  const shortcut=el('update-shortcut');if(shortcut)shortcut.innerHTML=updateShortcut();
+ const dot=el('update-state-dot');if(dot)dot.className=updateDotClass(status);
  const statusEl=el('update-status');if(statusEl)statusEl.textContent=formatUpdateStatus(status);
  const progressEl=el('update-progress-slot');if(progressEl)progressEl.innerHTML=updateProgressMarkup(status);
  const actionsEl=el('update-action-slot');if(actionsEl)actionsEl.innerHTML=updateActionButtons(status);

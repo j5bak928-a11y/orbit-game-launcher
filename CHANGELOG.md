@@ -2,6 +2,11 @@
 
 This changelog covers the changes users receive with Orbit's Windows desktop releases. **Starting with 0.3.4, native Rust/Tauri 2 is the sole Orbit Launcher application** (Electron has been retired and removed). Starting with **0.3.6**, in-app updates verify Ed25519 signatures via GitHub Releases (`latest.json`), while manual installers remain Authenticode-unsigned. Release files appear on [GitHub Releases](https://github.com/j5bak928-a11y/orbit-game-launcher/releases); check the version and `SHA256SUMS.txt` before installing.
 
+## 0.4.1 — Docked update controls & automatic checks on reopen
+
+- **Redesigned sidebar update dock & Settings panel:** Moved the update action out of the navigation list and anchored it directly above the version footer in `.side-bottom` with live **downloading** (native `<progress>` bar), **ready-to-install**, **busy (game running)**, **installing**, and narrow icon-rail indicator states. Refined **Settings → Performance & updates** with status dots, tabular version badge, native `<progress>`, and leading **Install & restart** hierarchy.
+- **Automatic update checks on GUI reopen:** Reopening Orbit from the Windows system tray, restoring from a minimized taskbar state, or reactivating via single-instance launch now automatically triggers a cooldown-guarded (`30s`) background check for signed updates when **Automatic updates** is enabled and no game is active.
+
 ## 0.4.0 — Your Gaming Library
 
 - **Play status, hidden games & custom collections:** Organize games with built-in statuses (**Currently Playing**, **Backlog**, **Completed**, **On Hold**), per-game hidden state, and custom SQLite collections with color/icon pickers that round-trip through `.orbit` and JSON backups. Launching a **Backlog** game automatically promotes it to **Currently Playing**.

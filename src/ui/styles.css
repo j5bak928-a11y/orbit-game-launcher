@@ -835,15 +835,143 @@ body[data-theme=light] .detail-showcase .detail-live{color:var(--accent-text,var
 .toast-close{margin-left:auto;flex:none;width:28px;height:28px;border:0;border-radius:7px;background:transparent;color:var(--muted);display:grid;place-items:center}
 .toast-close:hover{background:var(--panel3);color:var(--text)}
 
-.sidebar .update-shortcut-btn{color:var(--text);background:rgba(var(--accent-rgb),.14);border-color:rgba(var(--accent-rgb),.34)}
-.sidebar .update-shortcut-btn:hover:not(:disabled){background:rgba(var(--accent-rgb),.22);border-color:rgba(var(--accent-rgb),.5)}
-.sidebar .update-shortcut-btn:disabled{opacity:.55;cursor:not-allowed}
-.update-shortcut-badge{margin-left:auto;padding:2px 6px;border-radius:5px;font-size:11px;font-weight:650;background:rgba(var(--accent-rgb),.22);color:var(--accent-text,var(--accent))}
+.sidebar{overflow-y:auto;scrollbar-width:thin}
+.side-discovery-slot:empty,.side-update-slot:empty{display:none}
+.side-bottom{padding-top:16px;display:grid;gap:10px}
+
+.side-update-slot{min-width:0}
+.side-update-btn{
+  position:relative;width:100%;display:flex;align-items:center;gap:10px;
+  padding:10px 11px;border-radius:11px;border:1px solid var(--border);
+  background:var(--panel2);color:var(--text);text-align:left;
+  transition:background-color .16s ease,border-color .16s ease,box-shadow .16s ease,transform .16s ease;
+}
+.side-update-btn.is-ready{
+  background:linear-gradient(135deg,color-mix(in srgb,var(--accent) 88%,white),var(--accent));
+  border-color:rgba(255,255,255,.16);
+  color:var(--accent-ink);
+  box-shadow:0 8px 20px rgba(0,0,0,.26),inset 0 1px 0 rgba(255,255,255,.24);
+}
+.side-update-btn.is-ready:hover:not(:disabled){
+  background:linear-gradient(135deg,color-mix(in srgb,var(--accent) 80%,white),var(--accent));
+  box-shadow:0 10px 24px rgba(0,0,0,.32),inset 0 1px 0 rgba(255,255,255,.3);
+  transform:translateY(-1px);
+}
+.side-update-btn.is-ready:active:not(:disabled){transform:translateY(0)}
+.side-update-btn.is-ready.is-busy{
+  background:var(--panel2);
+  border-color:rgba(var(--accent-rgb),.34);
+  color:var(--text);
+  box-shadow:none;
+  opacity:.82;
+  cursor:not-allowed;
+}
+.side-update-btn.is-downloading{
+  background:rgba(var(--accent-rgb),.1);
+  border-color:rgba(var(--accent-rgb),.32);
+}
+.side-update-btn.is-downloading:hover{background:rgba(var(--accent-rgb),.16);border-color:rgba(var(--accent-rgb),.48)}
+.side-update-btn.is-installing{
+  background:rgba(var(--accent-rgb),.14);
+  border-color:rgba(var(--accent-rgb),.36);
+  opacity:.9;
+  cursor:wait;
+}
+.side-update-icon{
+  position:relative;flex:none;width:30px;height:30px;border-radius:8px;
+  display:grid;place-items:center;
+  background:rgba(17,18,29,.16);color:inherit;
+}
+.side-update-btn.is-downloading .side-update-icon,
+.side-update-btn.is-installing .side-update-icon,
+.side-update-btn.is-busy .side-update-icon{
+  background:rgba(var(--accent-rgb),.16);
+  color:var(--accent-text,var(--accent));
+}
+.side-update-icon.is-spinning{animation:spin 1.8s linear infinite}
+.side-update-dot{
+  display:none;position:absolute;top:-2px;right:-2px;width:8px;height:8px;
+  border-radius:50%;background:#34d399;border:2px solid var(--panel);
+}
+.side-update-copy{min-width:0;flex:1;display:grid;gap:2px}
+.side-update-title{font-size:12px;font-weight:750;line-height:1.25;overflow-wrap:anywhere}
+.side-update-sub{font-size:12px;line-height:1.25;opacity:.9;overflow-wrap:anywhere}
+.side-update-btn.is-downloading .side-update-sub,
+.side-update-btn.is-installing .side-update-sub,
+.side-update-btn.is-busy .side-update-sub{color:var(--muted);opacity:1}
+
+.update-panel-row{align-items:flex-start}
+.update-panel-info{min-width:0;flex:1}
+.update-panel-head{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.update-state-dot{width:8px;height:8px;border-radius:50%;background:var(--soft);flex:none}
+.update-state-dot.is-ok{background:#34d399}
+.update-state-dot.is-ready{background:var(--accent);box-shadow:0 0 0 3px rgba(var(--accent-rgb),.22)}
+.update-state-dot.is-active{background:var(--accent)}
+.update-state-dot.is-error{background:#ef8c9c}
+.update-version-chip{
+  display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;
+  font-size:12px;font-weight:650;font-variant-numeric:tabular-nums;
+  background:var(--panel2);border:1px solid var(--border);color:var(--muted);
+}
+.update-panel-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+
+body[data-theme=light] .side-update-btn.is-ready{box-shadow:0 6px 16px rgba(23,26,32,.16),inset 0 1px 0 rgba(255,255,255,.35)}
+body[data-theme=light] .update-state-dot.is-ok{background:#059669}
+body[data-theme=light] .update-state-dot.is-error{background:#dc2626}
+
+/* Native <progress> styled per modern-web-guidance: separate vendor pseudo-elements,
+   container-unit indeterminate slide, and slowed reduced-motion fallback. */
 .update-progress-wrap{margin-top:8px}
-.update-progress{height:6px;width:100%;max-width:260px;border-radius:999px;background:var(--panel3);overflow:hidden;border:1px solid var(--border)}
-.update-progress-fill{height:100%;border-radius:inherit;background:var(--accent);transition:width .2s ease}
-.update-progress.indeterminate .update-progress-fill{animation:orbitUpdatePulse 1.4s ease-in-out infinite}
-@keyframes orbitUpdatePulse{0%{transform:translateX(-70%)}100%{transform:translateX(190%)}}
+.update-progress-wrap.is-compact{margin-top:5px}
+.update-progress{
+  appearance:none;display:block;width:100%;max-width:280px;height:6px;
+  border:0 solid;border-radius:999px;overflow:clip;
+  background:var(--panel3);box-shadow:inset 0 1px 2px rgba(0,0,0,.14);
+  container-type:inline-size;
+  --progress-bar-indeterminate-size:34%;
+  --progress-bar-indeterminate-duration:1.4s;
+}
+.update-progress-wrap.is-compact .update-progress{max-width:none;height:5px}
+.update-progress:indeterminate{
+  --progress-bar-animation:var(--progress-bar-indeterminate-animation,orbitProgressSlide var(--progress-bar-indeterminate-duration) infinite linear);
+}
+.update-progress:dir(rtl){
+  --progress-bar-indeterminate-animation:orbitProgressSlide var(--progress-bar-indeterminate-duration) infinite linear reverse;
+}
+.update-progress::-webkit-progress-bar{background:transparent}
+.update-progress::-webkit-progress-value{
+  background:var(--accent);border-radius:999px;
+  transition:inline-size .25s ease;
+  animation:var(--progress-bar-animation,revert-rule);
+}
+.update-progress::-moz-progress-bar{
+  background:var(--accent);border-radius:999px;
+  transition:inline-size .25s ease;
+  animation:var(--progress-bar-animation,revert-rule);
+}
+@keyframes orbitProgressSlide{
+  from{inline-size:var(--progress-bar-indeterminate-size);margin-right:auto;translate:-100%}
+  to{inline-size:var(--progress-bar-indeterminate-size);margin-right:auto;translate:100cqi}
+}
+@media(prefers-reduced-motion:reduce){
+  .update-progress{--progress-bar-indeterminate-duration:10s}
+  .side-update-btn{transition:none}
+}
+body[data-reduce-motion=true] .update-progress-wrap .update-progress{--progress-bar-indeterminate-duration:10s}
+@media(max-width:1180px){
+  .side-update-btn{padding:9px;gap:8px}
+  .side-update-icon{width:28px;height:28px}
+}
+@media(max-width:750px){
+  .side-bottom{padding-top:12px;gap:8px;justify-items:center}
+  .side-update-btn{width:42px;height:42px;padding:0;justify-content:center;border-radius:10px}
+  .side-update-icon{width:24px;height:24px;background:transparent}
+  .side-update-copy{display:none}
+  .side-update-btn.is-ready:not(.is-busy) .side-update-dot{display:block}
+}
+@media(max-width:500px){
+  .side-update-btn{width:38px;height:38px}
+}
 
 @media(max-width:500px){
   .continue-open-trigger{padding:8px;gap:9px}

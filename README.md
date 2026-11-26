@@ -4,9 +4,9 @@
 
 Orbit is a local-first desktop game launcher for finding, organizing, and playing installed games. It brings games from different storefronts into one library without replacing their launchers or moving their files.
 
-**Orbit `0.4.0` runs solely on Rust + Tauri 2 with signed in-app auto-updates:** the legacy Electron edition was retired in `0.3.4`, promoting the native Rust backend and WebView2 desktop shell to the main **Orbit Launcher** (`com.orbitlauncher.desktop`). On first launch, Orbit automatically copies an existing `com.orbitlauncher.rustpreview` library (or older Electron library) into the new profile via read-only SQLite `VACUUM INTO` without touching the original files.
+**Orbit `0.4.1` runs solely on Rust + Tauri 2 with signed in-app auto-updates:** the legacy Electron edition was retired in `0.3.4`, promoting the native Rust backend and WebView2 desktop shell to the main **Orbit Launcher** (`com.orbitlauncher.desktop`). On first launch, Orbit automatically copies an existing `com.orbitlauncher.rustpreview` library (or older Electron library) into the new profile via read-only SQLite `VACUUM INTO` without touching the original files.
 
-**[Download the latest Windows release](https://github.com/j5bak928-a11y/orbit-game-launcher/releases/latest)** — choose **Orbit Launcher Setup** (`Orbit-Launcher-Setup-<version>.exe`, recommended NSIS installer), MSI (`Orbit-Launcher-<version>.msi`), or portable ZIP (`Orbit-Launcher-Portable-<version>.zip`). Check the release tag and SHA-256 checksums before installing. [Read the complete changelog](CHANGELOG.md), including **0.4.0 and 0.2.7–0.3.6 history**. Starting with `0.3.6`, installed copies check for signed updates automatically in the background; when upgrading manually from an older installer, choose **Quit Orbit** from the system tray first so no older tray instance stays running.
+**[Download the latest Windows release](https://github.com/j5bak928-a11y/orbit-game-launcher/releases/latest)** — choose **Orbit Launcher Setup** (`Orbit-Launcher-Setup-<version>.exe`, recommended NSIS installer), MSI (`Orbit-Launcher-<version>.msi`), or portable ZIP (`Orbit-Launcher-Portable-<version>.zip`). Check the release tag and SHA-256 checksums before installing. [Read the complete changelog](CHANGELOG.md), including **0.4.1 and 0.2.7–0.4.0 history**. Starting with `0.3.6`, installed copies check for signed updates automatically in the background; when upgrading manually from an older installer, choose **Quit Orbit** from the system tray first so no older tray instance stays running.
 
 ![Orbit library with game covers, filters, and search](docs/images/orbit-library-current.png)
 
@@ -23,7 +23,7 @@ Orbit is a local-first desktop game launcher for finding, organizing, and playin
 - **Play with a controller:** navigate the fullscreen library and game details with a standard-mapped Xbox or PlayStation controller, including page triggers, right-stick scrolling, reconnect handling and a Menu / Options entry shortcut; keyboard and mouse remain available.
 - **Choose your language:** use Orbit in English, Nederlands, Deutsch, Français or Español; follow the system language automatically or select one in Settings. Orbit saves this preference locally.
 - **Stay up to date safely:** check for signed GitHub releases automatically in the background (configurable in Settings), verify Ed25519 release signatures before installing, pause installation while any game is running, and restart cleanly from Settings or the sidebar.
-- **See what's new:** the first start after updating shows the release highlights from `0.2.7` through `0.4.0`. Dismiss the dialog once per version, or reopen it anytime from the sidebar or Settings.
+- **See what's new:** the first start after updating shows the release highlights from `0.2.7` through `0.4.1`. Dismiss the dialog once per version, or reopen it anytime from the sidebar or Settings.
 - **Review gaming statistics:** recorded-session totals for recent days and weeks, a daily activity chart, recent games and a period-best day. Overlapping records for a single game are deduplicated in reports without rewriting play history.
 - **Keep your data local:** store games, settings, and play history in SQLite; export and restore library backups.
 
@@ -31,11 +31,11 @@ Orbit is a local-first desktop game launcher for finding, organizing, and playin
 <tr><td><img src="docs/images/orbit-overview-current.png" alt="Orbit Overview with featured game and Continue playing"></td><td><img src="docs/images/orbit-settings-current.png" alt="Orbit appearance and performance settings"></td></tr>
 </table>
 
-## Desktop runtime (`0.4.0`)
+## Desktop runtime (`0.4.1`)
 
 | | Orbit Launcher (Rust / Tauri 2) |
 | --- | --- |
-| Version in this repository | **0.4.0** |
+| Version in this repository | **0.4.1** |
 | Application ID | `com.orbitlauncher.desktop` |
 | UI | Orbit HTML/CSS/JavaScript in WebView2 with restrictive Tauri CSP |
 | Backend | Native Rust for SQLite library, discovery, tracking, artwork, backups and signed updates |
@@ -49,7 +49,7 @@ Starting with **0.3.4**, the legacy Electron edition has been removed. On first 
 
 **Direction:** starting with **0.2.8**, Orbit moved toward a native Rust backend, and in **0.3.4** Rust became the sole main edition (`Orbit Launcher`, `com.orbitlauncher.desktop`). Subsequent releases focus on library organization, a console-quality controller experience, and optional offline intelligence without sacrificing libraries or playtime history.
 
-These are **engineering milestones, not promises of public binary availability or dates**. Orbit uses version `0.4.0` in source; see the [full changelog](CHANGELOG.md).
+These are **engineering milestones, not promises of public binary availability or dates**. Orbit uses version `0.4.1` in source; see the [full changelog](CHANGELOG.md).
 
 | Milestone | Theme | Deliverable / exit criteria |
 | --- | --- | --- |

@@ -2198,6 +2198,7 @@ pub fn run() {
     let scheme_dir = Arc::new(Mutex::new(None::<PathBuf>));
     let scheme_handler = scheme_dir.clone();
     let last_fullscreen = Arc::new(Mutex::new(None::<bool>));
+    let was_minimized = Arc::new(Mutex::new(false));
     tauri::Builder::default()
         // Only one Rust tracker may write playtime to this profile. Without
         // a single-instance guard, launching Orbit again while it is in the
@@ -2213,6 +2214,7 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.set_focus();
+                updates::maybe_check_on_reopen(app);
             }
         }))
         .plugin(tauri_plugin_dialog::init())
@@ -2231,6 +2233,19 @@ pub fn run() {
                     tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Focused(true)
                 )
             {
+                if let Ok(minimized) = window.is_minimized() {
+                    let restored = was_minimized
+                        .lock()
+                        .map(|mut prev| {
+                            let became_visible = *prev && !minimized;
+                            *prev = minimized;
+                            became_visible
+                        })
+                        .unwrap_or(false);
+                    if restored {
+                        updates::maybe_check_on_reopen(window.app_handle());
+                    }
+                }
                 if let Ok(fullscreen) = window.is_fullscreen() {
                     let changed_state = last_fullscreen
                         .lock()

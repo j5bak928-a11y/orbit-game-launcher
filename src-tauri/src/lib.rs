@@ -2294,7 +2294,10 @@ pub fn run() {
                     tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Focused(true)
                 )
             {
+                let mut triggered_reopen_check = false;
+                let mut is_minimized = false;
                 if let Ok(minimized) = window.is_minimized() {
+                    is_minimized = minimized;
                     let restored = was_minimized
                         .lock()
                         .map(|mut prev| {
@@ -2304,8 +2307,15 @@ pub fn run() {
                         })
                         .unwrap_or(false);
                     if restored {
+                        triggered_reopen_check = true;
                         updates::maybe_check_on_reopen(window.app_handle());
                     }
+                }
+                if matches!(event, tauri::WindowEvent::Focused(true))
+                    && !is_minimized
+                    && !triggered_reopen_check
+                {
+                    updates::maybe_check_on_focus(window.app_handle());
                 }
                 if let Ok(fullscreen) = window.is_fullscreen() {
                     let changed_state = last_fullscreen
@@ -2401,6 +2411,9 @@ pub fn run() {
                         }
                         poll_sessions(&handle, &mut diagnostics);
                     };
+                    if handle.get_webview_window("main").is_some() {
+                        updates::maybe_check_periodic(&handle);
+                    }
                 }
             });
             Ok(())

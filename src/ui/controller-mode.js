@@ -59,6 +59,8 @@
 		["A", "S", "D", "F", "G", "H", "J", "K", "L"],
 		["Z", "X", "C", "V", "B", "N", "M"],
 	];
+	const HEART_SVG =
+		'<svg class="tv-heart-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z"/></svg>';
 	const statusLabel = (code) =>
 		STATUS_LABELS[code] ? t(STATUS_LABELS[code]) : "";
 	const sourceName = (source, fallback = "Game") =>
@@ -405,8 +407,14 @@
 			this.root.addEventListener(
 				"error",
 				(event) => {
-					if (event.target instanceof HTMLImageElement)
-						event.target.hidden = true;
+					if (!(event.target instanceof HTMLImageElement)) return;
+					event.target.hidden = true;
+					if (event.target.dataset.tvArt) {
+						const frame = event.target.parentElement;
+						frame?.classList.remove("has-art", "has-ambient");
+						const ambient = frame?.querySelector(".tv-art-ambient");
+						if (ambient) ambient.hidden = true;
+					}
 				},
 				{ capture: true, signal },
 			);
@@ -416,9 +424,7 @@
 					const image = event.target;
 					if (!(image instanceof HTMLImageElement) || !image.dataset.tvArt)
 						return;
-					if (!image.naturalWidth || !image.naturalHeight)
-						image.hidden = true;
-					else image.parentElement.classList.add("has-art");
+					this.applyArtworkFit(image);
 				},
 				{ capture: true, signal },
 			);
@@ -689,7 +695,15 @@
 		}
 		columns() {
 			const width = this.root.clientWidth;
-			return width >= 1600 ? 4 : width >= 1100 ? 3 : width >= 700 ? 2 : 1;
+			return width >= 1600
+				? 6
+				: width >= 1200
+					? 5
+					: width >= 1000
+						? 4
+						: width >= 660
+							? 3
+							: 2;
 		}
 		rebuildIndexes() {
 			const games = Array.isArray(this.snapshot?.games)
@@ -830,21 +844,56 @@
 				this.showHidden
 			);
 		}
-		artwork(game, portrait = false) {
+		applyArtworkFit(image) {
+			const w = image.naturalWidth;
+			const h = image.naturalHeight;
+			const frame = image.parentElement;
+			if (!w || !h) {
+				image.hidden = true;
+				const ambient = frame?.querySelector(".tv-art-ambient");
+				if (ambient) ambient.hidden = true;
+				return;
+			}
+			const ratio = w / h;
+			const slot = frame?.dataset.tvSlot || "landscape";
+			const matchesSlot =
+				slot === "poster"
+					? ratio >= 0.55 && ratio <= 0.85
+					: ratio >= 1.45 && ratio <= 2.45;
+			frame?.classList.add("has-art");
+			image.classList.toggle("is-fit-cover", matchesSlot);
+			frame?.classList.toggle("has-ambient", !matchesSlot);
+			const sheetArt = frame?.closest(".tv-sheet-art");
+			if (sheetArt) {
+				sheetArt.classList.toggle("is-landscape", ratio > 1.25);
+			}
+		}
+		syncLoadedArtwork(container) {
+			if (!container) return;
+			for (const img of container.querySelectorAll("img[data-tv-art]")) {
+				if (img.complete && img.naturalWidth > 0) this.applyArtworkFit(img);
+			}
+		}
+		artwork(game, variant = "landscape") {
 			const banner = art(game.banner),
 				cover = art(game.cover),
 				icon = art(game.icon);
+			const portrait = variant === "poster" || variant === true;
 			const image = portrait ? cover || banner : banner || cover;
 			const kind = portrait && cover ? "cover" : banner ? "banner" : "cover";
+			const slot = portrait ? "poster" : "landscape";
 			const fallback = icon
 				? `<img class="tv-native-icon" src="${icon}" alt="" loading="lazy"/>`
 				: '<img class="tv-fallback-dark" src="../../assets/branding/orbit-mark-dark.png" alt="" loading="lazy"/><img class="tv-fallback-light" src="../../assets/branding/orbit-mark-light.png" alt="" loading="lazy"/>';
-			return `<div class="tv-card-art"><div class="tv-card-fallback">${fallback}</div>${image ? `<img class="tv-game-art ${kind === "banner" ? "is-banner" : "is-cover"}" src="${image}" data-tv-art="${kind}" alt="" loading="lazy"/>` : ""}</div>`;
+			return `<div class="tv-card-art" data-tv-slot="${slot}"><div class="tv-card-fallback">${fallback}</div>${image ? `<img class="tv-art-ambient" src="${image}" alt="" aria-hidden="true" loading="lazy"/><img class="tv-game-art ${kind === "banner" ? "is-banner" : "is-cover"}" src="${image}" data-tv-art="${kind}" alt="" loading="lazy"/>` : ""}</div>`;
 		}
 		spotlight(game) {
 			if (!game)
 				return `<section class="tv-spotlight tv-spotlight-empty" aria-label="${escapeHtml(t("Featured game"))}"><div class="tv-spotlight-copy"><p class="tv-spotlight-kicker"><span class="tv-signal"></span> ${escapeHtml(t("YOUR COLLECTION STARTS HERE"))}</p><h2>${escapeHtml(t("Every game."))}<br/>${escapeHtml(t("One place."))}</h2><p class="tv-spotlight-description">${escapeHtml(t("Bring your games together on the desktop, then take the library to your controller."))}</p><div class="tv-spotlight-foot"><span class="tv-spotlight-label">${escapeHtml(t("READY WHEN YOU ARE"))}</span></div></div><div class="tv-spotlight-visual" aria-hidden="true"><span class="tv-orbit-ring tv-orbit-ring-one"></span><span class="tv-orbit-ring tv-orbit-ring-two"></span><img class="tv-spotlight-mark tv-logo-dark" src="../../assets/branding/orbit-mark-dark.png" alt=""/><img class="tv-spotlight-mark tv-logo-light" src="../../assets/branding/orbit-mark-light.png" alt=""/></div></section>`;
-			const banner = art(game.banner) || art(game.cover);
+			const bannerArt = art(game.banner);
+			const coverArt = art(game.cover);
+			const banner = bannerArt || coverArt;
+			const usePoster = !bannerArt && !!coverArt;
 			const running = this.snapshot.runningIds?.includes(game.id);
 			const lastPlayed =
 				Number.isFinite(Date.parse(game.last_played_at)) &&
@@ -875,7 +924,7 @@
 			const metaHtml = metaParts
 				.map((part) => escapeHtml(part))
 				.join(' <span aria-hidden="true">·</span> ');
-			return `<section class="tv-spotlight" aria-label="${escapeHtml(t("Featured game"))}"><div class="tv-spotlight-ambient" aria-hidden="true">${banner ? `<img src="${banner}" alt="" loading="lazy"/>` : ""}</div><div class="tv-spotlight-copy"><p class="tv-spotlight-kicker"><span class="tv-signal"></span> ${escapeHtml(t(tag))}</p><h2>${escapeHtml(game.name)}</h2><p class="tv-spotlight-description">${metaHtml}</p><div class="tv-spotlight-foot"><span class="tv-spotlight-label">${escapeHtml(t(running ? "SESSION ACTIVE" : lastPlayed ? "CONTINUE YOUR JOURNEY" : "DISCOVER SOMETHING NEW"))}</span><span class="tv-spotlight-prompt"><b>A</b><b>↵</b> ${escapeHtml(t("Open selected game"))}</span></div></div><div class="tv-spotlight-visual" aria-hidden="true"><div class="tv-spotlight-image">${this.artwork(game)}</div></div></section>`;
+			return `<section class="tv-spotlight" aria-label="${escapeHtml(t("Featured game"))}"><div class="tv-spotlight-ambient" aria-hidden="true">${banner ? `<img src="${banner}" alt="" loading="lazy"/>` : ""}</div><div class="tv-spotlight-copy"><p class="tv-spotlight-kicker"><span class="tv-signal"></span> ${escapeHtml(t(tag))}</p><h2>${escapeHtml(game.name)}</h2><p class="tv-spotlight-description">${metaHtml}</p><div class="tv-spotlight-foot"><span class="tv-spotlight-label">${escapeHtml(t(running ? "SESSION ACTIVE" : lastPlayed ? "CONTINUE YOUR JOURNEY" : "DISCOVER SOMETHING NEW"))}</span><span class="tv-spotlight-prompt"><b>A</b><b>↵</b> ${escapeHtml(t("Open selected game"))}</span></div></div><div class="tv-spotlight-visual" aria-hidden="true"><div class="tv-spotlight-image${usePoster ? " is-portrait" : ""}">${this.artwork(game, usePoster ? "poster" : "landscape")}</div></div></section>`;
 		}
 		refreshSpotlight(game) {
 			if (!game || this.spotlightGameId === game.id) return;
@@ -893,7 +942,11 @@
 				: pStatus
 					? `<span class="tv-card-badge tv-card-badge-${escapeHtml(game.play_status)}">${escapeHtml(pStatus)}</span>`
 					: "";
-			return `<button class="tv-card tv-focus" data-tv-action="open" data-tv-game="${escapeHtml(game.id)}" data-tv-key="${zone}:${escapeHtml(game.id)}" aria-label="${escapeHtml(t("Open {name}", { name: game.name }))}" tabindex="-1">${this.artwork(game)}${badge}<span class="tv-card-copy"><strong>${escapeHtml(game.name)}</strong><span>${running ? `● ${escapeHtml(t("Playing now"))}` : escapeHtml(sourceName(game.source))}<i>${game.favorite ? "♥" : running ? escapeHtml(t("In session")) : escapeHtml(played(game.total_play_seconds || 0))}</i></span></span></button>`;
+			const favBadge = game.favorite
+				? `<span class="tv-card-fav" aria-hidden="true">${HEART_SVG}</span>`
+				: "";
+			const variant = zone === "library" ? "poster" : "landscape";
+			return `<button class="tv-card tv-focus" data-tv-action="open" data-tv-game="${escapeHtml(game.id)}" data-tv-key="${zone}:${escapeHtml(game.id)}" aria-label="${escapeHtml(t("Open {name}", { name: game.name }))}" tabindex="-1">${this.artwork(game, variant)}${badge}${favBadge}<span class="tv-card-copy"><strong>${escapeHtml(game.name)}</strong><span><span class="tv-card-source">${running ? `● ${escapeHtml(t("Playing now"))}` : escapeHtml(sourceName(game.source))}</span><i>${running ? escapeHtml(t("In session")) : escapeHtml(played(game.total_play_seconds || 0))}</i></span></span></button>`;
 		}
 		renderBanner() {
 			const slot = this.root?.querySelector(".tv-banner-slot");
@@ -1047,6 +1100,7 @@
 				recent.innerHTML = recentMarkup;
 				this.recentMarkup = recentMarkup;
 				this.spotlightGameId = spotlightGame?.id || "";
+				this.syncLoadedArtwork(recent);
 			}
 			this.renderActiveFilters();
 			const list = this.filteredGames(),
@@ -1083,8 +1137,10 @@
 				? `<div class="tv-library">${records.map((game) => this.card(game, "library")).join("")}</div>`
 				: this.emptyStateMarkup();
 			if (libraryMarkup !== this.libraryMarkup) {
-				this.root.querySelector(".tv-library-slot").innerHTML = libraryMarkup;
+				const librarySlot = this.root.querySelector(".tv-library-slot");
+				librarySlot.innerHTML = libraryMarkup;
 				this.libraryMarkup = libraryMarkup;
+				this.syncLoadedArtwork(librarySlot);
 			}
 			this.root.querySelector(".tv-page-label").textContent = list.length
 				? t("{first}–{last} of {total} · Page {page} of {pages}", {
@@ -1239,7 +1295,9 @@
 						)
 						.join("")}</div>`
 				: "";
-			slot.innerHTML = `<div class="tv-sheet-scrim"><section class="tv-sheet" role="dialog" aria-modal="true" aria-labelledby="tv-game-title"><div class="tv-sheet-backdrop" aria-hidden="true">${background ? `<img src="${background}" alt="" loading="lazy"/>` : ""}</div><div class="tv-sheet-layout"><div class="tv-sheet-art">${this.artwork(game, true)}</div><div class="tv-sheet-copy"><p class="tv-eyebrow">${escapeHtml(t("GAME PROFILE"))} <span aria-hidden="true">/</span> ${escapeHtml(sourceName(game.source, "Your library"))}</p><h2 id="tv-game-title">${escapeHtml(game.name)}</h2><p class="tv-sheet-meta">${metaLine}</p>${collectionBadges}<div class="tv-sheet-actions"><button class="tv-focus tv-play" data-tv-action="launch" data-tv-key="detail:play" data-tv-game="${escapeHtml(game.id)}" aria-busy="${!!pending}" aria-disabled="${!!unavailable}">${escapeHtml(t(pending ? "Starting…" : running ? "Playing now" : "▶ Play game"))}</button><button class="tv-focus" data-tv-action="favorite" data-tv-key="detail:favorite" data-tv-game="${escapeHtml(game.id)}">${escapeHtml(t(game.favorite ? "♥ Remove favorite" : "♡ Add favorite"))}</button><button class="tv-focus" data-tv-action="back" data-tv-key="detail:back">${escapeHtml(t("Back to library"))}</button></div><div class="tv-sheet-secondary"><button class="tv-focus tv-sheet-pill" data-tv-action="openGameSheet" data-tv-key="detail:options" data-tv-game="${escapeHtml(game.id)}">${escapeHtml(t("Game options"))}</button>${profileButton}</div><p class="tv-sheet-hint"><span>B / ○</span> ${escapeHtml(t("Return to the collection"))}</p></div></div></section></div>`;
+			const sheetLandscape = !art(game.cover) && !!art(game.banner);
+			slot.innerHTML = `<div class="tv-sheet-scrim"><section class="tv-sheet" role="dialog" aria-modal="true" aria-labelledby="tv-game-title"><div class="tv-sheet-backdrop" aria-hidden="true">${background ? `<img src="${background}" alt="" loading="lazy"/>` : ""}</div><div class="tv-sheet-layout"><div class="tv-sheet-art${sheetLandscape ? " is-landscape" : ""}">${this.artwork(game, sheetLandscape ? "landscape" : "poster")}</div><div class="tv-sheet-copy"><p class="tv-eyebrow">${escapeHtml(t("GAME PROFILE"))} <span aria-hidden="true">/</span> ${escapeHtml(sourceName(game.source, "Your library"))}</p><h2 id="tv-game-title">${escapeHtml(game.name)}</h2><p class="tv-sheet-meta">${metaLine}</p>${collectionBadges}<div class="tv-sheet-actions"><button class="tv-focus tv-play" data-tv-action="launch" data-tv-key="detail:play" data-tv-game="${escapeHtml(game.id)}" aria-busy="${!!pending}" aria-disabled="${!!unavailable}">${escapeHtml(t(pending ? "Starting…" : running ? "Playing now" : "▶ Play game"))}</button><button class="tv-focus tv-favorite-btn${game.favorite ? " is-favorite" : ""}" data-tv-action="favorite" data-tv-key="detail:favorite" data-tv-game="${escapeHtml(game.id)}" aria-pressed="${String(!!game.favorite)}">${HEART_SVG}<span>${escapeHtml(t(game.favorite ? "Favorited" : "Add to favorites"))}</span></button><button class="tv-focus" data-tv-action="back" data-tv-key="detail:back">${escapeHtml(t("Back to library"))}</button></div><div class="tv-sheet-secondary"><button class="tv-focus tv-sheet-pill" data-tv-action="openGameSheet" data-tv-key="detail:options" data-tv-game="${escapeHtml(game.id)}">${escapeHtml(t("Game options"))}</button>${profileButton}</div><p class="tv-sheet-hint"><span>B / ○</span> ${escapeHtml(t("Return to the collection"))}</p></div></div></section></div>`;
+			this.syncLoadedArtwork(slot);
 		}
 		renderOverlay({ preserveInput = false } = {}) {
 			const dialog = this.overlayDialog;

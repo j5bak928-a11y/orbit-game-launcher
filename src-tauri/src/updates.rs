@@ -4,11 +4,14 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_updater::{Error as UpdaterError, Update, UpdaterExt};
 
-const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
-const STARTUP_CHECK_DELAY: Duration = Duration::from_secs(4);
-const REOPEN_CHECK_DELAY: Duration = Duration::from_millis(750);
-const REOPEN_CHECK_COOLDOWN: Duration = Duration::from_secs(30);
-const PROGRESS_EMIT_STEP_BYTES: u64 = 512 * 1024;
+const CHECK_TIMEOUT: Duration = Duration::from_secs(15);
+const STARTUP_CHECK_DELAY: Duration = Duration::from_millis(250);
+const REOPEN_CHECK_DELAY: Duration = Duration::from_millis(100);
+const REOPEN_CHECK_COOLDOWN: Duration = Duration::from_secs(15);
+const FOCUS_CHECK_DELAY: Duration = Duration::from_millis(100);
+const FOCUS_CHECK_COOLDOWN: Duration = Duration::from_secs(30);
+const PERIODIC_CHECK_INTERVAL: Duration = Duration::from_secs(15 * 60);
+const PROGRESS_EMIT_STEP_BYTES: u64 = 128 * 1024;
 
 pub(crate) const MSG_IDLE: &str = "Ready to check for updates.";
 pub(crate) const MSG_CHECKING: &str = "Checking for updates…";
@@ -176,7 +179,7 @@ impl Default for UpdateManager {
     }
 }
 
-fn should_auto_check_on_reopen(
+fn should_auto_check(
     in_flight: bool,
     state: &str,
     last_attempt: Option<Instant>,
@@ -199,6 +202,73 @@ fn should_auto_check_on_reopen(
     true
 }
 
+fn can_schedule_auto_check(app: &AppHandle, cooldown: Duration) -> bool {
+    if !crate::auto_updates_enabled(app) || crate::has_busy_game(app) {
+        return false;
+    }
+    let Some(manager) = app.try_state::<UpdateManager>() else {
+        return false;
+    };
+    let Ok(inner) = manager.inner.lock() else {
+        return false;
+    };
+    should_auto_check(
+        inner.in_flight,
+        inner.status.state,
+        inner.last_check_started_at,
+        Instant::now(),
+        cooldown,
+    )
+}
+
+fn try_begin_auto_check(app: &AppHandle, cooldown: Duration) -> Option<Value> {
+    if !crate::auto_updates_enabled(app) || crate::has_busy_game(app) {
+        return None;
+    }
+    let manager = app.try_state::<UpdateManager>()?;
+    let Ok(mut inner) = manager.inner.lock() else {
+        return None;
+    };
+    let now = Instant::now();
+    if !should_auto_check(
+        inner.in_flight,
+        inner.status.state,
+        inner.last_check_started_at,
+        now,
+        cooldown,
+    ) {
+        return None;
+    }
+    inner.in_flight = true;
+    inner.last_check_started_at = Some(now);
+    inner.status = UpdateStatusSnapshot::checking();
+    Some(inner.status.to_json())
+}
+
+fn schedule_auto_check(app: &AppHandle, delay: Duration, cooldown: Duration) {
+    if delay.is_zero() {
+        let Some(snapshot) = try_begin_auto_check(app, cooldown) else {
+            return;
+        };
+        emit_status(app, &snapshot);
+        let handle = app.clone();
+        std::thread::spawn(move || run_check_and_download(&handle));
+        return;
+    }
+    if !can_schedule_auto_check(app, cooldown) {
+        return;
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(delay);
+        let Some(snapshot) = try_begin_auto_check(&handle, cooldown) else {
+            return;
+        };
+        emit_status(&handle, &snapshot);
+        run_check_and_download(&handle);
+    });
+}
+
 /// Returns the latest serialized updater state for UI initialization.
 pub fn current_status(app: &AppHandle) -> Value {
     let Some(manager) = app.try_state::<UpdateManager>() else {
@@ -210,52 +280,27 @@ pub fn current_status(app: &AppHandle) -> Value {
     inner.status.to_json()
 }
 
-/// Runs a single delayed startup update check when `autoUpdates` is enabled.
+/// Runs a brief delayed startup update check when `autoUpdates` is enabled.
 pub fn maybe_start_background_check(app: &AppHandle) {
-    let handle = app.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(STARTUP_CHECK_DELAY);
-        if crate::auto_updates_enabled(&handle) {
-            let _ = start_check(&handle);
-        }
-    });
+    schedule_auto_check(app, STARTUP_CHECK_DELAY, REOPEN_CHECK_COOLDOWN);
 }
 
 /// Runs a background update check when the GUI is reopened from the tray,
 /// restored from minimized state, or reactivated via single-instance launch.
 /// Respects `autoUpdates`, active games, already-ready updates, and cooldown.
 pub fn maybe_check_on_reopen(app: &AppHandle) {
-    let handle = app.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(REOPEN_CHECK_DELAY);
-        if !crate::auto_updates_enabled(&handle) || crate::has_busy_game(&handle) {
-            return;
-        }
-        let Some(manager) = handle.try_state::<UpdateManager>() else {
-            return;
-        };
-        let snapshot = {
-            let Ok(mut inner) = manager.inner.lock() else {
-                return;
-            };
-            let now = Instant::now();
-            if !should_auto_check_on_reopen(
-                inner.in_flight,
-                inner.status.state,
-                inner.last_check_started_at,
-                now,
-                REOPEN_CHECK_COOLDOWN,
-            ) {
-                return;
-            }
-            inner.in_flight = true;
-            inner.last_check_started_at = Some(now);
-            inner.status = UpdateStatusSnapshot::checking();
-            inner.status.to_json()
-        };
-        emit_status(&handle, &snapshot);
-        run_check_and_download(&handle);
-    });
+    schedule_auto_check(app, REOPEN_CHECK_DELAY, REOPEN_CHECK_COOLDOWN);
+}
+
+/// Runs a background update check when the visible GUI regains focus after
+/// the focus cooldown elapses.
+pub fn maybe_check_on_focus(app: &AppHandle) {
+    schedule_auto_check(app, FOCUS_CHECK_DELAY, FOCUS_CHECK_COOLDOWN);
+}
+
+/// Runs a periodic background update check while the GUI stays open.
+pub fn maybe_check_periodic(app: &AppHandle) {
+    schedule_auto_check(app, Duration::ZERO, PERIODIC_CHECK_INTERVAL);
 }
 
 /// Starts a background check-and-download cycle if one is not already active.
@@ -411,10 +456,11 @@ fn run_check_and_download(app: &AppHandle) {
             downloaded_bytes = downloaded_bytes.saturating_add(chunk_len as u64);
             let percent = compute_progress_percent(downloaded_bytes, total);
             let should_emit = match (percent, last_percent) {
-                (Some(p), Some(prev)) => p >= prev.saturating_add(2),
+                (Some(p), Some(prev)) => p >= prev.saturating_add(1),
                 (Some(_), None) => true,
                 (None, _) => {
-                    downloaded_bytes.saturating_sub(last_bytes) >= PROGRESS_EMIT_STEP_BYTES
+                    last_bytes == 0
+                        || downloaded_bytes.saturating_sub(last_bytes) >= PROGRESS_EMIT_STEP_BYTES
                 }
             };
             if should_emit {
@@ -486,6 +532,10 @@ fn check_for_update(app: &AppHandle) -> Result<Option<Update>, &'static str> {
     let updater = app
         .updater_builder()
         .timeout(CHECK_TIMEOUT)
+        .header("Cache-Control", "no-cache")
+        .map_err(|_| MSG_CHECK_FAILED)?
+        .header("Pragma", "no-cache")
+        .map_err(|_| MSG_CHECK_FAILED)?
         .build()
         .map_err(|_| MSG_CHECK_FAILED)?;
     tauri::async_runtime::block_on(updater.check()).map_err(|err| classify_check_error(&err))
@@ -630,38 +680,75 @@ mod tests {
     }
 
     #[test]
-    fn reopen_auto_check_respects_state_in_flight_and_cooldown() {
+    fn auto_check_respects_state_in_flight_and_cooldowns() {
         let now = Instant::now();
-        let cooldown = Duration::from_secs(30);
-        // Idle, up-to-date, and error states allow reopen checks once cooldown elapses.
-        assert!(should_auto_check_on_reopen(
-            false, "idle", None, now, cooldown
+        // Idle, up-to-date, and error states allow reopen checks once the 15s cooldown elapses.
+        assert!(should_auto_check(
+            false,
+            "idle",
+            None,
+            now,
+            REOPEN_CHECK_COOLDOWN
         ));
-        assert!(should_auto_check_on_reopen(
+        assert!(should_auto_check(
             false,
             "up-to-date",
-            now.checked_sub(Duration::from_secs(45)),
+            now.checked_sub(Duration::from_secs(20)),
             now,
-            cooldown
+            REOPEN_CHECK_COOLDOWN
         ));
-        assert!(should_auto_check_on_reopen(
+        assert!(should_auto_check(
             false,
             "error",
-            now.checked_sub(Duration::from_secs(30)),
+            now.checked_sub(REOPEN_CHECK_COOLDOWN),
             now,
-            cooldown
+            REOPEN_CHECK_COOLDOWN
         ));
-        // Within cooldown window, skip automatic reopen checks.
-        assert!(!should_auto_check_on_reopen(
+        // Within reopen cooldown window, skip automatic reopen checks.
+        assert!(!should_auto_check(
             false,
             "up-to-date",
             now.checked_sub(Duration::from_secs(10)),
             now,
-            cooldown
+            REOPEN_CHECK_COOLDOWN
+        ));
+        // Focus checks use the 30s cooldown so rapid Alt+Tab switching doesn't hammer the feed.
+        assert!(!should_auto_check(
+            false,
+            "up-to-date",
+            now.checked_sub(Duration::from_secs(20)),
+            now,
+            FOCUS_CHECK_COOLDOWN
+        ));
+        assert!(should_auto_check(
+            false,
+            "up-to-date",
+            now.checked_sub(FOCUS_CHECK_COOLDOWN),
+            now,
+            FOCUS_CHECK_COOLDOWN
+        ));
+        // Periodic checks wait for the full 15-minute interval.
+        assert!(!should_auto_check(
+            false,
+            "up-to-date",
+            now.checked_sub(Duration::from_secs(10 * 60)),
+            now,
+            PERIODIC_CHECK_INTERVAL
+        ));
+        assert!(should_auto_check(
+            false,
+            "up-to-date",
+            now.checked_sub(PERIODIC_CHECK_INTERVAL),
+            now,
+            PERIODIC_CHECK_INTERVAL
         ));
         // Never interrupt active checks/downloads/installs or overwrite a ready update.
-        assert!(!should_auto_check_on_reopen(
-            true, "idle", None, now, cooldown
+        assert!(!should_auto_check(
+            true,
+            "idle",
+            None,
+            now,
+            REOPEN_CHECK_COOLDOWN
         ));
         for blocked in [
             "ready",
@@ -671,8 +758,8 @@ mod tests {
             "unsupported",
         ] {
             assert!(
-                !should_auto_check_on_reopen(false, blocked, None, now, cooldown),
-                "expected state {blocked} to skip reopen check"
+                !should_auto_check(false, blocked, None, now, REOPEN_CHECK_COOLDOWN),
+                "expected state {blocked} to skip automatic check"
             );
         }
     }

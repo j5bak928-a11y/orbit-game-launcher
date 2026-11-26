@@ -44,10 +44,11 @@ const padButton=async(page,button,held=90,slot=0)=>{
    const svg=(width,height,color)=>'data:image/svg+xml;charset=utf-8,'+encodeURIComponent(
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="${width}" height="${height}" fill="${color}"/><rect width="12" height="${height}" fill="white"/><rect x="${width-12}" width="12" height="${height}" fill="white"/></svg>`
    );
-   const images=new Map([[token(991),svg(1200,240,'#215b99')],[token(992),svg(280,280,'#9b4278')],[token(993),svg(700,250,'#529a4f')],[token(994),'data:image/png;base64,not-a-valid-image']]);
+   const images=new Map([[token(991),svg(1200,240,'#215b99')],[token(992),svg(280,280,'#9b4278')],[token(993),svg(700,250,'#529a4f')],[token(994),'data:image/png;base64,not-a-valid-image'],[token(995),svg(600,900,'#53429b')]]);
    window.OrbitArtworkUrl=key=>images.get(key)||'';
    window.fixture.patch(window.fixture.id(9),{banner:token(991)});
    window.fixture.patch(window.fixture.id(3),{banner:token(992),cover:token(993)});
+   window.fixture.patch(window.fixture.id(2),{cover:token(995)});
    window.fixture.patch(window.fixture.id(1),{banner:token(994)});
    window.controllerTest={launches:0,favoriteCalls:0,requests:[],failFullscreen:false,padReads:0,deferEntry:false};
    const set=window.orbit.setFullscreen,launch=window.orbit.launchGame,favorite=window.orbit.favoriteGame;
@@ -78,6 +79,7 @@ const padButton=async(page,button,held=90,slot=0)=>{
   assert.equal(await fullBanner.evaluate(img=>img.naturalWidth/img.naturalHeight),5,'fixture exercises an ultra-wide banner');
   assert.equal(await fullBanner.evaluate(img=>getComputedStyle(img).objectFit),'contain','wide artwork must fit completely without trimming either side');
   assert.equal(await fullBanner.evaluate(img=>img.hidden),false);
+  await page.waitForFunction(()=>document.querySelector('.tv-recent [data-tv-game="00000000-0000-4000-8000-000000000009"] .tv-card-art')?.classList.contains('has-ambient'));
   const spotlightArt=spotlight.locator('.tv-spotlight-image .tv-game-art');
   await spotlightArt.evaluate(img=>img.decode());
   assert.equal(await spotlightArt.evaluate(img=>getComputedStyle(img).objectFit),'contain','the featured artwork also preserves ultra-wide images');
@@ -89,11 +91,21 @@ const padButton=async(page,button,held=90,slot=0)=>{
   await wideCover.evaluate(img=>img.decode());
   assert.equal(await wideCover.evaluate(img=>getComputedStyle(img).objectFit),'contain','detail sheets fit the entire custom cover');
   assert.equal(await wideCover.evaluate(img=>img.hidden),false,'nonstandard wide custom cover remains usable');
+  const detailFav=mode.locator('.tv-sheet [data-tv-key="detail:favorite"]');
+  assert.equal(await detailFav.getAttribute('aria-pressed'),'false','unfavorited detail action reports aria-pressed=false');
+  assert.equal(await detailFav.locator('svg.tv-heart-icon').count(),1,'detail favorite button renders crisp SVG heart icon');
   await page.keyboard.press('Escape');
   const brokenBanner=mode.locator('.tv-library [data-tv-game="00000000-0000-4000-8000-000000000001"] .tv-game-art');
   await brokenBanner.waitFor({state:'attached'});
   await page.waitForFunction(()=>document.querySelector('.tv-library [data-tv-game="00000000-0000-4000-8000-000000000001"] .tv-game-art')?.hidden);
   assert.equal(await brokenBanner.evaluate(img=>getComputedStyle(img.parentElement.querySelector('.tv-card-fallback')).display),'grid','broken art still uses icon fallback');
+  assert.equal(await mode.locator('.tv-library [data-tv-game="00000000-0000-4000-8000-000000000001"] .tv-card-fav svg').count(),1,'favorited controller card shows a dedicated SVG heart badge');
+  const portraitCover=mode.locator('.tv-library [data-tv-game="00000000-0000-4000-8000-000000000002"] .tv-game-art');
+  await portraitCover.evaluate(img=>img.decode());
+  await page.waitForFunction(()=>document.querySelector('.tv-library [data-tv-game="00000000-0000-4000-8000-000000000002"] .tv-game-art')?.classList.contains('is-fit-cover'));
+  assert.equal(await portraitCover.evaluate(img=>getComputedStyle(img).objectFit),'cover','standard 2:3 portrait cover fills the controller poster tile cleanly');
+  const posterBox=await portraitCover.evaluate(img=>img.parentElement.getBoundingClientRect());
+  assert(Math.abs(posterBox.height/posterBox.width-1.5)<0.05,'controller library cards use portrait 2:3 poster proportions');
   await page.evaluate(()=>window.orbit.saveSettings({theme:'light'}));
   assert(await mode.locator('.tv-fallback-light:visible').count()>0,'light mode needs a visible light-surface fallback mark');
   assert.equal(await mode.locator('.tv-fallback-dark:visible').count(),0);
@@ -296,7 +308,7 @@ const padButton=async(page,button,held=90,slot=0)=>{
   // Passive library updates must not snap the scroll position back to a
   // focused card when the user is browsing elsewhere using a wheel/touch.
   await page.setViewportSize({width:910,height:610});
-  await page.waitForFunction(()=>document.querySelector('.controller-shell')?.style.getPropertyValue('--tv-columns')==='2');
+  await page.waitForFunction(()=>document.querySelector('.controller-shell')?.style.getPropertyValue('--tv-columns')==='3');
   await page.evaluate(()=>{window.controllerTest.originalFocusedCard=document.activeElement});
   const passivePosition=await page.evaluate(()=>{
    const main=document.querySelector('.tv-main');
@@ -311,7 +323,7 @@ const padButton=async(page,button,held=90,slot=0)=>{
   assert.equal(await focused(),'library:00000000-0000-4000-8000-000000000012','data updates preserve the selected controller game');
   assert(await page.evaluate(()=>window.controllerTest.originalFocusedCard===document.activeElement),'passive updates must preserve the actual focused card node to avoid artwork reloads');
   await page.setViewportSize({width:910,height:900});
-  await page.waitForFunction(()=>document.querySelector('.controller-shell')?.style.getPropertyValue('--tv-columns')==='2');
+  await page.waitForFunction(()=>document.querySelector('.controller-shell')?.style.getPropertyValue('--tv-columns')==='3');
   assert.equal(await focused(),'library:00000000-0000-4000-8000-000000000012','resize must retain the selected game even when its page changes');
   for(const width of [1920,1440,910,500,390]){
    await page.setViewportSize({width,height:width===1920?1080:900});await pause(page);

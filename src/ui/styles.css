@@ -333,8 +333,11 @@ body[data-theme=light] .game-card .cover{box-shadow:0 4px 14px #171a2018}
 .showcase-play:hover:not(:disabled)>svg:last-child{transform:translateX(3px)}
 .showcase-play:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 13px 29px rgba(0,0,0,.4),inset 0 1px 0 #ffffff6b}
 .showcase-play:active:not(:disabled){transform:translateY(1px) scale(.99)}
-.showcase-actions .showcase-favorite.secondary-btn{min-height:51px;padding:11px 13px;border-radius:11px;font-size:12px}
-.showcase-favorite.is-favorite{color:var(--accent-text,var(--accent));border-color:rgba(var(--accent-rgb),.45)}
+.showcase-actions .showcase-favorite.secondary-btn{min-height:51px;padding:11px 16px;border-radius:11px;font-size:12px;gap:9px;transition:background-color .16s ease,border-color .16s ease,color .16s ease,box-shadow .16s ease,transform .16s ease}
+.showcase-actions .showcase-favorite.secondary-btn:hover:not(:disabled){border-color:rgba(var(--accent-rgb),.58);background:rgba(var(--accent-rgb),.1);transform:translateY(-1px)}
+.showcase-actions .showcase-favorite.secondary-btn:active:not(:disabled){transform:translateY(1px) scale(.98)}
+.showcase-actions .showcase-favorite.is-favorite{color:var(--accent-text,var(--accent));border-color:rgba(var(--accent-rgb),.62);background:linear-gradient(135deg,rgba(var(--accent-rgb),.2),rgba(var(--accent-rgb),.09));box-shadow:0 6px 18px rgba(var(--accent-rgb),.14),inset 0 1px 0 rgba(255,255,255,.08)}
+.showcase-actions .showcase-favorite.is-favorite:hover:not(:disabled){border-color:var(--accent);background:linear-gradient(135deg,rgba(var(--accent-rgb),.26),rgba(var(--accent-rgb),.13))}
 .showcase-favorite.is-favorite svg{fill:var(--accent)}
 .showcase-note{margin:11px 0 0;font-size:12px;line-height:1.6;color:var(--muted)}
 .showcase-foot{display:flex;align-items:center;gap:10px;border-top:1px solid var(--border);margin-top:13px;padding-top:12px;min-width:0}
@@ -646,21 +649,25 @@ body[data-game-active=true] .home-page .continue-card:hover{transform:none}
 .game-card.poster-card .favorite-float,.game-card.poster-card .card-menu-float{
   position:absolute;top:11px;margin:0;z-index:5;
   width:38px;height:38px;padding:0;display:grid;place-items:center;
-  border-radius:10px;border:1px solid rgba(255,255,255,.15);
-  color:#fff;background:rgba(34,36,43,.83);
-  box-shadow:0 5px 12px #0004;
+  border-radius:999px;border:1px solid rgba(255,255,255,.18);
+  color:#fff;background:rgba(16,17,24,.74);
+  backdrop-filter:blur(8px);
+  box-shadow:0 6px 16px rgba(0,0,0,.34),inset 0 1px 0 rgba(255,255,255,.12);
   opacity:0;transform:translateY(-3px);
-  transition:opacity .15s ease,background-color .15s ease,transform .15s ease;
+  transition:opacity .16s ease,background-color .18s ease,border-color .18s ease,box-shadow .18s ease,transform .18s cubic-bezier(.22,.8,.36,1);
 }
-.game-card.poster-card .favorite-float{left:11px;right:auto;border-color:rgba(var(--accent-rgb),.55)}
+.game-card.poster-card .favorite-float{left:11px;right:auto}
 .game-card.poster-card .card-menu-float{right:11px;left:auto}
 .game-card.poster-card .favorite-float.active{
   opacity:1;transform:none;
-  color:var(--accent);border-color:var(--accent);
+  color:var(--accent);
+  border-color:rgba(var(--accent-rgb),.75);
+  background:color-mix(in srgb,var(--accent) 20%,rgba(16,17,24,.86));
+  box-shadow:0 6px 18px rgba(0,0,0,.38),0 0 0 1px rgba(var(--accent-rgb),.2),inset 0 1px 0 rgba(255,255,255,.16);
 }
 .game-card.poster-card .favorite-float:hover,.game-card.poster-card .card-menu-float:hover,
 .game-card.poster-card .favorite-float:focus-visible,.game-card.poster-card .card-menu-float:focus-visible{
-  background:rgba(58,62,72,.96);color:#fff;
+  background:rgba(28,30,42,.92);border-color:rgba(255,255,255,.32);color:#fff;
 }
 /* Favorite hearts are always clearly outlined in the chosen accent.
    Selected hearts become solid accent-purple; neither their hover nor their
@@ -672,11 +679,23 @@ body[data-game-active=true] .home-page .continue-card:hover{transform:none}
   stroke-width:2.2;
   stroke-linejoin:round;
   stroke-linecap:round;
+  transition:transform .22s cubic-bezier(.34,1.56,.64,1),fill .18s ease;
+}
+#app button[data-action="favorite"]:hover svg,
+#modal-root button[data-action="favorite"]:hover svg{
+  transform:scale(1.1);
 }
 #app button[data-action="favorite"][aria-pressed="true"] svg,
 #modal-root button[data-action="favorite"][aria-pressed="true"] svg{
   fill:var(--accent);
   stroke:var(--accent);
+  animation:var(--orbit-heart-anim,orbit-heart-pop .28s cubic-bezier(.34,1.56,.64,1));
+}
+@keyframes orbit-heart-pop{
+  0%{transform:scale(1)}
+  42%{transform:scale(1.24)}
+  76%{transform:scale(.94)}
+  100%{transform:scale(1)}
 }
 .game-card.poster-card .cover-play{
   position:absolute;z-index:5;left:12px;right:12px;bottom:12px;
@@ -695,6 +714,14 @@ body[data-game-active=true] .home-page .continue-card:hover{transform:none}
 .game-card.poster-card:is(:hover,:focus-within,:focus-visible) .cover-play,
 .game-card.poster-card .card-menu-float[aria-expanded=true],
 .game-card.poster-card .cover-play[aria-busy=true]{opacity:1;transform:none}
+.game-card.poster-card:is(:hover,:focus-within,:focus-visible) .favorite-float:hover,
+.game-card.poster-card:is(:hover,:focus-within,:focus-visible) .favorite-float:focus-visible{
+  background:color-mix(in srgb,var(--accent) 26%,rgba(20,21,31,.92));
+  border-color:var(--accent);
+  transform:scale(1.07);
+  box-shadow:0 8px 20px rgba(0,0,0,.44),0 0 0 1px rgba(var(--accent-rgb),.26),inset 0 1px 0 rgba(255,255,255,.18);
+}
+.game-card.poster-card:is(:hover,:focus-within,:focus-visible) .favorite-float:active{transform:scale(.92)}
 /* Poster artwork is not always recognizable: show the game name and playtime
    alongside the actions on hover, keyboard focus and touch devices. */
 .game-card.poster-card:is(:hover,:focus-within,:focus-visible) .game-label{opacity:1}
@@ -712,7 +739,7 @@ body[data-game-active=true] .home-page .continue-card:hover{transform:none}
   .game-card.poster-card .game-label{display:flex;opacity:1}
 }
 @media(max-width:500px){
-  .game-card.poster-card .favorite-float,.game-card.poster-card .card-menu-float{width:36px;height:36px;top:7px;margin:0;border-radius:8px}
+  .game-card.poster-card .favorite-float,.game-card.poster-card .card-menu-float{width:36px;height:36px;top:7px;margin:0;border-radius:999px}
   .game-card.poster-card .favorite-float{left:7px;right:auto}
   .game-card.poster-card .card-menu-float{right:7px;left:auto}
   .game-card.poster-card .cover-play{left:7px;right:7px;bottom:7px;width:calc(100% - 14px);height:38px;gap:5px;font-size:12px;border-radius:8px}
@@ -1073,3 +1100,26 @@ body[data-theme=light] .status-pill.status-on_hold{background:rgba(180,83,9,.1);
   .bulk-check{top:7px;left:7px;width:32px;height:32px;border-radius:8px}
   .in-select-mode .game-card.poster-card .favorite-float{left:44px}
 }
+.game-row .row-right .ghost-btn[data-action="favorite"]{
+  width:36px;height:36px;padding:0;display:grid;place-items:center;
+  border-radius:9px;
+  transition:background-color .16s ease,border-color .16s ease,box-shadow .16s ease,transform .16s ease;
+}
+.game-row .row-right .ghost-btn[data-action="favorite"]:hover,
+.game-row .row-right .ghost-btn[data-action="favorite"]:focus-visible{
+  background:rgba(var(--accent-rgb),.12);
+  border-color:rgba(var(--accent-rgb),.46);
+}
+.game-row .row-right .ghost-btn[data-action="favorite"]:active{transform:scale(.93)}
+.game-row .row-right .ghost-btn[data-action="favorite"][aria-pressed="true"]{
+  background:rgba(var(--accent-rgb),.16);
+  border-color:rgba(var(--accent-rgb),.54);
+  box-shadow:0 0 0 1px rgba(var(--accent-rgb),.12);
+}
+@media(max-width:500px){
+  .game-row .row-right .ghost-btn[data-action="favorite"]{display:none}
+}
+@media(prefers-reduced-motion:reduce){
+  :root{--orbit-heart-anim:none}
+}
+body:is([data-reduce-motion=true],[data-game-active=true]){--orbit-heart-anim:none}

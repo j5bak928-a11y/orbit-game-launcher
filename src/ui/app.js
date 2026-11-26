@@ -779,7 +779,7 @@ function openGameActions(trigger,point=null){
  menu.querySelector('[role=menuitem],[role=menuitemradio]')?.focus({preventScroll:true});
 }
 function openModal(type,meta={}){pauseDesktopPadEntry();closeGameActions();if(!state.modal){modalReturnFocus=document.activeElement;modalReturnFocusAction=modalReturnFocus?.dataset.action?{action:modalReturnFocus.dataset.action,id:modalReturnFocus.dataset.id,kind:['card-open-trigger','row-open-trigger','continue-open-trigger','game-menu','hero-detail'].find(name=>modalReturnFocus.classList.contains(name))}:null;}state.modal={type,...meta};renderModal()}
-const WHATS_NEW_VERSION='0.5.0';
+const WHATS_NEW_VERSION='0.5.1';
 const WHATS_NEW_KEY='orbit.whatsNew.lastAcknowledgedVersion';
 let whatsNewPending=false;
 function markWhatsNewSeen(){
@@ -801,9 +801,11 @@ function whatsNewDialog(){
  const points=(items)=>items.map(item=>`<li>${tr(item)}</li>`).join('');
  return `<div class="dialog-scrim" data-action="scrim"><section class="dialog wide whats-new-dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="whats-new-intro">
  <div class="whats-new-header"><span class="whats-new-eyebrow">${ic('sparkles',15)} ORBIT · v${WHATS_NEW_VERSION}</span><button class="ghost-btn whats-new-close" data-action="close-modal" aria-label="${tr('Close release notes')}">${ic('close',20)}</button>
- <h2 id="dialog-title">${tr("What's new in Orbit")}</h2><p id="whats-new-intro">${tr('Highlights from 0.2.7 through 0.5.0')}</p></div>
+ <h2 id="dialog-title">${tr("What's new in Orbit")}</h2><p id="whats-new-intro">${tr('Highlights from 0.2.7 through 0.5.1')}</p></div>
  <div class="whats-new-content">
- <section class="whats-new-version"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.5.0 — New')}</span><h3>${tr('Console Experience: Controller Mode 2.0')}</h3></div>
+ <section class="whats-new-version"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.5.1 — New')}</span><h3>${tr('Faster updates, sharper controller artwork and polished favorites')}</h3></div>
+ <ul>${points(['Automatic updates now check much faster on startup, reopen, window focus, and every 15 minutes with cache-bypass headers and smoother progress updates.','Controller Mode now displays library covers in true 2:3 poster proportions with adaptive portrait/landscape framing and soft ambient backdrops for custom artwork.','Upgraded favorite buttons across desktop cards, list rows, game details, and Controller Mode with frosted glass styling, crisp SVG hearts, and a dedicated controller card badge.'])}</ul></section>
+ <section class="whats-new-version whats-new-history"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.5.0 — New')}</span><h3>${tr('Console Experience: Controller Mode 2.0')}</h3></div>
  <ul>${points(['Browse custom collections, play statuses, hidden games, and alternative launch profiles directly inside Controller Mode.','Use the new couch Browse drawer (R3 / F2), Game Options sheet, and gamepad Quick Search keyboard (L3 / F3) without needing a mouse or physical keyboard.','Added zero idle gamepad polling, opt-in startup auto-entry, subtle navigation audio and launch vibration, automatic post-session return, and actionable update notices.'])}</ul></section>
  <section class="whats-new-version whats-new-history"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.4.1 — New')}</span><h3>${tr('Docked update controls and automatic checks on reopen')}</h3></div>
  <ul>${points(['Moved the update button into the sidebar footer above the app version with live downloading, ready-to-install, and icon-rail indicator states.','Orbit now checks for signed updates automatically when reopening from the tray or restoring from minimized, while staying quiet during active games.'])}</ul></section>

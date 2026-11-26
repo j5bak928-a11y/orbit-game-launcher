@@ -38,7 +38,7 @@ const MAX_COLLECTIONS: usize = 100;
 const MAX_LAUNCH_ENV: usize = 40;
 const MAX_LAUNCH_PROFILES: usize = 12;
 const MAX_BULK_IDS: usize = 5_000;
-const SETTING_KEYS: [&str; 14] = [
+const SETTING_KEYS: [&str; 17] = [
     "theme",
     "accent",
     "reduceMotion",
@@ -53,6 +53,9 @@ const SETTING_KEYS: [&str; 14] = [
     "autoUpdates",
     "libraryDensity",
     "language",
+    "controllerAutoEnter",
+    "controllerAudio",
+    "controllerHaptics",
 ];
 const SOURCES: [&str; 9] = [
     "manual",
@@ -699,7 +702,8 @@ fn default_settings() -> Value {
         "autoScan": false, "useSteamArtwork": true, "scanDownloads": false,
         "libraryFolders": [], "discoveryIgnored": [], "view": "grid", "sort": "name",
         "onboardingDone": false, "performanceGuard": true,
-        "autoUpdates": true, "libraryDensity": "comfortable", "language": "system"
+        "autoUpdates": true, "libraryDensity": "comfortable", "language": "system",
+        "controllerAutoEnter": false, "controllerAudio": false, "controllerHaptics": false
     })
 }
 
@@ -1380,6 +1384,9 @@ impl LibraryDatabase {
             "onboardingDone",
             "performanceGuard",
             "autoUpdates",
+            "controllerAutoEnter",
+            "controllerAudio",
+            "controllerHaptics",
         ] {
             next[key] = json!(js_truthy(&next[key]));
         }
@@ -1605,7 +1612,8 @@ fn valid_setting(key: &str, value: &Value) -> bool {
         "libraryFolders" => valid_folders(value),
         "discoveryIgnored" => valid_discovery_ignored(value),
         "reduceMotion" | "autoScan" | "useSteamArtwork" | "scanDownloads" | "onboardingDone"
-        | "performanceGuard" | "autoUpdates" => value.is_boolean(),
+        | "performanceGuard" | "autoUpdates" | "controllerAutoEnter" | "controllerAudio"
+        | "controllerHaptics" => value.is_boolean(),
         _ => false,
     }
 }
@@ -4403,6 +4411,32 @@ mod tests {
                 assert_eq!(restored_cols[0]["name"], "Modded Favorites");
                 assert_eq!(restored_cols[0]["game_ids"], json!([rg["id"]]));
             });
+        });
+    }
+
+    #[test]
+    fn controller_mode_settings_default_false_and_roundtrip() {
+        with_database(|db, _| {
+            let defaults = db.get_settings().unwrap();
+            assert_eq!(defaults["controllerAutoEnter"], json!(false));
+            assert_eq!(defaults["controllerAudio"], json!(false));
+            assert_eq!(defaults["controllerHaptics"], json!(false));
+
+            let updated = db
+                .save_settings(&json!({
+                    "controllerAutoEnter": true,
+                    "controllerAudio": true,
+                    "controllerHaptics": true
+                }))
+                .unwrap();
+            assert_eq!(updated["controllerAutoEnter"], json!(true));
+            assert_eq!(updated["controllerAudio"], json!(true));
+            assert_eq!(updated["controllerHaptics"], json!(true));
+
+            let reloaded = db.get_settings().unwrap();
+            assert_eq!(reloaded["controllerAutoEnter"], json!(true));
+            assert_eq!(reloaded["controllerAudio"], json!(true));
+            assert_eq!(reloaded["controllerHaptics"], json!(true));
         });
     }
 }

@@ -22,6 +22,20 @@ use tauri_plugin_dialog::DialogExt;
 #[derive(Default)]
 struct ControllerReturn(Mutex<Value>);
 
+fn should_reopen_for_controller_return(
+    position: &Value,
+    finished_ids: &[String],
+    has_running: bool,
+) -> bool {
+    if has_running || finished_ids.is_empty() {
+        return false;
+    }
+    let Some(game_id) = position.get("gameId").and_then(Value::as_str) else {
+        return false;
+    };
+    !game_id.is_empty() && finished_ids.iter().any(|id| id == game_id)
+}
+
 struct OrbitState {
     db: Mutex<LibraryDatabase>,
     revision: AtomicU64,
@@ -1953,10 +1967,26 @@ fn poll_sessions(app: &tauri::AppHandle, diagnostics: &mut TrackingDiagnostics) 
                 if !finished.is_empty() {
                     tray::request_menu_refresh(app);
                 }
-                for id in flush_finished_sessions(&state, |error| {
+                let completed = flush_finished_sessions(&state, |error| {
                     diagnostics.report(app, "finish session", error);
-                }) {
-                    notify_game(app, &state, &id, "playtime");
+                });
+                for id in &completed {
+                    notify_game(app, &state, id, "playtime");
+                }
+                #[cfg(target_os = "windows")]
+                if !completed.is_empty()
+                    && app.get_webview_window("main").is_none()
+                    && running_ids(&state).is_empty()
+                {
+                    let should_reopen = app
+                        .try_state::<ControllerReturn>()
+                        .and_then(|saved| saved.0.lock().ok().map(|v| v.clone()))
+                        .is_some_and(|position| {
+                            should_reopen_for_controller_return(&position, &completed, false)
+                        });
+                    if should_reopen {
+                        let _ = tray::open_orbit(app);
+                    }
                 }
             }
         }
@@ -2020,6 +2050,36 @@ pub(crate) fn settle_sessions(app: &tauri::AppHandle) {
     flush_finished_sessions(&state, |error| {
         eprintln!("Orbit: cannot finish playtime on exit: {error}");
     });
+}
+
+#[cfg(test)]
+mod controller_return_tests {
+    use super::*;
+
+    #[test]
+    fn reopens_only_when_matching_controller_game_finishes_with_no_other_running() {
+        let saved = json!({"gameId":"game-42","focusKey":"library:game-42","filter":"status:playing"});
+        assert!(should_reopen_for_controller_return(
+            &saved,
+            &["game-42".to_string()],
+            false
+        ));
+        assert!(!should_reopen_for_controller_return(
+            &saved,
+            &["game-99".to_string()],
+            false
+        ));
+        assert!(!should_reopen_for_controller_return(
+            &saved,
+            &["game-42".to_string()],
+            true
+        ));
+        assert!(!should_reopen_for_controller_return(
+            &Value::Null,
+            &["game-42".to_string()],
+            false
+        ));
+    }
 }
 
 #[cfg(test)]

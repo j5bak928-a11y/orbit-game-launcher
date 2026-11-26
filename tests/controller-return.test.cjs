@@ -84,3 +84,40 @@ test('an external handoff keeps the checkpoint only while confirmation is pendin
   assert.equal(controller.detailId, 'game-5');
   assert.deepEqual(events.at(-1), ['save', null]);
 });
+
+test('Controller Mode 2.0 restores collection, play-status, sort, query and profile launches', async () => {
+  const {controller, snapshot, events, document} = fixture();
+  controller.filter = 'status:playing';
+  controller.sort = 'time';
+  controller.query = 'elden';
+  controller.showHidden = true;
+  controller.options.launch = async (id, profileId) => {
+    events.push(['launch-profile', id, profileId]);
+    return {tracked: true};
+  };
+  await controller.act('open', {dataset:{tvKey:'library:game-5', tvGame:'game-5'}});
+  await controller.act('launchProfile', {dataset:{tvGame:'game-5', tvProfile:'prof-mod'}});
+  const saved = events.find(([event])=>event==='save')[1];
+  assert.equal(saved.filter, 'status:playing');
+  assert.equal(saved.sort, 'time');
+  assert.equal(saved.query, 'elden');
+  assert.equal(saved.showHidden, true);
+  assert.deepEqual(events.find(([event])=>event==='launch-profile'), ['launch-profile', 'game-5', 'prof-mod']);
+
+  document.hidden = true;
+  snapshot.runningIds = ['game-5'];
+  controller.update();
+  snapshot.runningIds = [];
+  document.hidden = false;
+  controller.filter = 'all';
+  controller.sort = 'name';
+  controller.query = '';
+  controller.showHidden = false;
+  controller.update();
+  assert.equal(controller.filter, 'status:playing');
+  assert.equal(controller.sort, 'time');
+  assert.equal(controller.query, 'elden');
+  assert.equal(controller.showHidden, true);
+  await controller.returnWrites;
+  assert.deepEqual(events.at(-1), ['save', null]);
+});

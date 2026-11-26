@@ -154,5 +154,33 @@ const sleep=page=>page.waitForTimeout(290);
   assert.deepEqual(errors,[],'no browser exceptions');
   console.log('PASS icon and F11 entry/exit parity, 0 runtime errors');
   await page.close();
+
+  // Opt-in startup auto-enter when a standard gamepad is already connected.
+  const autoPage=await browser.newPage({viewport:{width:910,height:610},locale:'en-US'});
+  const autoErrors=[];
+  autoPage.on('pageerror',error=>autoErrors.push(error.message));
+  await autoPage.addInitScript(installFixture,{count:4});
+  await autoPage.addInitScript(()=>{
+   const pad={index:0,id:'Startup Xbox pad',connected:true,mapping:'standard',
+    axes:[0,0,0,0],buttons:Array.from({length:17},()=>({pressed:false,value:0}))};
+   window.autoQA={pads:[pad]};
+   Object.defineProperty(navigator,'getGamepads',{configurable:true,value:()=>window.autoQA.pads});
+   const bootstrap=window.orbit.bootstrap;
+   window.orbit.bootstrap=async()=>{
+    const data=await bootstrap();
+    data.settings.controllerAutoEnter=true;
+    return data;
+   };
+  });
+  await autoPage.goto(`http://127.0.0.1:${server.address().port}/src/ui/index.html`);
+  await autoPage.bringToFront();
+  await autoPage.locator('#controller-root').waitFor({timeout:3000});
+  await autoPage.keyboard.press('Escape');
+  await autoPage.locator('#controller-root').waitFor({state:'detached',timeout:2500});
+  await sleep(autoPage);
+  assert.equal(await autoPage.locator('#controller-root').count(),0,'exiting after startup auto-enter must not bounce back in');
+  assert.deepEqual(autoErrors,[],'no browser exceptions during startup auto-enter');
+  await autoPage.close();
+  console.log('PASS startup auto-enter with connected standard gamepad');
  }finally{await browser.close();await new Promise(resolve=>server.close(resolve));}
 })().catch(error=>{console.error(error.stack||error);process.exitCode=1;server.close();});

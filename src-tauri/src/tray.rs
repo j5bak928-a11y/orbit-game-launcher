@@ -436,7 +436,7 @@ fn release_webview_to_tray(app: &AppHandle, webview: tauri::WebviewWindow) -> Re
     if state.closing.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
-    if !webview.is_minimized().unwrap_or(false) {
+    if !webview.is_minimized().unwrap_or(false) && !webview.is_fullscreen().unwrap_or(false) {
         if let (Ok(size), Ok(position), Ok(maximized)) = (
             webview.inner_size(),
             webview.outer_position(),

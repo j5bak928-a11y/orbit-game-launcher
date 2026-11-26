@@ -7,6 +7,8 @@
 		[1, "back"],
 		[8, "back"], // View / Share
 		[9, "recent"], // Menu / Options
+		[10, "search"], // L3 / Left stick click
+		[11, "drawer"], // R3 / Right stick click
 		[0, "select"],
 		[2, "favorite"],
 		[3, "recent"],

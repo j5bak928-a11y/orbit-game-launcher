@@ -1,6 +1,6 @@
 [package]
 name = "orbit-launcher"
-version = "0.4.1"
+version = "0.5.0"
 description = "Orbit Launcher native Rust desktop backend"
 authors = ["Orbit"]
 edition = "2021"

@@ -442,7 +442,127 @@ const padButton=async(page,button,held=90,slot=0)=>{
   assert.equal(await ownerPage.locator('.tv-controller-status').getAttribute('title'),'Controller 0','another neutral controller can claim ownership after a disconnect');
   assert.equal(await ownerPage.evaluate(()=>document.activeElement.dataset.tvKey),ownerKey,'reconnection does not select or launch a game');
   await ownerPage.keyboard.press('Escape');await ownerPage.close();
+
+  // Controller Mode 2.0: zero idle polling without a gamepad, collections, play statuses,
+  // hidden filtering, quick search (gamepad keyboard + IME-safe Enter), launch profiles,
+  // opt-in haptics/audio, and update/discovery banners.
+  const v2=await browser.newPage({viewport:{width:1440,height:900},locale:'en-US'});
+  const v2Errors=[];
+  v2.on('pageerror',error=>v2Errors.push(error.message));
+  await v2.addInitScript(installFixture,{count:12});
+  await v2.addInitScript(()=>{
+   window.v2Pads=[];
+   window.v2Stats={padReads:0,launches:[],haptics:0,audioOsc:0,installCalls:0};
+   Object.defineProperty(navigator,'getGamepads',{configurable:true,value:()=>{window.v2Stats.padReads++;return window.v2Pads;}});
+   class FakeAudioContext{
+    constructor(){this.state='running';this.currentTime=0;this.destination={};}
+    resume(){return Promise.resolve();}
+    suspend(){return Promise.resolve();}
+    close(){return Promise.resolve();}
+    createOscillator(){window.v2Stats.audioOsc++;return {type:'sine',frequency:{setValueAtTime(){}},connect(){},start(){},stop(){}};}
+    createGain(){return {gain:{setValueAtTime(){},exponentialRampToValueAtTime(){}},connect(){}};}
+   }
+   window.AudioContext=FakeAudioContext;
+   window.fixture.patch(window.fixture.id(1),{name:'Hollow Knight',play_status:'playing',total_play_seconds:7200,launch_profiles:[{id:'prof-mod',name:'Modded Run',executable:'C:/Games/Mod.exe',launch_args:['--mod']}]});
+   window.fixture.patch(window.fixture.id(2),{name:'Celeste',play_status:'backlog',total_play_seconds:3600});
+   window.fixture.patch(window.fixture.id(3),{name:'Secret Tool',hidden:true});
+   const origLaunch=window.orbit.launchGame;
+   window.orbit.launchGame=(id,profileId)=>{window.v2Stats.launches.push([id,profileId||null]);return origLaunch(id,profileId);};
+   window.orbit.getUpdateStatus=async()=>({state:'ready',version:'0.5.0',message:'Update v0.5.0 is ready to install.'});
+   window.orbit.installUpdate=async()=>{window.v2Stats.installCalls++;return true;};
+  });
+  await v2.goto(page.url());await v2.bringToFront();
+  await v2.evaluate(async()=>{
+   const col=await window.orbit.createCollection({name:'Couch Co-op',color:'#53c5b3',icon:'gamepad'});
+   await window.orbit.setGameCollections(window.fixture.id(2),[col.id]);
+  });
+  await v2.getByRole('button',{name:'Enter controller mode',exact:true}).click();
+  const v2Mode=v2.locator('#controller-root');
+  await v2Mode.waitFor();
+  // Zero background polling when no standard gamepad is connected.
+  await v2.waitForTimeout(120);
+  const noPadReads=await v2.evaluate(()=>window.v2Stats.padReads);
+  await v2.waitForTimeout(450);
+  assert.equal(await v2.evaluate(()=>window.v2Stats.padReads),noPadReads,'controller mode must perform zero background gamepad polling when no standard pad is connected');
+  // Hidden game excluded by default; non-intrusive update-ready banner rendered and actionable.
+  assert.equal(await v2Mode.locator(`[data-tv-game="${await v2.evaluate(()=>window.fixture.id(3))}"]`).count(),0,'hidden games are excluded by default in controller mode');
+  await v2Mode.locator('.tv-banner-update').waitFor();
+  await v2Mode.locator('[data-tv-key="banner:update"]').click();
+  assert.equal(await v2.evaluate(()=>window.v2Stats.installCalls),1,'update banner action invokes installUpdate');
+  await v2Mode.locator('[data-tv-key="banner:dismiss"]').click();
+  assert.equal(await v2Mode.locator('.tv-banner-update').count(),0,'banner dismisses cleanly');
+  // Open Couch Browse Drawer (native <dialog>), browse custom collection, play status, hidden games, and toggle feedback settings.
+  await v2Mode.locator('[data-tv-key="drawer:open"]').click();
+  const overlay=v2Mode.locator('dialog.tv-overlay-dialog');
+  assert.equal(await overlay.evaluate(node=>node.open),true,'Browse drawer opens as a native modal <dialog>');
+  assert.equal(await overlay.locator('[data-tv-key="drawer:install-update"]').count(),1,'update action remains permanently available inside the Browse drawer after banner dismissal');
+  await overlay.locator('[data-tv-key="drawer:audio"]').click();
+  await overlay.locator('[data-tv-key="drawer:haptics"]').click();
+  await overlay.locator('[data-tv-filter^="collection:"]').first().click();
+  assert.equal(await overlay.evaluate(node=>node.open),false,'selecting a collection closes the drawer');
+  assert.equal(await v2Mode.locator('.tv-library .tv-card').count(),1,'custom collection shelf filters controller mode library');
+  assert(await v2Mode.locator('.tv-library .tv-card').first().textContent().then(text=>text.includes('Celeste')));
+  await v2Mode.locator('[data-tv-key="filters:clear"]').click();
+  // Browse Play Status shelf.
+  await v2Mode.locator('[data-tv-key="drawer:open"]').click();
+  await overlay.locator('[data-tv-key="drawer:status-playing"]').click();
+  assert.equal(await v2Mode.locator('.tv-library .tv-card').count(),1,'Currently Playing shelf filters controller mode library');
+  assert(await v2Mode.locator('.tv-library .tv-card').first().textContent().then(text=>text.includes('Hollow Knight')));
+  await v2Mode.locator('[data-tv-key="filters:clear"]').click();
+  // Browse Hidden games shelf.
+  await v2Mode.locator('[data-tv-key="drawer:open"]').click();
+  await overlay.locator('[data-tv-key="drawer:hidden"]').click();
+  assert.equal(await v2Mode.locator('.tv-library .tv-card').count(),1,'Hidden shelf reveals hidden games');
+  assert(await v2Mode.locator('.tv-library .tv-card').first().textContent().then(text=>text.includes('Secret Tool')));
+  await v2Mode.locator('[data-tv-key="filters:clear"]').click();
+  // Quick Search via L3 gamepad button + on-screen keyboard + IME-safe Enter check.
+  await v2.evaluate(()=>{
+   window.v2Pads=[{id:'Xbox Haptics Pad',index:0,connected:true,mapping:'standard',axes:[0,0,0,0],
+    vibrationActuator:{playEffect:()=>{window.v2Stats.haptics++;return Promise.resolve('complete');}},
+    buttons:Array.from({length:17},()=>({pressed:false,value:0,touched:false}))}];
+   window.dispatchEvent(new Event('gamepadconnected'));
+  });
+  await v2.getByText('Controller connected',{exact:true}).waitFor();
+  await v2.evaluate(()=>{window.v2Pads[0].buttons[10]={pressed:true,value:1,touched:true};});
+  await v2.waitForTimeout(90);
+  await v2.evaluate(()=>{window.v2Pads[0].buttons[10]={pressed:false,value:0,touched:false};});
+  await pause(v2);
+  assert.equal(await overlay.evaluate(node=>node.open && node.dataset.overlayKind==='search'),true,'L3 opens the Quick Search overlay');
+  // IME-safe Enter: composing Enter inside #tv-search-input must not close the overlay.
+  await overlay.locator('#tv-search-input').focus();
+  await overlay.locator('#tv-search-input').evaluate(input=>{
+   input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true,cancelable:true}));
+  });
+  assert.equal(await overlay.evaluate(node=>node.open),true,'composing Enter must not submit or dismiss Quick Search');
+  // Type via gamepad on-screen keyboard keys.
+  for(const char of ['H','O','L']){await overlay.locator(`[data-tv-key="kbd:${char}"]`).click();}
+  assert.equal(await overlay.locator('.tv-search-results [data-tv-game]').count(),1,'on-screen keyboard filters search results live');
+  await overlay.locator('.tv-search-results [data-tv-game]').first().click();
+  await v2Mode.locator('.tv-sheet').waitFor();
+  // Launch alternative profile from Game Action Sheet (opened via R3 button 11!) and verify audio + haptics fired.
+  await v2.evaluate(()=>{window.v2Pads[0].buttons[11]={pressed:true,value:1,touched:true};});
+  await v2.waitForTimeout(90);
+  await v2.evaluate(()=>{window.v2Pads[0].buttons[11]={pressed:false,value:0,touched:false};});
+  await pause(v2);
+  assert.equal(await overlay.evaluate(node=>node.open && node.dataset.overlayKind==='game-actions'),true,'R3 inside Detail Sheet opens Game Options sheet');
+  await overlay.locator('[data-tv-key="sheet:status:completed"]').click();
+  await pause(v2);
+  assert.equal(await overlay.locator('[data-tv-key="sheet:status:completed"]').getAttribute('aria-checked'),'true','status radio updates from Game Options sheet');
+  await overlay.locator('[data-tv-key="sheet:profile:0"]').click();
+  await pause(v2);
+  assert.deepEqual(await v2.evaluate(()=>window.v2Stats.launches),[[await v2.evaluate(()=>window.fixture.id(1)),'prof-mod']],'launching an alternative profile passes profileId through');
+  assert(await v2.evaluate(()=>window.v2Stats.audioOsc>0),'opt-in controller audio played cues when enabled');
+  assert(await v2.evaluate(()=>window.v2Stats.haptics>0),'opt-in controller haptics pulsed on launch');
+  // While running, navigation cues must be muted.
+  const oscWhileRunning=await v2.evaluate(()=>window.v2Stats.audioOsc);
+  await v2.keyboard.press('ArrowDown');
+  assert.equal(await v2.evaluate(()=>window.v2Stats.audioOsc),oscWhileRunning,'navigation audio cues are automatically muted while a game is running');
+  await v2.evaluate(()=>window.fixture.setRunning([]));
+  await v2.keyboard.press('Escape');
+  await v2Mode.waitFor({state:'detached'});
+  assert.deepEqual(v2Errors,[],'zero page errors in Controller Mode 2.0 suite');
+  await v2.close();
   assert.deepEqual(errors,[]);
-  console.log('Controller checks passed: 5,000 games; recent ordering, keyboard/pad navigation, page bounds, scroll parity, reconnect, held input, launch guard, favorites, native exit, failure recovery, removal, 5 widths.');
+  console.log('Controller checks passed: 5,000 games; Controller Mode 2.0 collections, statuses, hidden, quick search, launch profiles, haptics/audio, zero idle polling, banners, and full regression checks.');
  }finally{await browser.close();server.close();}
 })().catch(error=>{console.error(error);server.close();process.exitCode=1;});

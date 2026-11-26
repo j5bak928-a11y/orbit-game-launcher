@@ -335,13 +335,21 @@ fn launch_pending(state: &OrbitState) -> Vec<Value> {
 }
 
 pub(crate) fn launch_game(app: &tauri::AppHandle, id: &str) -> Result<Value, String> {
+    launch_game_with_profile(app, id, None)
+}
+
+fn launch_game_with_profile(
+    app: &tauri::AppHandle,
+    id: &str,
+    profile_id: Option<&str>,
+) -> Result<Value, String> {
     let state = app.state::<OrbitState>();
     let _reservation = reserve_game_launch(&state, id)?;
     let game = lock_or_err(&state.db, "database")?.get(id)?;
     if game.is_null() {
         return Err("Game not found".into());
     }
-    let mut result = native::launch_game(&game)?;
+    let mut result = native::launch_game_with_profile(&game, profile_id)?;
     if result["mode"] == "external" {
         let absolute_path = |key: &str| {
             game[key]
@@ -350,7 +358,7 @@ pub(crate) fn launch_game(app: &tauri::AppHandle, id: &str) -> Result<Value, Str
         };
         let watchable = cfg!(windows)
             && (absolute_path("executable")
-                || (matches!(game["source"].as_str(), Some("steam" | "epic"))
+                || (matches!(game["source"].as_str(), Some("steam" | "epic" | "xbox"))
                     && absolute_path("install_path")));
         if watchable {
             lock_or_err(&state.confirming, "launch confirmation")?
@@ -539,9 +547,12 @@ fn online_artwork_allowed(state: &OrbitState) -> bool {
 }
 
 fn snapshot(state: &OrbitState) -> Result<Value, String> {
-    let games = state.db.lock().map_err(|e| e.to_string())?.list("name")?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let games = db.list("name")?;
+    let collections = db.list_collections()?;
+    drop(db);
     Ok(
-        json!({"games":games,"runningIds":running_ids(state),"launchPending":launch_pending(state),"revision":state.revision.load(Ordering::SeqCst)}),
+        json!({"games":games,"collections":collections,"runningIds":running_ids(state),"launchPending":launch_pending(state),"revision":state.revision.load(Ordering::SeqCst)}),
     )
 }
 
@@ -1227,6 +1238,14 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
                 }
                 native::forget_game(id);
                 changed(app, &state, vec![], vec![json!(id)], "remove", false);
+                if let Ok(collections) =
+                    lock_or_err(&state.db, "database").and_then(|db| db.list_collections())
+                {
+                    emit(
+                        app,
+                        json!({"type":"collectionsChanged","collections":collections}),
+                    );
+                }
             }
             Ok(json!(result))
         }
@@ -1234,6 +1253,81 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             let game = lock_or_err(&state.db, "database")?.toggle_favorite(game_id(args)?)?;
             changed(app, &state, vec![game.clone()], vec![], "favorite", false);
             Ok(game)
+        }
+        "listCollections" => lock_or_err(&state.db, "database")?.list_collections(),
+        "createCollection" => {
+            let created =
+                lock_or_err(&state.db, "database")?.create_collection(argument(args, 0)?)?;
+            let collections = lock_or_err(&state.db, "database")?.list_collections()?;
+            emit(
+                app,
+                json!({"type":"collectionsChanged","collections":collections}),
+            );
+            Ok(created)
+        }
+        "updateCollection" => {
+            let id = str_argument(args, 0)?;
+            let updated =
+                lock_or_err(&state.db, "database")?.update_collection(id, argument(args, 1)?)?;
+            let collections = lock_or_err(&state.db, "database")?.list_collections()?;
+            emit(
+                app,
+                json!({"type":"collectionsChanged","collections":collections}),
+            );
+            Ok(updated)
+        }
+        "deleteCollection" => {
+            let id = str_argument(args, 0)?;
+            let deleted = lock_or_err(&state.db, "database")?.delete_collection(id)?;
+            if deleted {
+                let collections = lock_or_err(&state.db, "database")?.list_collections()?;
+                emit(
+                    app,
+                    json!({"type":"collectionsChanged","collections":collections}),
+                );
+            }
+            Ok(json!(deleted))
+        }
+        "setGameCollections" => {
+            let id = game_id(args)?;
+            let ids = argument(args, 1)?
+                .as_array()
+                .ok_or("Expected collection IDs array.")?
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .map(str::to_owned)
+                        .ok_or("Invalid collection ID.")
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let collections = lock_or_err(&state.db, "database")?.set_game_collections(id, &ids)?;
+            emit(
+                app,
+                json!({"type":"collectionsChanged","collections":collections.clone()}),
+            );
+            Ok(collections)
+        }
+        "bulkUpdateGames" => {
+            let ids = argument(args, 0)?
+                .as_array()
+                .ok_or("Expected game IDs array.")?
+                .iter()
+                .map(|v| v.as_str().map(str::to_owned).ok_or("Invalid game ID."))
+                .collect::<Result<Vec<_>, _>>()?;
+            let result =
+                lock_or_err(&state.db, "database")?.bulk_update_games(&ids, argument(args, 1)?)?;
+            if let Some(updated_games) = result.get("updatedGames").and_then(Value::as_array) {
+                if !updated_games.is_empty() {
+                    changed(app, &state, updated_games.clone(), vec![], "bulk", false);
+                }
+            }
+            if let Some(collections) = result.get("collections") {
+                emit(
+                    app,
+                    json!({"type":"collectionsChanged","collections":collections}),
+                );
+            }
+            Ok(result)
         }
         "saveSettings" => {
             let settings = lock_or_err(&state.db, "database")?.save_settings(argument(args, 0)?)?;
@@ -1357,7 +1451,10 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             }
             Ok(result)
         }
-        "launchGame" => launch_game(app, game_id(args)?),
+        "launchGame" => {
+            let profile_id = args.get(1).and_then(Value::as_str);
+            launch_game_with_profile(app, game_id(args)?, profile_id)
+        }
         "getUpdateStatus" => Ok(updates::current_status(app)),
         "checkForUpdates" => Ok(updates::start_check(app)),
         "installUpdate" => updates::install_prepared(app).map(|()| json!({"started":true})),
@@ -1572,6 +1669,14 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
                 staged.finish(restore, live_artwork.as_ref())?
             };
             changed(app, &state, vec![], vec![], "restore", true);
+            if let Ok(collections) =
+                lock_or_err(&state.db, "database").and_then(|db| db.list_collections())
+            {
+                emit(
+                    app,
+                    json!({"type":"collectionsChanged","collections":collections}),
+                );
+            }
             queue_artwork_scan(app);
             Ok(result)
         }

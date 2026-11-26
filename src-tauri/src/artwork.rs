@@ -938,10 +938,6 @@ fn local_icon(id: &str, install: Option<&str>) -> Option<(Vec<u8>, &'static str)
     None
 }
 
-fn online_cover(http: &Client, id: &str) -> Result<Option<Vec<u8>>, String> {
-    online_cover_with_deadline(http, id, None, &|| true)
-}
-
 fn online_cover_with_deadline(
     http: &Client,
     id: &str,
@@ -994,14 +990,9 @@ fn online_cover_with_deadline(
 }
 
 /// Lookup a manually entered title through exact Steam and Epic store matches.
-/// Caller MUST check useSteamArtwork and Performance Guard before invoking.
-/// Returns {cover, matchedName?, message}; failures return Err.
-pub fn find_online_cover(title: &str, artwork_dir: &Path) -> Result<Value, String> {
-    find_online_cover_guarded(title, artwork_dir, &|| true)
-}
-
 /// Recheck opt-in and Performance Guard immediately before each network call.
 /// The caller must supply a fresh settings/running-session check.
+/// Returns {cover, matchedName?, message}; failures return Err.
 pub fn find_online_cover_guarded(
     title: &str,
     artwork_dir: &Path,
@@ -1045,29 +1036,6 @@ pub fn find_online_cover_guarded(
         "message":"No exact portrait cover found on Steam or Epic Games. Check the title or choose an image manually."}))
 }
 
-/// Fetch a Steam app by known ID. Offline Steam cache is always tried first.
-/// When online=true, the caller must have verified the opt-in setting.
-pub fn steam_cover_for_id(
-    id: &str,
-    artwork_dir: &Path,
-    install_path: Option<&str>,
-    online: bool,
-) -> Result<Option<String>, String> {
-    if !valid_id(id) {
-        return Ok(None);
-    }
-    if let Some(bytes) = local_cover(id, install_path) {
-        return store(&bytes, "jpg", artwork_dir).map(Some);
-    }
-    if !online {
-        return Ok(None);
-    }
-    let Some(bytes) = online_cover(&client()?, id)? else {
-        return Ok(None);
-    };
-    store(&bytes, "jpg", artwork_dir).map(Some)
-}
-
 fn artwork_token(name: &str) -> bool {
     let Some((stem, ext)) = name.rsplit_once('.') else {
         return false;
@@ -1107,6 +1075,7 @@ fn needs_auto_cover(game: &Value, dir: &Path) -> bool {
 
 /// Default repair uses local Steam and adjacent installed-game artwork only;
 /// never performs HTTP.
+#[cfg(test)]
 pub fn repair_artwork(games: &[Value], artwork_dir: &Path) -> Result<Value, String> {
     repair_artwork_with_options(games, artwork_dir, false, false)
 }
@@ -1115,6 +1084,7 @@ pub fn repair_artwork(games: &[Value], artwork_dir: &Path) -> Result<Value, Stri
 /// Returns {found,attempted,icons,onlineEnabled,paused,updates,failures,truncated}.
 /// updates contains proposed {id,cover?,icon?}; caller must verify DB revision
 /// and original cover/icon to prevent overwriting concurrent user edits.
+#[cfg(test)]
 pub fn repair_artwork_with_options(
     games: &[Value],
     artwork_dir: &Path,

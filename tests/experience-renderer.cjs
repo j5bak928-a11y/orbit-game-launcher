@@ -131,7 +131,8 @@ const settle=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
    const menu=fixture.locator('#game-actions-popup');
    assert.equal(await fixture.locator('[role=dialog]').count(),0,'three dots must not open the full detail dialog');
    assert.equal(await trigger.getAttribute('aria-expanded'),'true');
-   assert.equal(await menu.locator('[role=menuitem]').count(),6);
+   assert.equal(await menu.locator('[role=menuitem]').count(),8);
+   assert.equal(await menu.locator('[role=menuitemradio]').count(),4);
    assert.equal(await menu.locator('[data-action=edit]').count(),1,'edit remains available in the compact menu');
    assert.equal(await menu.locator('[data-action=remove-confirm]').count(),1,'remove confirmation remains in the compact menu');
    await fixture.keyboard.press('End');

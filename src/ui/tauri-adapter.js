@@ -17,7 +17,8 @@
   const methods = [
     'bootstrap', 'getWindowState', 'setFullscreen', 'saveControllerReturn', 'librarySnapshot',
     'listGames', 'getStatistics', 'listSessions', 'correctSession', 'runningGames', 'getGame', 'addGame', 'updateGame',
-    'removeGame', 'favoriteGame', 'saveSettings', 'chooseExecutable',
+    'removeGame', 'favoriteGame', 'listCollections', 'createCollection', 'updateCollection', 'deleteCollection',
+    'setGameCollections', 'bulkUpdateGames', 'saveSettings', 'chooseExecutable',
     'inspectGameFile', 'findOnlineCover', 'chooseArtwork', 'chooseFolder',
     'discoverGames', 'repairSteamArtwork', 'importGames', 'launchGame',
     'openGameFolder', 'openAppData', 'getAppInfo', 'exportLibrary',

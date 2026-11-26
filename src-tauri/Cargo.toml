@@ -1,6 +1,6 @@
 [package]
 name = "orbit-launcher"
-version = "0.3.5"
+version = "0.3.6"
 description = "Orbit Launcher native Rust desktop backend"
 authors = ["Orbit"]
 edition = "2021"
@@ -24,7 +24,11 @@ url = "2"
 sha2 = "0.10"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls", "zip"] }
 flate2 = "1"
 base64 = "0.22"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 unicode-normalization = "0.1"
+
+[profile.release]
+strip = true

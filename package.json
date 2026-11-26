@@ -1,6 +1,6 @@
 {
   "name": "orbit-game-launcher",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "private": true,
   "description": "Orbit — a fast, local-first Rust desktop game launcher",
   "license": "MIT",

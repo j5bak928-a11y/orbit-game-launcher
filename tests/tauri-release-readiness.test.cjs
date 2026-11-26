@@ -49,11 +49,36 @@ function releaseConfigProblems(config, caps, packageJson, lockJson) {
       caps.remote != null) {
     problems.push('IPC capability is not restricted to main');
   }
+  const csp = config.app?.security?.csp;
+  if (typeof csp !== 'string' || !csp.includes("default-src 'self'") || !csp.includes("object-src 'none'")) {
+    problems.push('Missing restrictive Tauri-level CSP');
+  }
+  if (config.bundle?.createUpdaterArtifacts) {
+    problems.push('Updater artifact bundling must not be enabled in base tauri.conf.json');
+  }
   if (JSON.stringify(caps.permissions) !== '["core:default"]') {
     problems.push('Unexpected privileged Tauri capability');
   }
-  if (config.plugins?.updater || config.plugins?.shell || config.bundle?.publisher) {
-    problems.push('Unexpected updater/shell/publisher configuration');
+  const updater = config.plugins?.updater;
+  if (!updater || typeof updater !== 'object') {
+    problems.push('Missing updater configuration in tauri.conf.json');
+  } else {
+    if (typeof updater.pubkey !== 'string' || updater.pubkey.trim().length <= 40) {
+      problems.push('Invalid updater public key');
+    }
+    if (!Array.isArray(updater.endpoints) || !updater.endpoints.length ||
+        updater.endpoints.some(url => typeof url !== 'string' || !url.startsWith('https://') || !url.endsWith('/releases/latest/download/latest.json'))) {
+      problems.push('Updater endpoints must use HTTPS GitHub Releases latest.json');
+    }
+    if (updater.dangerousInsecureTransportProtocol === true) {
+      problems.push('Insecure updater transport protocol must not be enabled');
+    }
+    if (updater.windows?.installMode !== 'passive') {
+      problems.push('Windows updater installMode must remain passive');
+    }
+  }
+  if (config.plugins?.shell || config.bundle?.publisher) {
+    problems.push('Unexpected shell/publisher configuration');
   }
   if (packageJson.devDependencies?.electron || packageJson.devDependencies?.['electron-builder'] || packageJson.build) {
     problems.push('Legacy Electron packaging dependencies remain in package.json');
@@ -61,41 +86,71 @@ function releaseConfigProblems(config, caps, packageJson, lockJson) {
   return problems;
 }
 
-test('Rust desktop installer has Orbit Launcher identity, matching versions, local window and no updater capability', () => {
+test('Rust desktop installer has Orbit Launcher identity, matching versions, local window and signed updater config', () => {
   assert.deepEqual(releaseConfigProblems(tauri, capability, pkg, lock), []);
 });
 
-test('release-contract validator rejects identifier drift, legacy Electron deps, and updater/remote access', () => {
+test('release-contract validator rejects identifier drift, legacy Electron deps, and unsafe updater/remote access', () => {
   const promoted = structuredClone(tauri);
   const caps = structuredClone(capability);
   const badPkg = structuredClone(pkg);
   promoted.identifier = 'com.example.other';
   promoted.productName = 'Renamed';
   promoted.bundle.targets = ['nsis', 'msi', 'updater'];
+  promoted.bundle.createUpdaterArtifacts = true;
   promoted.app.windows[0].url = 'https://untrusted.invalid/orbit';
-  promoted.plugins = {updater:{active:true}};
-  badPkg.devDependencies = {electron:'45.0.0'};
+  promoted.app.security = {csp: null};
+  promoted.plugins = {
+    updater: {
+      pubkey: '',
+      endpoints: ['http://untrusted.invalid/latest.json'],
+      dangerousInsecureTransportProtocol: true,
+      windows: {installMode: 'basicUi'},
+    },
+    shell: {},
+  };
+  badPkg.devDependencies = {electron: '45.0.0'};
   caps.windows = ['*'];
   caps.permissions.push('updater:default');
   const problems = releaseConfigProblems(promoted, caps, badPkg, lock);
   assert.ok(problems.some(message => /identifier/i.test(message)));
   assert.ok(problems.some(message => /product name/i.test(message)));
   assert.ok(problems.some(message => /targets/i.test(message)));
+  assert.ok(problems.some(message => /artifact bundling/i.test(message)));
   assert.ok(problems.some(message => /window/i.test(message)));
   assert.ok(problems.some(message => /capability/i.test(message)));
+  assert.ok(problems.some(message => /csp/i.test(message)));
   assert.ok(problems.some(message => /privileged/i.test(message)));
-  assert.ok(problems.some(message => /updater/i.test(message)));
+  assert.ok(problems.some(message => /public key/i.test(message)));
+  assert.ok(problems.some(message => /endpoints/i.test(message)));
+  assert.ok(problems.some(message => /insecure/i.test(message)));
+  assert.ok(problems.some(message => /installMode/i.test(message)));
+  assert.ok(problems.some(message => /shell\/publisher/i.test(message)));
   assert.ok(problems.some(message => /electron/i.test(message)));
 });
 
-test('source integration contract keeps signed-update gate closed', () => {
+test('source integration contract wires signed in-app updater safely behind Rust IPC', () => {
+  const cargo = read('src-tauri/Cargo.toml');
+  assert.match(cargo, /tauri-plugin-updater[\s\S]*rustls-tls/);
+  assert.doesNotMatch(cargo, /tauri-plugin-shell/);
+
   const src = read('src-tauri/src/lib.rs');
+  assert.match(src, /tauri_plugin_updater::Builder::new\(\)\.build\(\)/);
+  assert.match(src, /updates::UpdateManager/);
+  assert.match(src, /updates::maybe_start_background_check/);
+
   const getStatus = src.slice(src.indexOf('"getUpdateStatus" =>'), src.indexOf('"findOnlineCover" =>'));
-  assert.match(getStatus, /"getUpdateStatus"[\s\S]*"state":"unsupported"/);
-  assert.match(getStatus, /"checkForUpdates"[\s\S]*"state":"unsupported"/);
-  assert.match(getStatus, /"installUpdate"[\s\S]*Err\("Automatic updates require a signed release and trusted update feed"/);
-  assert.doesNotMatch(read('src-tauri/Cargo.toml'), /tauri-plugin-updater|tauri-plugin-shell/);
-  assert.doesNotMatch(src, /tauri_plugin_updater|UpdaterExt|download_and_install/i);
+  assert.match(getStatus, /"getUpdateStatus"\s*=>\s*Ok\(updates::current_status\(app\)\)/);
+  assert.match(getStatus, /"checkForUpdates"\s*=>\s*Ok\(updates::start_check\(app\)\)/);
+  assert.match(getStatus, /"installUpdate"\s*=>\s*updates::install_prepared\(app\)/);
+
+  const updatesSrc = read('src-tauri/src/updates.rs');
+  assert.match(updatesSrc, /crate::has_busy_game/);
+  assert.match(updatesSrc, /crate::settle_sessions/);
+  assert.match(updatesSrc, /crate::tray::set_quitting/);
+  assert.match(updatesSrc, /prepared\.update\.verify\(&prepared\.bytes\)/);
+  assert.match(updatesSrc, /prepared\.update\.install\(&prepared\.bytes\)/);
+  assert.doesNotMatch(updatesSrc, /download_and_install/);
 });
 
 test('Tauri first-run migration must snapshot read-only prior Rust Preview or legacy Electron SQLite', () => {

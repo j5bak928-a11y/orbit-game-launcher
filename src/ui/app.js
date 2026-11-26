@@ -48,6 +48,7 @@ const iconPaths={
 const ic=(name,size=18)=>`<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">${iconPaths[name]||iconPaths.gamepad}</svg>`;
 const state={games:[],runningIds:[],settings:null,route:'home',query:'',filter:'all',tag:'all',genre:'all',view:'grid',sort:'name',modal:null,imports:[],importPage:0,selectedImports:new Set(),scanWarnings:[],scanDiagnostics:[],pendingLaunches:new Set(),scanning:false,busy:false,platform:'',version:'',viewGames:[],statistics:{status:'idle',data:null,error:''},updateStatus:{state:'idle',message:'Update check not started.'}};
 let controllerMode=null;
+let notifiedUpdateReadyVersion=null;
 // The desktop listens for a *new* standard Menu/Options (button 9) press.
 // Unlike controller mode, this watcher never polls when there is no gamepad,
 // a game is running, or the window is not visible and focused.
@@ -180,6 +181,7 @@ function sidebar(){const links=[['home','home','Overview'],['library','library',
  <div class="brand" role="img" aria-label="Orbit Launcher"><img class="orbit-brand-mark" src="../../assets/branding/orbit-generated-mark.png" alt="" /><span class="orbit-brand-word" aria-hidden="true">orbit</span></div>
  <div class="side-label">${tr('LIBRARY')}</div><nav class="nav" aria-label="${tr('Main navigation')}">${links.map(([id,icon,name])=>`<button type="button" class="nav-item ${state.route===id?'active':''}" data-action="navigate" data-route="${id}" title="${tr(name)}" ${state.route===id?'aria-current="page"':''}>${ic(icon,18)}<span>${tr(name)}</span>${id==='library'?`<span class="count">${formatNumber(state.games.length)}</span>`:''}</button>`).join('')}</nav>
  <div class="side-divider"></div><nav class="nav" aria-label="${tr('More')}"><button type="button" class="nav-item" data-action="whats-new" title="${tr('See what\'s new')}" aria-label="${tr('See what\'s new')}">${ic('info',18)}<span>${tr("What's new")}</span></button><button type="button" class="nav-item ${state.route==='settings'?'active':''}" data-action="navigate" data-route="settings" title="${tr('Settings')}" ${state.route==='settings'?'aria-current="page"':''}>${ic('settings',18)}<span>${tr('Settings')}</span></button></nav>
+ <div class="nav" id="update-shortcut">${updateShortcut()}</div>
  <div class="nav" id="discovery-shortcut">${discoveryShortcut()}</div>
  <div class="side-bottom"><div class="side-version"><span class="status-dot"></span><span>${tr(state.scanning?'Scanning your games…':'Local library')} <span class="version-number">v${esc(state.version)}</span></span></div></div></aside>`}
 function topbar(){return `<header class="topbar"><div class="breadcrumb">${state.query.trim()?tr('Search results'):''}</div>
@@ -376,8 +378,8 @@ function settingsView(){const s=state.settings,folders=s.libraryFolders||[];retu
  <div class="setting-row"><div><div class="setting-name">${tr('Library density')}</div><div class="setting-help">${tr('Choose comfortable or compact game cards.')}</div></div><div class="select-wrap setting-control"><select id="density-select" aria-label="${tr('Library density')}"><option value="comfortable" ${s.libraryDensity!=='compact'?'selected':''}>${tr('Comfortable')}</option><option value="compact" ${s.libraryDensity==='compact'?'selected':''}>${tr('Compact')}</option></select></div></div></div>
  <div class="settings-card"><h2>${tr('Performance & updates')}</h2><p>${tr('Keep game performance first. Orbit remains available in the tray for playtime tracking.')}</p>
  <div class="setting-row"><div><div class="setting-name">${tr('Performance Guard')}</div><div class="setting-help">${tr("Hide Orbit's window after a confirmed game start on Windows, keeping your edits open.")}</div></div><button class="switch ${s.performanceGuard?'on':''}" data-action="setting-toggle" data-key="performanceGuard" role="switch" aria-checked="${!!s.performanceGuard}" aria-label="${tr('Performance Guard')}"></button></div>
- <div class="setting-row"><div><div class="setting-name">${tr('Automatic updates')}</div><div class="setting-help">${tr('Unavailable until signed releases are configured. Your preference is saved for later.')}</div></div><button type="button" class="switch ${s.autoUpdates?'on':''}" data-action="setting-toggle" data-key="autoUpdates" role="switch" aria-checked="${!!s.autoUpdates}" aria-label="${tr('Automatic updates')}" ${!state.updateStatus||state.updateStatus.state==='unsupported'?'disabled aria-disabled="true"':''}></button></div>
- <div class="setting-row"><div><div class="setting-name">${tr('Update status')}</div><div class="setting-help" id="update-status" role="status" aria-live="polite">${tr(state.updateStatus?.message||'Checking availability…')}</div></div><div class="setting-control" style="display:flex;gap:8px"><button class="secondary-btn" data-action="check-update">${tr('Check now')}</button>${state.updateStatus?.state==='ready'?`<button class="primary-btn" data-action="install-update">${tr('Install update')}</button>`:''}</div></div>
+ <div class="setting-row"><div><div class="setting-name">${tr('Automatic updates')}</div><div class="setting-help">${tr('Check and download signed Orbit updates in the background.')}</div></div><button type="button" class="switch ${s.autoUpdates?'on':''}" data-action="setting-toggle" data-key="autoUpdates" role="switch" aria-checked="${!!s.autoUpdates}" aria-label="${tr('Automatic updates')}" ${!state.updateStatus||state.updateStatus.state==='unsupported'?'disabled aria-disabled="true"':''}></button></div>
+ <div class="setting-row"><div style="min-width:0;flex:1"><div class="setting-name">${tr('Update status')}</div><div class="setting-help" id="update-status" role="status" aria-live="polite">${esc(formatUpdateStatus(state.updateStatus))}</div><div id="update-progress-slot">${updateProgressMarkup(state.updateStatus)}</div></div><div class="setting-control" id="update-action-slot" style="display:flex;gap:8px">${updateActionButtons(state.updateStatus)}</div></div>
  <div class="setting-row"><div><div class="setting-name">${tr("What's new")}</div><div class="setting-help">${tr('Release highlights appear once per version and can be reopened in Settings.')}</div></div><button class="secondary-btn" data-action="whats-new">${ic('sparkles',15)} ${tr("See what's new")}</button></div></div>
  <div class="settings-card"><h2>${tr('Library discovery')}</h2><p>${tr('Orbit searches installed game stores and folders you select. Downloads is never scanned automatically.')}</p>
  <div class="setting-row"><div><div class="setting-name">${tr('Scan at startup')}</div><div class="setting-help">${tr('Look for new games whenever Orbit starts.')}</div></div><button class="switch ${s.autoScan?'on':''}" data-action="setting-toggle" data-key="autoScan" role="switch" aria-checked="${s.autoScan}" aria-label="${tr('Scan at startup')}"></button></div>
@@ -442,6 +444,7 @@ function applyLibraryUpdate(change){
   const focus=captureGameFocus(el('page-slot'));renderPage({keepScroll:true});restoreGameFocus(el('page-slot'),focus);
  }
  syncActivity();
+ syncUpdateUi();
  if(state.modal?.type==='detail'&&(change.reset||runningChanged||change.changedIds.includes(state.modal.id)||change.removedIds.includes(state.modal.id)))renderModal();
 }
 function handleOrbitEvent(event){
@@ -452,7 +455,7 @@ function handleOrbitEvent(event){
   state.settings=event.settings;setupTheme();
   if((event.settings?.language||'system')!==oldLanguage){applyLanguage(event.settings.language);if(!window.OrbitI18n)redrawForLanguage();}
  }
- if(event.type==='updateStatus'){state.updateStatus=event.status;const status=el('update-status');if(status)status.textContent=t(event.status.message||'');const toggle=document.querySelector('[data-action="setting-toggle"][data-key="autoUpdates"]');if(toggle){const locked=!event.status||event.status.state==='unsupported';toggle.disabled=locked;toggle.setAttribute('aria-disabled',String(locked));}if(state.route==='settings'&&event.status.state==='ready')renderPage({keepScroll:true});}
+ if(event.type==='updateStatus'){state.updateStatus=event.status;syncUpdateUi();if(event.status?.state==='ready'&&event.status.version&&notifiedUpdateReadyVersion!==event.status.version){notifiedUpdateReadyVersion=event.status.version;toast(t('Update v{version} is ready to install.',{version:event.status.version}));}}
  if(event.type==='windowState')controllerMode?.windowState(event);
  if(event.type==='toggleControllerMode')Promise.resolve().then(toggleControllerMode).catch(error=>toast(error.message,true));
  if(event.type==='error')toast(event.message,true);
@@ -578,7 +581,7 @@ function openGameActions(trigger,point=null){
  menu.querySelector('[role=menuitem]')?.focus({preventScroll:true});
 }
 function openModal(type,meta={}){pauseDesktopPadEntry();closeGameActions();if(!state.modal){modalReturnFocus=document.activeElement;modalReturnFocusAction=modalReturnFocus?.dataset.action?{action:modalReturnFocus.dataset.action,id:modalReturnFocus.dataset.id,kind:['card-open-trigger','row-open-trigger','continue-open-trigger','game-menu','hero-detail'].find(name=>modalReturnFocus.classList.contains(name))}:null;}state.modal={type,...meta};renderModal()}
-const WHATS_NEW_VERSION='0.3.5';
+const WHATS_NEW_VERSION='0.3.6';
 const WHATS_NEW_KEY='orbit.whatsNew.lastAcknowledgedVersion';
 let whatsNewPending=false;
 function markWhatsNewSeen(){
@@ -600,9 +603,11 @@ function whatsNewDialog(){
  const points=(items)=>items.map(item=>`<li>${tr(item)}</li>`).join('');
  return `<div class="dialog-scrim" data-action="scrim"><section class="dialog wide whats-new-dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="whats-new-intro">
  <div class="whats-new-header"><span class="whats-new-eyebrow">${ic('sparkles',15)} ORBIT · v${WHATS_NEW_VERSION}</span><button class="ghost-btn whats-new-close" data-action="close-modal" aria-label="${tr('Close release notes')}">${ic('close',20)}</button>
- <h2 id="dialog-title">${tr("What's new in Orbit")}</h2><p id="whats-new-intro">${tr('Highlights from 0.2.7 through 0.3.5')}</p></div>
+ <h2 id="dialog-title">${tr("What's new in Orbit")}</h2><p id="whats-new-intro">${tr('Highlights from 0.2.7 through 0.3.6')}</p></div>
  <div class="whats-new-content">
- <section class="whats-new-version"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.3.5 — New')}</span><h3>${tr('Refined Overview, poster cards and accessibility')}</h3></div>
+ <section class="whats-new-version"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.3.6 — New')}</span><h3>${tr('Signed automatic updates and release hardening')}</h3></div>
+ <ul>${points(['Orbit checks for signed updates automatically in the background and installs verified releases directly from Settings or the sidebar.','Updates pause automatically while a game is running and verify Ed25519 release signatures before restarting.','Release executables strip local build paths and enforce a restrictive Tauri security policy.'])}</ul></section>
+ <section class="whats-new-version whats-new-history"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.3.5 — New')}</span><h3>${tr('Refined Overview, poster cards and accessibility')}</h3></div>
  <ul>${points(['Overview aligns hero artwork cleanly, filters platforms in place, and translates all library and playtime counts.','Poster cards align corner controls, show a live Playing badge, and support arrow-key navigation and right-click menus.','Game details include quick management actions, launch arguments accept plain CLI flags, and play sessions edit in hours and minutes.'])}</ul></section>
  <section class="whats-new-version whats-new-history"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.3.4 — New')}</span><h3>${tr('Rust is now the only Orbit desktop edition')}</h3></div>
  <ul>${points(['Removed the legacy Electron edition and promoted the native Rust + Tauri desktop app as the main Orbit Launcher.','First launch automatically copies existing Rust Preview or legacy Electron libraries and artwork without modifying old files.'])}</ul></section>
@@ -627,7 +632,7 @@ function whatsNewDialog(){
  <h3>${tr('Controller experience')}</h3><ul>${points(['Standard gamepads: Menu/Options entry, safer focus, triggers and right-stick scrolling.'])}</ul>
  <h3>${tr('Language and accessibility')}</h3><ul>${points(['English, Nederlands, Deutsch, Français and Español with automatic language selection.'])}</ul>
  <h3>${tr('Data safety and performance')}</h3><ul>${points(['Safer portable backups, completed play-session history and first-run library migration.','Stronger artwork handling, offline cover repair and session recovery.'])}</ul></section>
- <p class="whats-new-warning">${ic('info',15)} ${tr('Existing Rust Preview and Electron libraries are imported automatically once on first launch; back up before upgrading if needed.')} ${tr('Windows builds are unsigned; automatic update installation remains disabled.')}</p>
+ <p class="whats-new-warning">${ic('info',15)} ${tr('Existing Rust Preview and Electron libraries are imported automatically once on first launch; back up before upgrading if needed.')} ${tr('In-app updates verify Ed25519 release signatures before installing; Windows SmartScreen may still prompt for manual installers.')}</p>
  </div><div class="whats-new-footer"><span>${tr('You can reopen this screen in Settings.')}</span><button class="primary-btn" data-action="close-modal">${tr('Continue to your library')} ${ic('arrow',16)}</button></div></section></div>`;
 }
 function closeModal(){if(state.modal?.type==='whats-new')markWhatsNewSeen();state.modal=null;el('modal-root').innerHTML='';if(el('app'))el('app').inert=false;const candidates=modalReturnFocusAction?[...document.querySelectorAll('[data-action]')].filter(node=>node.dataset.action===modalReturnFocusAction.action&&node.dataset.id===modalReturnFocusAction.id):[];const target=modalReturnFocus?.isConnected?modalReturnFocus:candidates.find(node=>modalReturnFocusAction.kind&&node.classList.contains(modalReturnFocusAction.kind))||candidates[0];target?.focus({preventScroll:true});modalReturnFocus=null;modalReturnFocusAction=null;wakeDesktopPadEntry();if(whatsNewPending){whatsNewPending=false;Promise.resolve().then(showWhatsNewAfterBoot);}}
@@ -768,6 +773,46 @@ function discoveryShortcut(){
 }
 function updateDiscoveryShortcut(){
  const slot=el('discovery-shortcut');if(slot)slot.innerHTML=discoveryShortcut();
+}
+function formatUpdateStatus(status){
+ if(!status)return t('Checking availability…');
+ const busy=!!(state.runningIds?.length||state.pendingLaunches?.size);
+ if(status.state==='downloading'){
+  if(Number.isFinite(status.progressPercent)&&status.version)return t('Downloading v{version} ({percent}%)…',{version:status.version,percent:formatNumber(status.progressPercent)});
+  if(status.version)return t('Downloading v{version}…',{version:status.version});
+ }
+ if(status.state==='ready'&&status.version){
+  return busy?t('Update v{version} is ready. Finish running games to install.',{version:status.version}):t('Update v{version} is ready to install.',{version:status.version});
+ }
+ if(status.state==='installing'&&status.version)return t('Installing v{version}…',{version:status.version});
+ return t(status.message||'Checking availability…');
+}
+function updateProgressMarkup(status){
+ if(status?.state!=='downloading')return '';
+ const hasPct=Number.isFinite(status.progressPercent);
+ const pct=hasPct?Math.max(0,Math.min(100,status.progressPercent)):0;
+ return `<div class="update-progress-wrap"><div class="update-progress ${hasPct?'':'indeterminate'}" role="progressbar" aria-label="${tr('Update download progress')}" aria-valuemin="0" aria-valuemax="100" ${hasPct?`aria-valuenow="${pct}"`:''}><div class="update-progress-fill" style="width:${hasPct?pct:38}%"></div></div></div>`;
+}
+function updateActionButtons(status){
+ const busy=!!(state.runningIds?.length||state.pendingLaunches?.size);
+ const checking=['checking','downloading','installing'].includes(status?.state);
+ return `<button type="button" class="secondary-btn" data-action="check-update" ${checking?'disabled aria-busy="true"':''}>${tr('Check now')}</button>${status?.state==='ready'?`<button type="button" class="primary-btn" data-action="install-update" ${busy?'disabled aria-disabled="true"':''} title="${busy?tr('Finish running games before installing an update.'):''}">${tr(busy?'Game running…':'Install & restart')}</button>`:''}`;
+}
+function updateShortcut(){
+ const status=state.updateStatus;
+ if(status?.state!=='ready')return '';
+ const busy=!!(state.runningIds?.length||state.pendingLaunches?.size);
+ const label=status.version?tr('Install v{version}',{version:status.version}):tr('Install update');
+ return `<button type="button" class="nav-item update-shortcut-btn" data-action="install-update" ${busy?'disabled aria-disabled="true"':''} title="${tr(busy?'Finish running games before installing an update.':'Install verified update and restart Orbit')}" aria-label="${label}">${ic('download',18)}<span>${label}</span><span class="update-shortcut-badge">${tr('Ready')}</span></button>`;
+}
+function syncUpdateUi(){
+ const status=state.updateStatus;
+ const shortcut=el('update-shortcut');if(shortcut)shortcut.innerHTML=updateShortcut();
+ const statusEl=el('update-status');if(statusEl)statusEl.textContent=formatUpdateStatus(status);
+ const progressEl=el('update-progress-slot');if(progressEl)progressEl.innerHTML=updateProgressMarkup(status);
+ const actionsEl=el('update-action-slot');if(actionsEl)actionsEl.innerHTML=updateActionButtons(status);
+ const toggle=document.querySelector('[data-action="setting-toggle"][data-key="autoUpdates"]');
+ if(toggle){const locked=!status||status.state==='unsupported';toggle.disabled=locked;toggle.setAttribute('aria-disabled',String(locked));}
 }
 async function changeDiscoveryIgnore(index){
  const game=state.imports[index];
@@ -966,8 +1011,8 @@ async function handleAction(button){const action=button.dataset.action,id=button
   case 'game-actions':openGameActions(button);break;
   case 'controller-mode':await toggleControllerMode();break;
    case 'whats-new':openModal('whats-new',{automatic:false});break;
-   case 'check-update':{const status=await window.orbit.checkForUpdates();state.updateStatus=status;const element=el('update-status');if(element)element.textContent=t(status.message||'');break;}
-   case 'install-update':try{await window.orbit.installUpdate()}catch(error){toast(error.message||t('Cannot install update.'),true)}break;
+   case 'check-update':{const status=await window.orbit.checkForUpdates();state.updateStatus=status;syncUpdateUi();break;}
+   case 'install-update':try{await window.orbit.installUpdate()}catch(error){toast(error.message||t('Could not install update.'),true)}break;
   case 'navigate':navigate(button.dataset.route);break;
   case 'refresh-statistics':await loadStatistics();break;
   case 'shuffle':{if(state.games.length){const game=state.games[Math.floor(Math.random()*state.games.length)];openModal('detail',{id:game.id});}else toast(t('Add a game to your library first.'));break;}
@@ -1200,10 +1245,14 @@ async function boot(){try{
  },1000);
  // Update-service availability must not delay or prevent library startup.
  if(window.orbit.getUpdateStatus)Promise.resolve().then(()=>window.orbit.getUpdateStatus()).then(status=>{
-  if(status){state.updateStatus=status;const statusNode=el('update-status');if(statusNode)statusNode.textContent=typeof t==='function'?t(status.message||''):status.message||'';}
+  if(!status)return;
+  state.updateStatus=status;
+  if(typeof syncUpdateUi==='function')syncUpdateUi();
+  else {const statusNode=el('update-status');if(statusNode)statusNode.textContent=typeof t==='function'?t(status.message||''):status.message||'';}
  }).catch(error=>{
-  state.updateStatus={state:'error',message:typeof t==='function'?t('Update status is unavailable.'):'Update status is unavailable.'};
-  const statusNode=el('update-status');if(statusNode)statusNode.textContent=state.updateStatus.message;
+  state.updateStatus={state:'error',message:'Update status is unavailable.'};
+  if(typeof syncUpdateUi==='function')syncUpdateUi();
+  else {const statusNode=el('update-status');if(statusNode)statusNode.textContent=typeof t==='function'?t(state.updateStatus.message):state.updateStatus.message;}
   console.warn('Could not load update status:',error);
  });
  }catch(e){el('app').innerHTML=`<div class="boot"><div class="boot-logo">!</div><h2>${typeof tr==='function'?tr('Orbit could not start'):'Orbit could not start'}</h2><p>${esc(e.message||(typeof t==='function'?t('Unknown error.'):'Unknown error.'))}</p></div>`;}}

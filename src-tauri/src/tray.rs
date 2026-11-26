@@ -599,3 +599,9 @@ pub fn should_keep_running<R: Runtime>(app: &AppHandle<R>) -> bool {
     app.try_state::<TrayState>()
         .is_some_and(|state| !state.quitting.load(Ordering::SeqCst))
 }
+
+pub fn set_quitting<R: Runtime>(app: &AppHandle<R>, quitting: bool) {
+    if let Some(state) = app.try_state::<TrayState>() {
+        state.quitting.store(quitting, Ordering::SeqCst);
+    }
+}

@@ -558,6 +558,7 @@ const padButton=async(page,button,held=90,slot=0)=>{
   await v2.keyboard.press('ArrowDown');
   assert.equal(await v2.evaluate(()=>window.v2Stats.audioOsc),oscWhileRunning,'navigation audio cues are automatically muted while a game is running');
   await v2.evaluate(()=>window.fixture.setRunning([]));
+  await v2Mode.locator('.tv-sheet').waitFor({state:'detached'});
   await v2.keyboard.press('Escape');
   await v2Mode.waitFor({state:'detached'});
   assert.deepEqual(v2Errors,[],'zero page errors in Controller Mode 2.0 suite');

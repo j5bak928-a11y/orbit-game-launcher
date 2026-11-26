@@ -1611,8 +1611,15 @@ fn valid_setting(key: &str, value: &Value) -> bool {
         "libraryDensity" => ["comfortable", "compact"].contains(&value.as_str().unwrap_or("")),
         "libraryFolders" => valid_folders(value),
         "discoveryIgnored" => valid_discovery_ignored(value),
-        "reduceMotion" | "autoScan" | "useSteamArtwork" | "scanDownloads" | "onboardingDone"
-        | "performanceGuard" | "autoUpdates" | "controllerAutoEnter" | "controllerAudio"
+        "reduceMotion"
+        | "autoScan"
+        | "useSteamArtwork"
+        | "scanDownloads"
+        | "onboardingDone"
+        | "performanceGuard"
+        | "autoUpdates"
+        | "controllerAutoEnter"
+        | "controllerAudio"
         | "controllerHaptics" => value.is_boolean(),
         _ => false,
     }

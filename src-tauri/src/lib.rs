@@ -2058,7 +2058,8 @@ mod controller_return_tests {
 
     #[test]
     fn reopens_only_when_matching_controller_game_finishes_with_no_other_running() {
-        let saved = json!({"gameId":"game-42","focusKey":"library:game-42","filter":"status:playing"});
+        let saved =
+            json!({"gameId":"game-42","focusKey":"library:game-42","filter":"status:playing"});
         assert!(should_reopen_for_controller_return(
             &saved,
             &["game-42".to_string()],

@@ -108,6 +108,7 @@ function matchesPlaytimeFilter(seconds,code){
  return true;
 }
 let controllerMode=null;
+let didStartupAutoEnter=false;
 let notifiedUpdateReadyVersion=null;
 // The desktop listens for a *new* standard Menu/Options (button 9) press.
 // Unlike controller mode, this watcher never polls when there is no gamepad,
@@ -189,14 +190,32 @@ function startDesktopPadEntry(){
  document.addEventListener('visibilitychange',()=>{if(document.hidden)pauseDesktopPadEntry();else wakeDesktopPadEntry();});
  wakeDesktopPadEntry();
 }
+function pendingDiscoveryCount(){
+ return state.imports.filter(item=>!item.alreadyAdded&&!isDiscoveryIgnored(item)).length;
+}
 function openControllerMode(returnPosition){
  pauseDesktopPadEntry();
  if(state.modal)closeModal();
  if(!controllerMode){
   if(!window.OrbitControllerMode)throw Error('Controller mode is unavailable. Restart Orbit to load the latest files.');
   controllerMode=window.OrbitControllerMode.create({api:window.orbit,
-   snapshot:()=>({games:state.games,runningIds:state.runningIds,pendingLaunches:state.pendingLaunches}),
-   launch:performLaunch,favorite,notify:toast,
+   snapshot:()=>({
+    games:state.games,
+    collections:state.collections,
+    runningIds:state.runningIds,
+    pendingLaunches:state.pendingLaunches,
+    settings:state.settings,
+    updateStatus:state.updateStatus,
+    discoveryCount:pendingDiscoveryCount(),
+   }),
+   launch:performLaunch,
+   favorite,
+   updateGame:async (id,patch)=>{try{return await window.orbit.updateGame(id,patch);}catch(e){toast(e.message,true);throw e;}},
+   setGameCollections:async (id,collectionIds)=>{try{return await window.orbit.setGameCollections(id,collectionIds);}catch(e){toast(e.message,true);throw e;}},
+   saveSettings:async patch=>{try{return await saveSettings(patch);}catch(e){toast(e.message,true);throw e;}},
+   installUpdate:async ()=>{try{await window.orbit.installUpdate();}catch(e){toast(e.message||t('Could not install update.'),true);throw e;}},
+   reviewDiscoveries:async ()=>{await controllerMode.exit();if(state.imports.length)openModal('import');},
+   notify:toast,
    onExit:()=>{refreshNavigation(true);document.querySelector('[data-action="controller-mode"]')?.focus();wakeDesktopPadEntry();}
   });
  }
@@ -209,6 +228,15 @@ async function restoreControllerReturn(position){
   if(state.games.some(game=>game.id===position.gameId))await openControllerMode(position);
   else await window.orbit.saveControllerReturn?.(null);
  }catch(error){toast(error.message,true);}
+}
+async function maybeAutoEnterControllerMode(){
+ if(didStartupAutoEnter)return;
+ didStartupAutoEnter=true;
+ if(state.settings?.controllerAutoEnter&&!controllerMode?.active&&!controllerMode?.session&&
+  !state.runningIds.length&&!state.pendingLaunches.size&&!state.modal&&
+  !document.hidden&&document.hasFocus()&&standardDesktopPads().length>0){
+  await openControllerMode().catch(error=>toast(error.message,true));
+ }
 }
 const sourceNames={steam:'Steam',epic:'Epic Games',gog:'GOG',ea:'EA app',ubisoft:'Ubisoft Connect',battlenet:'Battle.net',xbox:'Xbox / PC Game Pass',folder:'Local',manual:'Manual'};
 const palette=['#8b7aff','#5bafef','#fc8ca8','#53c5b3','#f3a65c','#bf87f5'];
@@ -526,6 +554,10 @@ function settingsView(){const s=state.settings,folders=s.libraryFolders||[];retu
  <div class="setting-row"><div><div class="setting-name">${tr('Automatic updates')}</div><div class="setting-help">${tr('Check and download signed Orbit updates in the background.')}</div></div><button type="button" class="switch ${s.autoUpdates?'on':''}" data-action="setting-toggle" data-key="autoUpdates" role="switch" aria-checked="${!!s.autoUpdates}" aria-label="${tr('Automatic updates')}" ${!state.updateStatus||state.updateStatus.state==='unsupported'?'disabled aria-disabled="true"':''}></button></div>
  <div class="setting-row update-panel-row"><div class="update-panel-info"><div class="update-panel-head"><span id="update-state-dot" class="${updateDotClass(state.updateStatus)}" aria-hidden="true"></span><span class="setting-name">${tr('Update status')}</span>${state.version?`<span class="update-version-chip">v${esc(state.version)}</span>`:''}</div><div class="setting-help" id="update-status" role="status" aria-live="polite">${esc(formatUpdateStatus(state.updateStatus))}</div><div id="update-progress-slot">${updateProgressMarkup(state.updateStatus)}</div></div><div class="setting-control update-panel-actions" id="update-action-slot">${updateActionButtons(state.updateStatus)}</div></div>
  <div class="setting-row"><div><div class="setting-name">${tr("What's new")}</div><div class="setting-help">${tr('Release highlights appear once per version and can be reopened in Settings.')}</div></div><button class="secondary-btn" data-action="whats-new">${ic('sparkles',15)} ${tr("See what's new")}</button></div></div>
+ <div class="settings-card"><h2>${tr('Controller mode')}</h2><p>${tr('Customize your couch and handheld controller experience.')}</p>
+ <div class="setting-row"><div><div class="setting-name">${tr('Auto-enter with controller')}</div><div class="setting-help">${tr('Start directly in Controller Mode when a standard gamepad is connected.')}</div></div><button type="button" class="switch ${s.controllerAutoEnter?'on':''}" data-action="setting-toggle" data-key="controllerAutoEnter" role="switch" aria-checked="${!!s.controllerAutoEnter}" aria-label="${tr('Auto-enter with controller')}"></button></div>
+ <div class="setting-row"><div><div class="setting-name">${tr('Navigation sounds')}</div><div class="setting-help">${tr('Play subtle audio cues in Controller Mode. Muted automatically while a game is running.')}</div></div><button type="button" class="switch ${s.controllerAudio?'on':''}" data-action="setting-toggle" data-key="controllerAudio" role="switch" aria-checked="${!!s.controllerAudio}" aria-label="${tr('Navigation sounds')}"></button></div>
+ <div class="setting-row"><div><div class="setting-name">${tr('Launch vibration')}</div><div class="setting-help">${tr('Send a short haptic pulse to the active gamepad when launching a game.')}</div></div><button type="button" class="switch ${s.controllerHaptics?'on':''}" data-action="setting-toggle" data-key="controllerHaptics" role="switch" aria-checked="${!!s.controllerHaptics}" aria-label="${tr('Launch vibration')}"></button></div></div>
  <div class="settings-card"><h2>${tr('Library discovery')}</h2><p>${tr('Orbit searches installed game stores and folders you select. Downloads is never scanned automatically.')}</p>
  <div class="setting-row"><div><div class="setting-name">${tr('Scan at startup')}</div><div class="setting-help">${tr('Look for new games whenever Orbit starts.')}</div></div><button class="switch ${s.autoScan?'on':''}" data-action="setting-toggle" data-key="autoScan" role="switch" aria-checked="${s.autoScan}" aria-label="${tr('Scan at startup')}"></button></div>
  <div class="setting-row"><div><div class="setting-name">${tr('Online artwork')}</div><div class="setting-help">${tr('Find covers using Steam and Epic Games when online.')}</div></div><button class="switch ${s.useSteamArtwork?'on':''}" data-action="setting-toggle" data-key="useSteamArtwork" role="switch" aria-checked="${s.useSteamArtwork}" aria-label="${tr('Online artwork downloads')}"></button></div>
@@ -602,6 +634,7 @@ function handleOrbitEvent(event){
  if(event.type==='collectionsChanged'&&Array.isArray(event.collections)){
   state.collections=event.collections;
   if(state.collection!=='all'&&!state.collections.some(c=>c.id===state.collection))state.collection='all';
+  if(controllerMode?.active){controllerMode.update();return;}
   const side=el('side-slot');if(side)side.innerHTML=sidebar();
   const facets=el('library-facets-slot');if(facets)facets.innerHTML=libraryFacets();
   renderVirtual();
@@ -612,8 +645,9 @@ function handleOrbitEvent(event){
   const oldLanguage=state.settings?.language||'system';
   state.settings=event.settings;setupTheme();
   if((event.settings?.language||'system')!==oldLanguage){applyLanguage(event.settings.language);if(!window.OrbitI18n)redrawForLanguage();}
+  controllerMode?.update();
  }
- if(event.type==='updateStatus'){state.updateStatus=event.status;syncUpdateUi();if(event.status?.state==='ready'&&event.status.version&&notifiedUpdateReadyVersion!==event.status.version){notifiedUpdateReadyVersion=event.status.version;toast(t('Update v{version} is ready to install.',{version:event.status.version}));}}
+ if(event.type==='updateStatus'){state.updateStatus=event.status;syncUpdateUi();controllerMode?.update();if(event.status?.state==='ready'&&event.status.version&&notifiedUpdateReadyVersion!==event.status.version){notifiedUpdateReadyVersion=event.status.version;toast(t('Update v{version} is ready to install.',{version:event.status.version}));}}
  if(event.type==='windowState')controllerMode?.windowState(event);
  if(event.type==='toggleControllerMode')Promise.resolve().then(toggleControllerMode).catch(error=>toast(error.message,true));
  if(event.type==='error')toast(event.message,true);
@@ -745,7 +779,7 @@ function openGameActions(trigger,point=null){
  menu.querySelector('[role=menuitem],[role=menuitemradio]')?.focus({preventScroll:true});
 }
 function openModal(type,meta={}){pauseDesktopPadEntry();closeGameActions();if(!state.modal){modalReturnFocus=document.activeElement;modalReturnFocusAction=modalReturnFocus?.dataset.action?{action:modalReturnFocus.dataset.action,id:modalReturnFocus.dataset.id,kind:['card-open-trigger','row-open-trigger','continue-open-trigger','game-menu','hero-detail'].find(name=>modalReturnFocus.classList.contains(name))}:null;}state.modal={type,...meta};renderModal()}
-const WHATS_NEW_VERSION='0.4.1';
+const WHATS_NEW_VERSION='0.5.0';
 const WHATS_NEW_KEY='orbit.whatsNew.lastAcknowledgedVersion';
 let whatsNewPending=false;
 function markWhatsNewSeen(){
@@ -767,9 +801,11 @@ function whatsNewDialog(){
  const points=(items)=>items.map(item=>`<li>${tr(item)}</li>`).join('');
  return `<div class="dialog-scrim" data-action="scrim"><section class="dialog wide whats-new-dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="whats-new-intro">
  <div class="whats-new-header"><span class="whats-new-eyebrow">${ic('sparkles',15)} ORBIT · v${WHATS_NEW_VERSION}</span><button class="ghost-btn whats-new-close" data-action="close-modal" aria-label="${tr('Close release notes')}">${ic('close',20)}</button>
- <h2 id="dialog-title">${tr("What's new in Orbit")}</h2><p id="whats-new-intro">${tr('Highlights from 0.2.7 through 0.4.1')}</p></div>
+ <h2 id="dialog-title">${tr("What's new in Orbit")}</h2><p id="whats-new-intro">${tr('Highlights from 0.2.7 through 0.5.0')}</p></div>
  <div class="whats-new-content">
- <section class="whats-new-version"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.4.1 — New')}</span><h3>${tr('Docked update controls and automatic checks on reopen')}</h3></div>
+ <section class="whats-new-version"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.5.0 — New')}</span><h3>${tr('Console Experience: Controller Mode 2.0')}</h3></div>
+ <ul>${points(['Browse custom collections, play statuses, hidden games, and alternative launch profiles directly inside Controller Mode.','Use the new couch Browse drawer (R3 / F2), Game Options sheet, and gamepad Quick Search keyboard (L3 / F3) without needing a mouse or physical keyboard.','Added zero idle gamepad polling, opt-in startup auto-entry, subtle navigation audio and launch vibration, automatic post-session return, and actionable update notices.'])}</ul></section>
+ <section class="whats-new-version whats-new-history"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.4.1 — New')}</span><h3>${tr('Docked update controls and automatic checks on reopen')}</h3></div>
  <ul>${points(['Moved the update button into the sidebar footer above the app version with live downloading, ready-to-install, and icon-rail indicator states.','Orbit now checks for signed updates automatically when reopening from the tray or restoring from minimized, while staying quiet during active games.'])}</ul></section>
  <section class="whats-new-version whats-new-history"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.4.0 — New')}</span><h3>${tr('Your Gaming Library: statuses, collections, bulk actions and launch profiles')}</h3></div>
  <ul>${points(['Organize games with play statuses (Currently Playing, Backlog, Completed, On Hold), hidden state, and custom SQLite collections synced across backups.','Combine multi-filters, smart search operators (status:, source:, tag:, in:, time:, is:hidden), and multi-select bulk actions.','Configure per-game environment variables, alternative launch profiles, and native Windows AppsFolder launching for Xbox titles.'])}</ul></section>
@@ -1654,8 +1690,9 @@ async function boot(){try{
  lastRenderedLocale=localeRenderKey();
  for(const event of buffered)handleOrbitEvent(event);
  if(data.controllerReturn&&typeof restoreControllerReturn==='function')await restoreControllerReturn(data.controllerReturn);
+ if(typeof maybeAutoEnterControllerMode==='function')await maybeAutoEnterControllerMode();
  if(typeof startDesktopPadEntry==='function')startDesktopPadEntry();
- if(typeof showWhatsNewAfterBoot==='function')showWhatsNewAfterBoot();
+ if(typeof showWhatsNewAfterBoot==='function'&&(typeof controllerMode==='undefined'||(!controllerMode?.active&&!controllerMode?.session)))showWhatsNewAfterBoot();
  if(state.settings.autoScan)setTimeout(()=>{
   if(state.settings.autoScan&&!state.runningIds.length&&!state.imports.length)void performScan(true);
  },1000);

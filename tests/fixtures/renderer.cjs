@@ -18,7 +18,8 @@ function installFixture({ count }) {
   let runningIds = [];
   let fullscreen = false;
   let settings = { theme:'dark', accent:'#8b7aff', reduceMotion:true, autoScan:false,
-    useSteamArtwork:false, libraryFolders:[], view:'grid', sort:'name', onboardingDone:true };
+    useSteamArtwork:false, libraryFolders:[], view:'grid', sort:'name', onboardingDone:true,
+    controllerAutoEnter:false, controllerAudio:false, controllerHaptics:false };
   const listeners = [];
   const counts = { listGames:0, snapshot:0, runningGames:0, events:0, pageRebuilds:0 };
   const copy = value => JSON.parse(JSON.stringify(value));

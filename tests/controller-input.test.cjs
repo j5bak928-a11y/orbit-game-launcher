@@ -40,11 +40,21 @@ test('back takes priority over simultaneous select and directions',()=>{
 });
 test('favorite, recent and page actions are edges rather than held repeats',()=>{
  const input=new GamepadInput();input.read([pad()],0);
- for(const [button,action] of [[2,'favorite'],[3,'recent'],[4,'previousPage'],[5,'nextPage'],[8,'back'],[9,'recent'],[16,'exit']]){
+ for(const [button,action] of [[2,'favorite'],[3,'recent'],[4,'previousPage'],[5,'nextPage'],[8,'back'],[9,'recent'],[10,'search'],[11,'drawer'],[16,'exit']]){
   input.read([pad()],0);
   assert.deepEqual(input.read([pad([button])],10).actions,[action]);
   assert.deepEqual(input.read([pad([button])],2000).actions,[]);
  }
+});
+test('L3 search and R3 drawer buttons yield to Back and block simultaneous stick moves',()=>{
+ const input=new GamepadInput();input.read([pad()],0);
+ assert.deepEqual(input.read([pad([1,10,11],[0.9,0,0,0.9])],10).actions,['back']);
+ input.read([pad()],20);
+ assert.deepEqual(input.read([pad([10],[0.9,0,0,0.9])],30).actions,['search']);
+ assert.deepEqual(input.read([pad([10],[0.9,0,0,0.9])],1000).actions,[]);
+ input.read([pad()],1010);
+ assert.deepEqual(input.read([pad([11],[0.9,0,0,0.9])],1020).actions,['drawer']);
+ assert.deepEqual(input.read([pad([11],[0.9,0,0,0.9])],2000).actions,[]);
 });
 test('Xbox and PlayStation use the standard buttons with informative, bounded family labels',()=>{
  const input=new GamepadInput();

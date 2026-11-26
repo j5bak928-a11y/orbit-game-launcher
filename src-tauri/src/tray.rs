@@ -393,7 +393,7 @@ fn apply_menu_snapshot(
 ///
 /// Call this FIRST in the existing .on_window_event closure. The caller should
 /// A normal X-button close destroys WebView2 without stopping native tracking.
-pub fn handle_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) -> bool {
+pub fn handle_window_event(window: &Window, event: &WindowEvent) -> bool {
     if window.label() != "main" {
         return false;
     }
@@ -426,10 +426,7 @@ pub fn handle_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) 
 /// Hide first to avoid rendering while teardown is queued, then release the
 /// actual native window/webview on another thread. Calling Webview2 creation
 /// synchronously inside a Tauri window/tray event handler can deadlock Windows.
-fn release_webview_to_tray<R: Runtime>(
-    app: &AppHandle<R>,
-    webview: tauri::WebviewWindow<R>,
-) -> Result<(), String> {
+fn release_webview_to_tray(app: &AppHandle, webview: tauri::WebviewWindow) -> Result<(), String> {
     let state = app
         .try_state::<TrayState>()
         .ok_or("Orbit tray is unavailable.")?;
@@ -492,8 +489,8 @@ fn release_webview_to_tray<R: Runtime>(
 /// Pass the current settings flag and running-session status from lib.rs:
 /// tray::hide_for_performance_guard(app, guard_enabled, has_running_games).
 /// Returns true if Orbit actually hid the main window.
-pub fn hide_for_performance_guard<R: Runtime>(
-    app: &AppHandle<R>,
+pub fn hide_for_performance_guard(
+    app: &AppHandle,
     guard_enabled: bool,
     has_running_games: bool,
 ) -> Result<bool, String> {
@@ -519,7 +516,7 @@ pub fn hide_for_performance_guard<R: Runtime>(
 
 /// Used by the tray menu and left click. A recreated UI bootstraps its state
 /// from SQLite; in-progress native sessions are not affected.
-pub fn open_orbit<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+pub fn open_orbit(app: &AppHandle) -> Result<(), String> {
     let state = app
         .try_state::<TrayState>()
         .ok_or("Orbit tray is unavailable.")?;
@@ -534,6 +531,7 @@ pub fn open_orbit<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         window.show().map_err(|error| error.to_string())?;
         window.unminimize().map_err(|error| error.to_string())?;
         window.set_focus().map_err(|error| error.to_string())?;
+        crate::updates::maybe_check_on_reopen(app);
         return Ok(());
     }
     if state.opening.swap(true, Ordering::SeqCst) {
@@ -579,6 +577,7 @@ pub fn open_orbit<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
             window.show().map_err(|error| error.to_string())?;
             window.unminimize().map_err(|error| error.to_string())?;
             window.set_focus().map_err(|error| error.to_string())?;
+            crate::updates::maybe_check_on_reopen(&handle);
             Ok(())
         })();
         handle

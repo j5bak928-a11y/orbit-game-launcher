@@ -1,11 +1,13 @@
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_updater::{Error as UpdaterError, Update, UpdaterExt};
 
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const STARTUP_CHECK_DELAY: Duration = Duration::from_secs(4);
+const REOPEN_CHECK_DELAY: Duration = Duration::from_millis(750);
+const REOPEN_CHECK_COOLDOWN: Duration = Duration::from_secs(30);
 const PROGRESS_EMIT_STEP_BYTES: u64 = 512 * 1024;
 
 pub(crate) const MSG_IDLE: &str = "Ready to check for updates.";
@@ -144,6 +146,7 @@ struct PreparedUpdate {
 
 struct UpdateInner {
     in_flight: bool,
+    last_check_started_at: Option<Instant>,
     status: UpdateStatusSnapshot,
     prepared: Option<PreparedUpdate>,
 }
@@ -159,6 +162,7 @@ impl UpdateManager {
         Self {
             inner: Arc::new(Mutex::new(UpdateInner {
                 in_flight: false,
+                last_check_started_at: None,
                 status: UpdateStatusSnapshot::idle(),
                 prepared: None,
             })),
@@ -170,6 +174,29 @@ impl Default for UpdateManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn should_auto_check_on_reopen(
+    in_flight: bool,
+    state: &str,
+    last_attempt: Option<Instant>,
+    now: Instant,
+    cooldown: Duration,
+) -> bool {
+    if in_flight
+        || matches!(
+            state,
+            "ready" | "checking" | "downloading" | "installing" | "unsupported"
+        )
+    {
+        return false;
+    }
+    if let Some(previous) = last_attempt {
+        if now.saturating_duration_since(previous) < cooldown {
+            return false;
+        }
+    }
+    true
 }
 
 /// Returns the latest serialized updater state for UI initialization.
@@ -194,6 +221,43 @@ pub fn maybe_start_background_check(app: &AppHandle) {
     });
 }
 
+/// Runs a background update check when the GUI is reopened from the tray,
+/// restored from minimized state, or reactivated via single-instance launch.
+/// Respects `autoUpdates`, active games, already-ready updates, and cooldown.
+pub fn maybe_check_on_reopen(app: &AppHandle) {
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(REOPEN_CHECK_DELAY);
+        if !crate::auto_updates_enabled(&handle) || crate::has_busy_game(&handle) {
+            return;
+        }
+        let Some(manager) = handle.try_state::<UpdateManager>() else {
+            return;
+        };
+        let snapshot = {
+            let Ok(mut inner) = manager.inner.lock() else {
+                return;
+            };
+            let now = Instant::now();
+            if !should_auto_check_on_reopen(
+                inner.in_flight,
+                inner.status.state,
+                inner.last_check_started_at,
+                now,
+                REOPEN_CHECK_COOLDOWN,
+            ) {
+                return;
+            }
+            inner.in_flight = true;
+            inner.last_check_started_at = Some(now);
+            inner.status = UpdateStatusSnapshot::checking();
+            inner.status.to_json()
+        };
+        emit_status(&handle, &snapshot);
+        run_check_and_download(&handle);
+    });
+}
+
 /// Starts a background check-and-download cycle if one is not already active.
 pub fn start_check(app: &AppHandle) -> Value {
     let Some(manager) = app.try_state::<UpdateManager>() else {
@@ -207,6 +271,7 @@ pub fn start_check(app: &AppHandle) -> Value {
             return inner.status.to_json();
         }
         inner.in_flight = true;
+        inner.last_check_started_at = Some(Instant::now());
         inner.status = UpdateStatusSnapshot::checking();
         inner.status.to_json()
     };
@@ -562,5 +627,53 @@ mod tests {
             classify_install_error(&UpdaterError::TempDirNotFound),
             MSG_INSTALL_FAILED
         );
+    }
+
+    #[test]
+    fn reopen_auto_check_respects_state_in_flight_and_cooldown() {
+        let now = Instant::now();
+        let cooldown = Duration::from_secs(30);
+        // Idle, up-to-date, and error states allow reopen checks once cooldown elapses.
+        assert!(should_auto_check_on_reopen(
+            false, "idle", None, now, cooldown
+        ));
+        assert!(should_auto_check_on_reopen(
+            false,
+            "up-to-date",
+            now.checked_sub(Duration::from_secs(45)),
+            now,
+            cooldown
+        ));
+        assert!(should_auto_check_on_reopen(
+            false,
+            "error",
+            now.checked_sub(Duration::from_secs(30)),
+            now,
+            cooldown
+        ));
+        // Within cooldown window, skip automatic reopen checks.
+        assert!(!should_auto_check_on_reopen(
+            false,
+            "up-to-date",
+            now.checked_sub(Duration::from_secs(10)),
+            now,
+            cooldown
+        ));
+        // Never interrupt active checks/downloads/installs or overwrite a ready update.
+        assert!(!should_auto_check_on_reopen(
+            true, "idle", None, now, cooldown
+        ));
+        for blocked in [
+            "ready",
+            "checking",
+            "downloading",
+            "installing",
+            "unsupported",
+        ] {
+            assert!(
+                !should_auto_check_on_reopen(false, blocked, None, now, cooldown),
+                "expected state {blocked} to skip reopen check"
+            );
+        }
     }
 }

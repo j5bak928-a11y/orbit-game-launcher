@@ -267,8 +267,8 @@ async function run() {
             assert.equal(state.aria, 'true', 'running game Play must announce unavailable to assistive tech');
             assert.equal(state.disabled, false, 'unavailable Play remains focusable');
             assert.equal(state.focusKey, 'detail:play', 'active Play control retains focus while unavailable');
-            assert.match(state.background, /170, 145, 255/, 'unavailable Play must use muted purple background');
-            assert.equal(state.color, 'rgb(235, 228, 255)', 'unavailable Play retains light readable text in both themes');
+            assert.match(state.background, /rgba\(139, 122, 255, 0\.3/, 'unavailable Play must use muted accent background');
+            assert.equal(state.color, 'rgb(244, 242, 250)', 'unavailable Play retains light readable text in both themes');
             assert(state.outlineWidth >= 3 && state.outlineOffset >= 4, 'unavailable Play retains a visible focus ring');
           }
         }

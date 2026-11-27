@@ -163,6 +163,12 @@ test('poster cards keep the existing Orbit shell and expose working artwork acti
  await page.waitForFunction(()=>document.querySelector('.poster-card .favorite-float')?.getAttribute('aria-pressed')==='true');
  await card.locator('.card-menu-float').click();
  await page.locator('#game-actions-popup').waitFor();
+ assert.equal(await card.locator('.card-menu-float').getAttribute('aria-expanded'),'true','3-dots trigger reports expanded state while menu is open');
+ const menuBounds=await page.evaluate(()=>({
+  sidebarRight:document.querySelector('.sidebar').getBoundingClientRect().right,
+  popupLeft:document.querySelector('#game-actions-popup').getBoundingClientRect().left
+ }));
+ assert(menuBounds.popupLeft>=menuBounds.sidebarRight,'column 1 actions popup stays inside main pane without overlapping sidebar');
  await page.keyboard.press('Escape');
  assert.equal(await page.locator('#game-actions-popup').count(),0,'Escape closes game card menu');
  await card.locator('.cover-play').click();

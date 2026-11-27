@@ -138,8 +138,11 @@
 			this.launchGameId = null;
 			this.recentMarkup = "";
 			this.libraryMarkup = "";
+			this.alphaMarkup = "";
 			this.statusKind = "none";
 			this.statusOwner = null;
+			this.statusFamily = "Standard";
+			this.noticeTimer = null;
 			this.audioCtx = null;
 		}
 		enter(returnPosition = null) {
@@ -208,8 +211,51 @@
 				);
 		}
 		notify(message) {
-			if (this.notice) this.notice.textContent = message;
-			else this.options.notify?.(message, true);
+			if (this.notice) {
+				if (this.noticeTimer !== null) clearTimeout(this.noticeTimer);
+				this.notice.textContent = message;
+				this.noticeTimer = setTimeout(() => {
+					this.noticeTimer = null;
+					if (this.notice && this.notice.textContent === message)
+						this.notice.textContent = "";
+				}, 3500);
+			} else this.options.notify?.(message, true);
+		}
+		glyphs() {
+			if (this.statusFamily === "Xbox") {
+				return {
+					select: "A",
+					back: "B",
+					fav: "X",
+					recent: "Y",
+					pages: "LB / RB",
+					scroll: "RS ↕",
+					search: "L3",
+					browse: "R3",
+				};
+			}
+			if (this.statusFamily === "PlayStation") {
+				return {
+					select: "×",
+					back: "○",
+					fav: "□",
+					recent: "△",
+					pages: "L1 / R1",
+					scroll: "RS ↕",
+					search: "L3",
+					browse: "R3",
+				};
+			}
+			return {
+				select: "A / ×",
+				back: "B / ○",
+				fav: "X / □",
+				recent: "Y / △",
+				pages: "LB / RB",
+				scroll: "RS ↕",
+				search: "L3",
+				browse: "R3",
+			};
 		}
 		isGameBusy() {
 			return !!(
@@ -339,8 +385,10 @@
 			this.launchReturn = null;
 			this.recentMarkup = "";
 			this.libraryMarkup = "";
+			this.alphaMarkup = "";
 			this.statusKind = "none";
 			this.statusOwner = null;
+			this.statusFamily = "Standard";
 			this.abort = new AbortController();
 			const signal = this.abort.signal;
 			this.inertRecords = ["app", "modal-root"]
@@ -354,7 +402,7 @@
 			this.root.className = "controller-shell";
 			this.root.setAttribute("role", "dialog");
 			this.root.setAttribute("aria-modal", "true");
-			this.root.innerHTML = `<div class="tv-stage"><header class="tv-header"><div class="tv-brand"><span class="tv-brand-lockup" role="img" aria-label="Orbit Launcher"><img class="orbit-brand-mark tv-brand-mark" src="../../assets/branding/orbit-generated-mark.png" alt=""/><span class="orbit-brand-word tv-brand-word" aria-hidden="true">orbit</span></span><span data-tv-i18n="CONTROLLER MODE">CONTROLLER MODE</span></div><div class="tv-header-actions"><span class="tv-controller-status" role="status">Keyboard ready · connect a controller</span><button class="tv-focus tv-exit" data-tv-key="exit" data-tv-action="exit" data-tv-i18n="Exit controller mode">Exit controller mode <span>Esc</span></button></div></header><main class="tv-main"><div class="tv-banner-slot"></div><div class="tv-recent-slot"></div><section class="tv-library-section" data-tv-aria="Game library" aria-label="Game library"><div class="tv-library-heading"><div><p class="tv-eyebrow" data-tv-i18n="ONE HOME. EVERY GAME.">ONE HOME. EVERY GAME.</p><h1 data-tv-i18n="Your library">Your library <span class="tv-total"></span></h1></div><div class="tv-tabs" role="group" data-tv-aria="Choose collection" aria-label="Choose collection"><button class="tv-focus" data-tv-key="filter:all" data-tv-action="filter" data-tv-filter="all" data-tv-i18n="All games">All games</button><button class="tv-focus" data-tv-key="filter:favorites" data-tv-action="filter" data-tv-filter="favorites" data-tv-i18n="Favorites">Favorites</button><button class="tv-focus tv-tab-utility" data-tv-key="drawer:open" data-tv-action="openDrawer" aria-haspopup="dialog" aria-expanded="false" data-tv-i18n="Browse">Browse</button><button class="tv-focus tv-tab-utility" data-tv-key="search:open" data-tv-action="openSearch" aria-haspopup="dialog" aria-expanded="false" data-tv-i18n="Search">Search</button></div></div><div class="tv-active-filters-slot"></div><div class="tv-library-slot"></div><div class="tv-pagination"><span class="tv-page-label"></span><div><button class="tv-focus" data-tv-key="page:previous" data-tv-action="previousPage" data-tv-aria="Previous page" aria-label="Previous page" data-tv-i18n="← Previous">← Previous</button><button class="tv-focus" data-tv-key="page:next" data-tv-action="nextPage" data-tv-aria="Next page" aria-label="Next page" data-tv-i18n="Next →">Next →</button></div></div></section></main><footer class="tv-footer"><div class="tv-selected">Choose something to play.</div><div class="tv-hints"><span><b>↔ ↕</b> <span data-tv-i18n="Move">Move</span></span><span><b>A / ×</b> <span data-tv-i18n="Select">Select</span></span><span><b>B / ○</b> <span data-tv-i18n="Back">Back</span></span><span><b>X / □</b> <span data-tv-i18n="Favorite">Favorite</span></span><span><b>Y / △</b> <span data-tv-i18n="Recent">Recent</span></span><span><b>LB / LT · RB / RT</b> <span data-tv-i18n="Pages">Pages</span></span><span><b>RS ↕</b> <span data-tv-i18n="Scroll">Scroll</span></span><span><b>L3 · R3</b> <span data-tv-i18n="Browse">Browse</span></span></div></footer></div><div class="tv-detail-slot"></div><dialog class="tv-overlay-dialog" closedby="any" aria-labelledby="tv-overlay-title"></dialog><div class="tv-notice" role="status" aria-live="polite"></div>`;
+			this.root.innerHTML = `<div class="tv-stage"><header class="tv-header"><div class="tv-brand"><span class="tv-brand-lockup" role="img" aria-label="Orbit Launcher"><img class="orbit-brand-mark tv-brand-mark" src="../../assets/branding/orbit-generated-mark.png" alt=""/><span class="orbit-brand-word tv-brand-word" aria-hidden="true">orbit</span></span><span data-tv-i18n="CONTROLLER MODE">CONTROLLER MODE</span></div><div class="tv-header-actions"><span class="tv-controller-status" role="status">Keyboard ready · connect a controller</span><button class="tv-focus tv-exit" data-tv-key="exit" data-tv-action="exit" data-tv-i18n="Exit controller mode">Exit controller mode <span>Esc</span></button></div></header><main class="tv-main"><div class="tv-banner-slot"></div><div class="tv-recent-slot"></div><section class="tv-library-section" data-tv-aria="Game library" aria-label="Game library"><div class="tv-library-heading"><div><p class="tv-eyebrow" data-tv-i18n="ONE HOME. EVERY GAME.">ONE HOME. EVERY GAME.</p><h1 data-tv-i18n="Your library">Your library <span class="tv-total"></span></h1></div><div class="tv-tabs" role="group" data-tv-aria="Choose collection" aria-label="Choose collection"><button class="tv-focus" data-tv-key="filter:all" data-tv-action="filter" data-tv-filter="all" data-tv-i18n="All games">All games</button><button class="tv-focus" data-tv-key="filter:favorites" data-tv-action="filter" data-tv-filter="favorites" data-tv-i18n="Favorites">Favorites</button><button class="tv-focus tv-tab-utility" data-tv-key="drawer:open" data-tv-action="openDrawer" aria-haspopup="dialog" aria-expanded="false" data-tv-i18n="Browse">Browse</button><button class="tv-focus tv-tab-utility" data-tv-key="search:open" data-tv-action="openSearch" aria-haspopup="dialog" aria-expanded="false" data-tv-i18n="Search">Search</button></div></div><div class="tv-active-filters-slot"></div><div class="tv-alpha-jump-slot"></div><div class="tv-library-slot"></div><div class="tv-pagination"><span class="tv-page-label"></span><div><button class="tv-focus" data-tv-key="page:previous" data-tv-action="previousPage" data-tv-aria="Previous page" aria-label="Previous page" data-tv-i18n="← Previous">← Previous</button><button class="tv-focus" data-tv-key="page:next" data-tv-action="nextPage" data-tv-aria="Next page" aria-label="Next page" data-tv-i18n="Next →">Next →</button></div></div></section></main><footer class="tv-footer"><div class="tv-selected">Choose something to play.</div><div class="tv-hints"></div></footer></div><div class="tv-detail-slot"></div><dialog class="tv-overlay-dialog" closedby="any" aria-labelledby="tv-overlay-title"></dialog><div class="tv-notice" role="status" aria-live="polite"></div>`;
 			document.body.appendChild(this.root);
 			this.stage = this.root.querySelector(".tv-stage");
 			this.notice = this.root.querySelector(".tv-notice");
@@ -547,6 +595,29 @@
 			for (const element of this.root.querySelectorAll("[data-tv-aria]"))
 				element.setAttribute("aria-label", t(element.dataset.tvAria));
 			this.updateControllerStatus();
+			this.updateHints();
+		}
+		updateHints() {
+			const hints = this.root?.querySelector(".tv-hints");
+			if (!hints) return;
+			const g = this.glyphs();
+			const pairs = [
+				["↔ ↕", "Move"],
+				[g.select, "Select"],
+				[g.back, "Back"],
+				[g.fav, "Favorite"],
+				[g.recent, "Recent"],
+				[g.pages, "Pages"],
+				[g.scroll, "Scroll"],
+				[g.search, "Search"],
+				[g.browse, "Browse"],
+			];
+			hints.innerHTML = pairs
+				.map(
+					([key, label]) =>
+						`<span><b>${escapeHtml(key)}</b> <span>${escapeHtml(t(label))}</span></span>`,
+				)
+				.join("");
 		}
 		updateControllerStatus() {
 			const status = this.root?.querySelector(".tv-controller-status");
@@ -573,6 +644,7 @@
 			if (!this.active || !this.root) return;
 			this.recentMarkup = "";
 			this.libraryMarkup = "";
+			this.alphaMarkup = "";
 			this.detailSignature = "";
 			this.bannerMarkup = "";
 			this.activeBarMarkup = "";
@@ -585,11 +657,14 @@
 			this.input.reset();
 			this.abort?.abort();
 			if (this.renderFrame !== null) cancelAnimationFrame(this.renderFrame);
+			if (this.noticeTimer !== null) clearTimeout(this.noticeTimer);
 			this.renderFrame = null;
+			this.noticeTimer = null;
 			this.revealFocusAfterResize = false;
 			this.detailSignature = "";
 			this.recentMarkup = "";
 			this.libraryMarkup = "";
+			this.alphaMarkup = "";
 			this.bannerMarkup = "";
 			this.activeBarMarkup = "";
 			this.overlay = null;
@@ -662,13 +737,18 @@
 				this.input.reset();
 				result = { actions: [], status: { kind: "unavailable" } };
 			}
+			const nextFamily = result.status.family || "Standard";
 			if (
 				this.statusKind !== result.status.kind ||
-				this.statusOwner !== (this.input.owner || null)
+				this.statusOwner !== (this.input.owner || null) ||
+				this.statusFamily !== nextFamily
 			) {
 				this.statusKind = result.status.kind;
 				this.statusOwner = this.input.owner || null;
+				this.statusFamily = nextFamily;
 				this.updateControllerStatus();
+				this.updateHints();
+				if (this.detailId) this.renderDetail();
 			}
 			if (result.actions.length) this.lastPadAction = time;
 			for (const action of result.actions) this.command(action);
@@ -1136,6 +1216,7 @@
 			const libraryMarkup = records.length
 				? `<div class="tv-library">${records.map((game) => this.card(game, "library")).join("")}</div>`
 				: this.emptyStateMarkup();
+			this.renderAlphaJump(list, size, records);
 			if (libraryMarkup !== this.libraryMarkup) {
 				const librarySlot = this.root.querySelector(".tv-library-slot");
 				librarySlot.innerHTML = libraryMarkup;
@@ -1197,6 +1278,42 @@
 			}
 			this.updateSelectedLabel();
 		}
+		renderAlphaJump(list, size, records) {
+			const slot = this.root?.querySelector(".tv-alpha-jump-slot");
+			if (!slot) return;
+			if (this.sort !== "name" || this.pageCount <= 2 || !list.length) {
+				if (this.alphaMarkup) {
+					slot.innerHTML = "";
+					this.alphaMarkup = "";
+				}
+				return;
+			}
+			const bucketOf = (name) => {
+				const ch = String(name || "").trim().charAt(0).toLocaleUpperCase();
+				return /^[A-Z]$/.test(ch) ? ch : "#";
+			};
+			const pages = new Map();
+			for (let idx = 0; idx < list.length; idx++) {
+				const letter = bucketOf(list[idx].name);
+				if (!pages.has(letter)) pages.set(letter, Math.floor(idx / size));
+			}
+			const activeLetter = records.length ? bucketOf(records[0].name) : "";
+			const markup =
+				pages.size > 1
+					? `<div class="tv-alpha-jump" role="navigation" aria-label="${escapeHtml(t("Jump to letter"))}">${[
+							...pages.entries(),
+						]
+							.map(
+								([letter, targetPage]) =>
+									`<button type="button" class="tv-focus tv-alpha-btn" data-tv-action="jumpLetter" data-tv-page="${targetPage}" data-tv-key="alpha:${letter}" ${letter === activeLetter ? 'aria-current="true"' : ""}>${letter}</button>`,
+							)
+							.join("")}</div>`
+					: "";
+			if (markup !== this.alphaMarkup) {
+				slot.innerHTML = markup;
+				this.alphaMarkup = markup;
+			}
+		}
 		emptyStateMarkup() {
 			if (this.query.trim() || this.filter.startsWith("collection:")) {
 				return `<div class="tv-empty"><h2>${escapeHtml(t("No games match these filters"))}</h2><p>${escapeHtml(t("Try clearing your search or choosing another shelf."))}</p><button class="tv-focus" data-tv-action="clearFilters" data-tv-key="empty:clear">${escapeHtml(t("Clear filters"))}</button></div>`;
@@ -1251,6 +1368,7 @@
 			const cols = this.gameCollections(game.id);
 			const signature = JSON.stringify([
 				window.OrbitI18n?.getLanguage?.(),
+				this.statusFamily,
 				game.id,
 				game.name,
 				game.source,
@@ -1296,7 +1414,7 @@
 						.join("")}</div>`
 				: "";
 			const sheetLandscape = !art(game.cover) && !!art(game.banner);
-			slot.innerHTML = `<div class="tv-sheet-scrim"><section class="tv-sheet" role="dialog" aria-modal="true" aria-labelledby="tv-game-title"><div class="tv-sheet-backdrop" aria-hidden="true">${background ? `<img src="${background}" alt="" loading="lazy"/>` : ""}</div><div class="tv-sheet-layout"><div class="tv-sheet-art${sheetLandscape ? " is-landscape" : ""}">${this.artwork(game, sheetLandscape ? "landscape" : "poster")}</div><div class="tv-sheet-copy"><p class="tv-eyebrow">${escapeHtml(t("GAME PROFILE"))} <span aria-hidden="true">/</span> ${escapeHtml(sourceName(game.source, "Your library"))}</p><h2 id="tv-game-title">${escapeHtml(game.name)}</h2><p class="tv-sheet-meta">${metaLine}</p>${collectionBadges}<div class="tv-sheet-actions"><button class="tv-focus tv-play" data-tv-action="launch" data-tv-key="detail:play" data-tv-game="${escapeHtml(game.id)}" aria-busy="${!!pending}" aria-disabled="${!!unavailable}">${escapeHtml(t(pending ? "Starting…" : running ? "Playing now" : "▶ Play game"))}</button><button class="tv-focus tv-favorite-btn${game.favorite ? " is-favorite" : ""}" data-tv-action="favorite" data-tv-key="detail:favorite" data-tv-game="${escapeHtml(game.id)}" aria-pressed="${String(!!game.favorite)}">${HEART_SVG}<span>${escapeHtml(t(game.favorite ? "Favorited" : "Add to favorites"))}</span></button><button class="tv-focus" data-tv-action="back" data-tv-key="detail:back">${escapeHtml(t("Back to library"))}</button></div><div class="tv-sheet-secondary"><button class="tv-focus tv-sheet-pill" data-tv-action="openGameSheet" data-tv-key="detail:options" data-tv-game="${escapeHtml(game.id)}">${escapeHtml(t("Game options"))}</button>${profileButton}</div><p class="tv-sheet-hint"><span>B / ○</span> ${escapeHtml(t("Return to the collection"))}</p></div></div></section></div>`;
+			slot.innerHTML = `<div class="tv-sheet-scrim"><section class="tv-sheet" role="dialog" aria-modal="true" aria-labelledby="tv-game-title"><div class="tv-sheet-backdrop" aria-hidden="true">${background ? `<img src="${background}" alt="" loading="lazy"/>` : ""}</div><div class="tv-sheet-layout"><div class="tv-sheet-art${sheetLandscape ? " is-landscape" : ""}">${this.artwork(game, sheetLandscape ? "landscape" : "poster")}</div><div class="tv-sheet-copy"><p class="tv-eyebrow">${escapeHtml(t("GAME PROFILE"))} <span aria-hidden="true">/</span> ${escapeHtml(sourceName(game.source, "Your library"))}</p><h2 id="tv-game-title">${escapeHtml(game.name)}</h2><p class="tv-sheet-meta">${metaLine}</p>${collectionBadges}<div class="tv-sheet-actions"><button class="tv-focus tv-play" data-tv-action="launch" data-tv-key="detail:play" data-tv-game="${escapeHtml(game.id)}" aria-busy="${!!pending}" aria-disabled="${!!unavailable}">${escapeHtml(t(pending ? "Starting…" : running ? "Playing now" : "▶ Play game"))}</button><button class="tv-focus tv-favorite-btn${game.favorite ? " is-favorite" : ""}" data-tv-action="favorite" data-tv-key="detail:favorite" data-tv-game="${escapeHtml(game.id)}" aria-pressed="${String(!!game.favorite)}">${HEART_SVG}<span>${escapeHtml(t(game.favorite ? "Favorited" : "Add to favorites"))}</span></button><button class="tv-focus" data-tv-action="back" data-tv-key="detail:back">${escapeHtml(t("Back to library"))}</button></div><div class="tv-sheet-secondary"><button class="tv-focus tv-sheet-pill" data-tv-action="openGameSheet" data-tv-key="detail:options" data-tv-game="${escapeHtml(game.id)}">${escapeHtml(t("Game options"))}</button>${profileButton}</div><p class="tv-sheet-hint"><span>${escapeHtml(this.glyphs().back)}</span> ${escapeHtml(t("Return to the collection"))}</p></div></div></section></div>`;
 			this.syncLoadedArtwork(slot);
 		}
 		renderOverlay({ preserveInput = false } = {}) {
@@ -1445,7 +1563,8 @@
 				}
 			} else if (this.overlay.type === "search") {
 				const matches = this.filteredGames();
-				const topMatches = matches.slice(0, 6);
+				const topMatches = matches.slice(0, 10);
+				const g = this.glyphs();
 				const summary = matches.length
 					? t(
 							matches.length === 1
@@ -1457,9 +1576,10 @@
 				sig = JSON.stringify([
 					"search",
 					window.OrbitI18n?.getLanguage?.(),
+					this.statusFamily,
 					this.query,
 					matches.length,
-					topMatches.map((g) => `${g.id}:${g.name}`),
+					topMatches.map((m) => `${m.id}:${m.name}`),
 				]);
 				if (preserveInput && dialog.querySelector("#tv-search-input")) {
 					const resultsSlot = dialog.querySelector(".tv-search-results-slot");
@@ -1480,7 +1600,7 @@
 								)
 								.join("")}</div>`,
 					).join("");
-					markup = `<div class="tv-overlay-surface tv-search-surface"><div class="tv-overlay-head"><h1 id="tv-overlay-title">${escapeHtml(t("Quick search"))}</h1><button type="button" class="tv-focus tv-overlay-close" data-tv-action="closeOverlay" data-tv-key="overlay:close">${escapeHtml(t("Close"))}</button></div><div class="tv-overlay-body"><form id="tv-search-form" class="tv-search-form"><label for="tv-search-input" class="tv-sr-only">${escapeHtml(t("Search games"))}</label><input id="tv-search-input" class="tv-focus tv-search-input" data-tv-key="search:input" type="search" value="${escapeHtml(this.query)}" placeholder="${escapeHtml(t("Type a title, genre, or tag…"))}" autocomplete="off" /><button type="submit" class="tv-focus tv-search-apply" data-tv-key="search:apply">${escapeHtml(t("Apply"))}</button></form><div class="tv-kbd" role="group" aria-label="${escapeHtml(t("Quick search"))}">${keyboardHtml}<div class="tv-kbd-row tv-kbd-actions"><button type="button" class="tv-focus tv-kbd-wide" data-tv-action="searchKey" data-tv-char=" " data-tv-key="kbd:space">${escapeHtml(t("Space"))}</button><button type="button" class="tv-focus tv-kbd-wide" data-tv-action="searchBackspace" data-tv-key="kbd:back" aria-label="${escapeHtml(t("Delete character"))}">⌫</button><button type="button" class="tv-focus tv-kbd-wide" data-tv-action="searchClear" data-tv-key="kbd:clear">${escapeHtml(t("Clear"))}</button><button type="button" class="tv-focus tv-kbd-wide tv-drawer-accent" data-tv-action="closeOverlay" data-tv-key="kbd:done">${escapeHtml(t("Done"))}</button></div></div><div class="tv-search-results-head"><h2>${escapeHtml(t("Matching games"))}</h2><span class="tv-search-count">${escapeHtml(summary)}</span></div><div class="tv-search-results-slot">${this.searchResultsMarkup(topMatches)}</div></div></div>`;
+					markup = `<div class="tv-overlay-surface tv-search-surface"><div class="tv-overlay-head"><h1 id="tv-overlay-title">${escapeHtml(t("Quick search"))}</h1><button type="button" class="tv-focus tv-overlay-close" data-tv-action="closeOverlay" data-tv-key="overlay:close">${escapeHtml(t("Close"))}</button></div><div class="tv-overlay-body"><form id="tv-search-form" class="tv-search-form"><label for="tv-search-input" class="tv-sr-only">${escapeHtml(t("Search games"))}</label><input id="tv-search-input" class="tv-focus tv-search-input" data-tv-key="search:input" type="search" value="${escapeHtml(this.query)}" placeholder="${escapeHtml(t("Type a title, genre, or tag…"))}" autocomplete="off" /><button type="submit" class="tv-focus tv-search-apply" data-tv-key="search:apply">${escapeHtml(t("Apply"))}</button></form><div class="tv-kbd" role="group" aria-label="${escapeHtml(t("Quick search"))}">${keyboardHtml}<div class="tv-kbd-row tv-kbd-actions"><button type="button" class="tv-focus tv-kbd-wide" data-tv-action="searchKey" data-tv-char=" " data-tv-key="kbd:space">${escapeHtml(t("Space"))}</button><button type="button" class="tv-focus tv-kbd-wide" data-tv-action="searchBackspace" data-tv-key="kbd:back" aria-label="${escapeHtml(t("Delete character"))}">⌫</button><button type="button" class="tv-focus tv-kbd-wide" data-tv-action="searchClear" data-tv-key="kbd:clear">${escapeHtml(t("Clear"))}</button><button type="button" class="tv-focus tv-kbd-wide tv-drawer-accent" data-tv-action="closeOverlay" data-tv-key="kbd:done">${escapeHtml(t("Done"))}</button></div><p class="tv-kbd-hint">${escapeHtml(t("{back} Backspace · {space} Space", { back: g.fav, space: g.recent }))}</p></div><div class="tv-search-results-head"><h2>${escapeHtml(t("Matching games"))}</h2><span class="tv-search-count">${escapeHtml(summary)}</span></div><div class="tv-search-results-slot">${this.searchResultsMarkup(topMatches)}</div></div></div>`;
 				}
 			}
 			if (markup && sig !== this.overlaySignature) {
@@ -1601,9 +1721,10 @@
 			}
 			if (
 				(direction === "left" || direction === "right") &&
-				current.closest(".tv-recent")
+				(current.closest(".tv-recent") || current.closest(".tv-alpha-jump"))
 			) {
-				const row = [...this.root.querySelectorAll(".tv-recent .tv-focus")],
+				const strip = current.closest(".tv-recent, .tv-alpha-jump");
+				const row = [...strip.querySelectorAll(".tv-focus")],
 					index = row.indexOf(current) + (direction === "right" ? 1 : -1);
 				if (row[index]) {
 					this.focus(row[index]);
@@ -1665,12 +1786,24 @@
 				return;
 			}
 			if (action === "favorite") {
+				if (this.overlay?.type === "search") {
+					this.act("searchBackspace", button).catch((error) =>
+						this.notify(error.message),
+					);
+					return;
+				}
 				if (this.overlay) return;
 				const id = button?.dataset?.tvGame || this.detailId;
 				if (id)
 					this.act("favorite", { dataset: { tvGame: id } }).catch((error) =>
 						this.notify(error?.message || t("Could not update the library.")),
 					);
+				return;
+			}
+			if (action === "recent" && this.overlay?.type === "search") {
+				this.act("searchKey", {
+					dataset: { tvChar: " ", tvKey: button?.dataset?.tvKey || "kbd:space" },
+				}).catch((error) => this.notify(error.message));
 				return;
 			}
 			this.act(action, button).catch((error) => this.notify(error.message));
@@ -2051,6 +2184,16 @@
 				this.filter = sanitizeFilter(button.dataset.tvFilter);
 				this.page = 0;
 				this.playCue("confirm");
+				this.render({ focusLibrary: true });
+				return;
+			}
+			if (action === "jumpLetter") {
+				const targetPage = Math.max(
+					0,
+					Math.min(Number(button.dataset.tvPage) || 0, this.pageCount - 1),
+				);
+				this.page = targetPage;
+				this.playCue("move");
 				this.render({ focusLibrary: true });
 				return;
 			}

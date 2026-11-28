@@ -1,13 +1,13 @@
-# Orbit Game Launcher — Development Roadmap (`v0.5.0` → `v1.0.0`)
+# Orbit Game Launcher — Development Roadmap (`v0.6.0` → `v1.0.0`)
 
-**Baseline:** Orbit **`v0.5.0`** is a native **Rust + Tauri 2** desktop launcher with SQLite persistence, portable `.orbit` backups, system-tray WebView2 teardown, Ed25519-signed auto-updates (startup + GUI reopen), 5-language localization (`en`, `nl`, `de`, `fr`, `es`), play statuses, hidden games, custom collections, multi-filters, smart search operators, Bulk Action Dock, launch profiles, Xbox AppsFolder support, and **Controller Mode 2.0** (collections/status/profile parity, couch drawers, gamepad quick search, opt-in auto-entry/audio/haptics, zero idle gamepad polling).
+**Baseline:** Orbit **`v0.6.0`** is a native **Rust + Tauri 2** desktop launcher with SQLite persistence, portable `.orbit` backups, system-tray WebView2 teardown, Ed25519-signed auto-updates (startup + GUI reopen + focus), 5-language localization (`en`, `nl`, `de`, `fr`, `es`), play statuses, hidden games, custom collections, per-game personal notes & 1–5 star ratings, multi-filters, smart search operators (`status:`, `source:`, `tag:`, `in:`, `time:`, `rating:`, `is:fav`, `is:hidden`), Bulk Action Dock, launch profiles, rich 12-month playtime analytics (calendar heatmap, streaks, session averages, breakdowns, CSV/JSON export), read-only Library Health Check, Xbox / Windows Appx Discovery 2.0 + optional SteamGridDB artwork fallback, and **Controller Mode 2.0**.
 
 These are **engineering milestones, not promises of public binary availability or dates**.
 
 ```mermaid
 flowchart LR
-    V05["v0.5.0 Baseline\n(Shipped)"] --> V06["v0.6.0 (Next)\nOrbit Intelligence"]
-    V06 --> V07["v0.7.0\nPower-User & Ecosystem"]
+    V05["v0.5.0–0.5.3\n(Shipped)"] --> V06["v0.6.0 Baseline\nOrbit Intelligence (Shipped)"]
+    V06 --> V07["v0.7.0 (Next)\nPower-User & Ecosystem"]
     V07 --> V08["v0.8.0–0.9.0\nHardening & Benchmarks"]
     V08 --> V10["v1.0.0\nOrbit Complete"]
     V10 --> V11["v1.1+ Horizons\n(Linux / SteamOS)"]
@@ -43,17 +43,18 @@ flowchart LR
 
 ---
 
-## Phase 2 — `v0.6.0`: Orbit Intelligence (Local Insights & Smarter Discovery)
+## Phase 2 — `v0.6.0`: Orbit Intelligence (Local Insights & Smarter Discovery) — *Delivered*
 
 **Goal:** Turn local SQLite history and filesystem metadata into meaningful insights and healthier libraries — 100% offline, deterministic, and private.
 
 | Workstream | Concrete Deliverables | Primary Files |
 | :--- | :--- | :--- |
-| **Rich Playtime Analytics** | 12-month calendar activity heatmap, playtime breakdown by storefront/genre/status, average session length, play streaks, and CSV/JSON statistics export. | `src-tauri/src/database.rs`, `src/ui/app.js`, `src/ui/styles.css` |
-| **Smart "What Should I Play?" Picker** | Upgrade `Choose for me` into a mood/context selector (*Quick session < 1h*, *Continue Currently Playing*, *Neglected Backlog*, *Unplayed Gems*, *True Random*) using pure local SQLite scoring. | `src/ui/app.js` |
-| **Per-Game Notes & Rating** | Optional personal notes (mod lists, save reminders, controller tweaks) and 1–5 star personal rating stored in SQLite, searchable via `#global-search`, and preserved in `.orbit` backups. | `src-tauri/src/database.rs`, `src-tauri/src/backup.rs`, `src/ui/app.js` |
-| **Library Health Check** | On-demand read-only scan flagging missing executables, moved install paths, or broken covers with one-click *Relocate executable*, *Mark Completed/Hide*, or *Remove*. | `src-tauri/src/native.rs`, `src-tauri/src/lib.rs`, `src/ui/app.js` |
-| **Xbox / Packaged Store Discovery 2.0** | Expand `MicrosoftGame.config` scanning with Windows installed-package (`Appx`) metadata lookup for better Game Pass/Microsoft Store detection and optional high-res portrait artwork provider fallback (e.g., user-supplied SteamGridDB key). | `src-tauri/src/native.rs`, `src-tauri/src/artwork.rs` |
+| **Rich Playtime Analytics** | 12-month calendar activity heatmap, playtime breakdown by storefront/genre/status, average & longest session length, current & longest play streaks, and CSV/JSON statistics export. | `src-tauri/src/database.rs`, `src/ui/app.js`, `src/ui/styles.css` |
+| **Per-Game Notes & Rating** | Optional personal notes (mod lists, save reminders, controller tweaks) and 1–5 star personal rating stored in SQLite, searchable via `#global-search` (`rating:` operator + `Highest rated` sort), and preserved in `.orbit` & JSON backups. | `src-tauri/src/database.rs`, `src-tauri/src/backup.rs`, `src/ui/app.js` |
+| **Library Health Check** | On-demand read-only scan flagging missing executables, moved install paths, or broken/missing covers with one-click *Relocate .exe*, *Find cover*, *Mark Completed*, *Hide*, or *Remove*. | `src-tauri/src/native.rs`, `src-tauri/src/lib.rs`, `src/ui/app.js` |
+| **Xbox / Packaged Store Discovery 2.0** | Expanded `MicrosoftGame.config` scanning with Windows installed-package (`Appx`) metadata lookup for better Game Pass/Microsoft Store detection and optional high-res portrait/banner artwork fallback via user-supplied SteamGridDB API key (never exported in backups). | `src-tauri/src/native.rs`, `src-tauri/src/artwork.rs` |
+
+*(Note: `Choose for me` was intentionally kept lightweight without a mood/context picker.)*
 
 **Exit Criteria:**
 - Zero external telemetry or mandatory API keys; statistics queries execute in `< 50 ms` on 10,000+ session rows.

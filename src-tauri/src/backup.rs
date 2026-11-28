@@ -1176,4 +1176,107 @@ mod tests {
         );
         assert_eq!(fs::read(f.dest.join(installed)).unwrap(), png());
     }
+
+    #[test]
+    fn portable_orbit_backup_roundtrip_preserves_notes_ratings_collections_statuses_and_profiles() {
+        let root = std::env::temp_dir().join(format!("orbit-v060-rt-{}", Uuid::new_v4()));
+        let src_art = root.join("src_art");
+        let dst_art = root.join("dst_art");
+        fs::create_dir_all(&src_art).unwrap();
+        let cover_name = format!("{}.png", Uuid::new_v4());
+        fs::write(src_art.join(&cover_name), png()).unwrap();
+
+        let mut src_db = crate::database::LibraryDatabase::open(&root.join("src.db")).unwrap();
+        src_db
+            .save_settings(&json!({"steamGridDbApiKey": "secret_user_key_should_not_export"}))
+            .unwrap();
+        let added = src_db
+            .upsert(&json!({
+                "name": "Hollow Knight: Silksong",
+                "source": "manual",
+                "executable": r"C:\Games\Silksong\Silksong.exe",
+                "cover": cover_name,
+                "genre": "Metroidvania",
+                "tags": ["Indie", "Soulslike"],
+                "play_status": "playing",
+                "hidden": true,
+                "notes": "All charms collected.\nTry steel soul run next.",
+                "rating": 5,
+                "launch_env": {"DXVK_HUD": "fps"},
+                "launch_profiles": [{
+                    "name": "Modded",
+                    "launch_args": ["--mods"],
+                    "launch_env": {"MOD_LOADER": "1"}
+                }]
+            }))
+            .unwrap();
+        let gid = added["game"]["id"].as_str().unwrap().to_owned();
+        let col = src_db
+            .create_collection(
+                &json!({"name": "All-Time Greats", "color": "#8b7aff", "icon": "trophy"}),
+            )
+            .unwrap();
+        src_db
+            .set_game_collections(&gid, &[col["id"].as_str().unwrap().to_owned()])
+            .unwrap();
+
+        let payload = src_db.export_json().unwrap();
+        assert!(payload["settings"].get("steamGridDbApiKey").is_none());
+
+        let archive = root.join("orbit-v060.orbit");
+        let exp = export_backup(&payload, &src_art, &archive).unwrap();
+        assert_eq!(exp["artworkCount"], 1);
+        assert_eq!(exp["missingArtwork"], 0);
+
+        let mut dst_db = crate::database::LibraryDatabase::open(&root.join("dst.db")).unwrap();
+        let staged = import_backup_checked_staged(&archive, &dst_art, |lib| {
+            dst_db.preflight_restore_json(lib)
+        })
+        .unwrap();
+        let restore_res = dst_db.restore_json(staged.library());
+        let referenced: HashSet<String> = dst_db
+            .list("name")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| {
+                ["cover", "banner", "icon"]
+                    .into_iter()
+                    .filter_map(|k| g[k].as_str().filter(|s| !s.is_empty()).map(str::to_owned))
+            })
+            .collect();
+        let report = staged.finish(restore_res, Some(&referenced)).unwrap();
+        assert_eq!(report["imported"], 1);
+
+        let restored = dst_db.list("name").unwrap();
+        let games = restored.as_array().unwrap();
+        assert_eq!(games.len(), 1);
+        let g = &games[0];
+        assert_eq!(g["name"], "Hollow Knight: Silksong");
+        assert_eq!(
+            g["notes"],
+            "All charms collected.\nTry steel soul run next."
+        );
+        assert_eq!(g["rating"], 5);
+        assert_eq!(g["play_status"], "playing");
+        assert_eq!(g["hidden"], true);
+        assert_eq!(g["launch_env"]["DXVK_HUD"], "fps");
+        assert_eq!(g["launch_profiles"].as_array().unwrap().len(), 1);
+        assert_eq!(g["launch_profiles"][0]["name"], "Modded");
+        let restored_cover = g["cover"].as_str().unwrap();
+        assert!(!restored_cover.is_empty());
+        assert_eq!(fs::read(dst_art.join(restored_cover)).unwrap(), png());
+
+        let cols = dst_db.list_collections().unwrap();
+        assert_eq!(cols.as_array().unwrap().len(), 1);
+        assert_eq!(cols[0]["name"], "All-Time Greats");
+        assert_eq!(cols[0]["game_ids"], json!([g["id"]]));
+        assert_eq!(
+            dst_db.get_settings().unwrap()["steamGridDbApiKey"],
+            json!("")
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
 }

@@ -9,7 +9,7 @@ function installFixture({ count }) {
     favorite: false, total_play_seconds: 0, last_played_at: null,
     created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
     launch_args: [], working_dir: '', play_status: '', hidden: false,
-    launch_env: {}, launch_profiles: [],
+    launch_env: {}, launch_profiles: [], notes: '', rating: 0,
   }));
   const collections = [];
   let nextColId = 0;
@@ -19,7 +19,8 @@ function installFixture({ count }) {
   let fullscreen = false;
   let settings = { theme:'dark', accent:'#8b7aff', reduceMotion:true, autoScan:false,
     useSteamArtwork:false, libraryFolders:[], view:'grid', sort:'name', onboardingDone:true,
-    controllerAutoEnter:false, controllerAudio:false, controllerHaptics:false };
+    controllerAutoEnter:false, controllerAudio:false, controllerHaptics:false,
+    steamGridDbApiKey:'' };
   const listeners = [];
   const counts = { listGames:0, snapshot:0, runningGames:0, events:0, pageRebuilds:0 };
   const copy = value => JSON.parse(JSON.stringify(value));
@@ -118,6 +119,8 @@ function installFixture({ count }) {
     discoverGames:async () => ({ games:[], warnings:[] }),
     importGames:async items => { for (const item of items) add(item); return { imported:items.length, skipped:0, errors:[] }; },
     repairSteamArtwork:async () => ({ found:0, icons:0, attempted:0, disabled:false }),
+    checkLibraryHealth:async () => ({ checked:games.length, healthy:games.length, summary:{ missingExecutable:0, missingInstallPath:0, brokenCover:0, missingCover:0 }, issues:[], truncated:false }),
+    exportStatistics:async () => ({ path:'orbit-statistics.csv', format:'csv' }),
     exportLibrary:async () => ({ path:'fixture.orbit', portable:true }),
     restoreLibrary:async () => ({ imported:0, skipped:0, errors:[] }),
     onEvent:callback => { listeners.push(callback); return () => {}; },

@@ -1843,7 +1843,21 @@ fn discover_battlenet() -> (Vec<Value>, Vec<String>) {
 // returned after the ENTIRE manifest has passed structure validation.
 type XboxAttributes = HashMap<String, String>;
 
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum ManifestKind {
+    GdkGame,
+    AppxPackage,
+}
+
 fn xbox_xml_tags(source: &str) -> Option<HashMap<&str, XboxAttributes>> {
+    parse_manifest_xml(source, ManifestKind::GdkGame)
+}
+
+fn appx_xml_tags(source: &str) -> Option<HashMap<&str, XboxAttributes>> {
+    parse_manifest_xml(source, ManifestKind::AppxPackage)
+}
+
+fn parse_manifest_xml(source: &str, kind: ManifestKind) -> Option<HashMap<&str, XboxAttributes>> {
     if source.len() > 128 * 1024 {
         return None;
     }
@@ -1934,7 +1948,11 @@ fn xbox_xml_tags(source: &str) -> Option<HashMap<&str, XboxAttributes>> {
         }
         if stack.is_empty() {
             roots += 1;
-            if roots != 1 || name != "Game" {
+            let expected_root = match kind {
+                ManifestKind::GdkGame => "Game",
+                ManifestKind::AppxPackage => "Package",
+            };
+            if roots != 1 || name != expected_root {
                 return None;
             }
         }
@@ -1975,24 +1993,41 @@ fn xbox_xml_tags(source: &str) -> Option<HashMap<&str, XboxAttributes>> {
                 return None;
             }
         }
-        // Well-formed XML alone does not establish trusted GDK semantics:
-        // metadata elements must occupy their documented structural parent.
-        // A nested/relocated Identity, ShellVisuals or Executable cannot
-        // authorize a different product's executable.
-        let valid_parent = match name {
-            "Identity" | "ShellVisuals" | "ExecutableList" => stack.as_slice() == ["Game"],
-            "Executable" => stack.as_slice() == ["Game", "ExecutableList"],
-            _ => true,
-        };
-        if !valid_parent {
-            return None;
-        }
-        if matches!(
-            name,
-            "Identity" | "ShellVisuals" | "ExecutableList" | "Executable"
-        ) && tags.insert(name, attrs).is_some()
-        {
-            return None;
+        match kind {
+            ManifestKind::GdkGame => {
+                // Well-formed XML alone does not establish trusted GDK semantics:
+                // metadata elements must occupy their documented structural parent.
+                // A nested/relocated Identity, ShellVisuals or Executable cannot
+                // authorize a different product's executable.
+                let valid_parent = match name {
+                    "Identity" | "ShellVisuals" | "ExecutableList" => stack.as_slice() == ["Game"],
+                    "Executable" => stack.as_slice() == ["Game", "ExecutableList"],
+                    _ => true,
+                };
+                if !valid_parent {
+                    return None;
+                }
+                if matches!(
+                    name,
+                    "Identity" | "ShellVisuals" | "ExecutableList" | "Executable"
+                ) && tags.insert(name, attrs).is_some()
+                {
+                    return None;
+                }
+            }
+            ManifestKind::AppxPackage => {
+                if name == "Identity" {
+                    if stack.as_slice() != ["Package"] || tags.insert("Identity", attrs).is_some() {
+                        return None;
+                    }
+                } else if name == "Application" && stack.as_slice() == ["Package", "Applications"] {
+                    tags.entry("Application").or_insert(attrs);
+                } else if matches!(name, "uap:VisualElements" | "VisualElements")
+                    && stack.as_slice() == ["Package", "Applications", "Application"]
+                {
+                    tags.entry(name).or_insert(attrs);
+                }
+            }
         }
         if !self_closing {
             stack.push(name);
@@ -2287,7 +2322,372 @@ pub(crate) fn xbox_logo_paths(game: &Value) -> Vec<PathBuf> {
         // One verified config is sufficient; never mix identities or roots.
         break;
     }
+    // Fallback: inspect AppxManifest.xml for packaged Microsoft Store / Game Pass titles.
+    if images.is_empty() {
+        let appx = owner.join("AppxManifest.xml");
+        if let Ok(bytes) = crate::files::read_regular_bounded(&appx, 128 * 1024) {
+            if let Ok(doc) = std::str::from_utf8(&bytes) {
+                if let Some(tags) = appx_xml_tags(doc) {
+                    let identity_ok = tags
+                        .get("Identity")
+                        .and_then(|attrs| attrs.get("Name"))
+                        .is_some_and(|name| name.eq_ignore_ascii_case(source_id));
+                    if identity_ok {
+                        let visuals = tags
+                            .get("uap:VisualElements")
+                            .or_else(|| tags.get("VisualElements"));
+                        if let Some(visuals) = visuals {
+                            for attr in ["Square150x150Logo", "Square44x44Logo", "Wide310x150Logo"]
+                            {
+                                if let Some(raw) = visuals.get(attr) {
+                                    if let Some(path) = contained_file(owner, raw) {
+                                        if extension(&path) == "png" {
+                                            if let Ok(canonical) = fs::canonicalize(&path) {
+                                                if canonical.starts_with(&owner_canonical)
+                                                    && !images.contains(&canonical)
+                                                {
+                                                    images.push(canonical);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     images
+}
+
+fn appx_family_name(full_name: &str) -> Option<String> {
+    let first_sep = full_name.find('_')?;
+    let last_sep = full_name.rfind('_')?;
+    if first_sep >= last_sep {
+        return None;
+    }
+    let name = &full_name[..first_sep];
+    let publisher_id = &full_name[last_sep + 1..];
+    if !valid_app_id(name)
+        || publisher_id.len() != 13
+        || !publisher_id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    {
+        return None;
+    }
+    Some(format!("{name}_{publisher_id}"))
+}
+
+fn is_non_game_appx_package(id: &str) -> bool {
+    let lower = id.to_ascii_lowercase();
+    const EXACT: &[&str] = &[
+        "microsoft.xboxapp",
+        "microsoft.gamingapp",
+        "microsoft.gamingservices",
+        "microsoft.xboxgamingoverlay",
+        "microsoft.xboxidentityprovider",
+        "microsoft.xboxspeechtotextoverlay",
+        "microsoft.xbox.tcui",
+        "microsoft.storepurchaseapp",
+        "microsoft.desktopappinstaller",
+        "microsoft.windowsstore",
+        "microsoft.screensketch",
+        "microsoft.paint",
+        "microsoft.powershell",
+        "microsoft.sechealthui",
+        "microsoft.gethelp",
+        "microsoft.getstarted",
+        "microsoft.todos",
+        "microsoft.yourphone",
+        "microsoft.zunemusic",
+        "microsoft.zunevideo",
+        "microsoft.people",
+        "microsoft.clipchamp",
+        "microsoft.photos",
+        "microsoft.windowsterminal",
+        "microsoft.windowsnotepad",
+        "microsoft.windowscalculator",
+        "microsoft.windowscamera",
+        "microsoft.windowssoundrecorder",
+        "microsoft.windowsalarms",
+        "microsoft.windowsfeedbackhub",
+        "microsoft.windowsmaps",
+        "microsoft.directxruntime",
+        "microsoft.heifimageextension",
+        "microsoft.vp9videoextensions",
+        "microsoft.webmediaextensions",
+    ];
+    if EXACT.contains(&lower.as_str()) {
+        return true;
+    }
+    [
+        "microsoft.windows.",
+        "microsoftwindows.",
+        "windows.",
+        "microsoft.vclibs",
+        "microsoft.ui.",
+        "microsoft.net.",
+        "microsoft.services.",
+        "microsoft.microsoftedge",
+        "microsoft.edge",
+        "microsoft.office",
+        "microsoft.onedrive",
+        "microsoft.outlook",
+        "microsoft.teams",
+        "microsoft.copilot",
+        "microsoft.bing",
+        "microsoft.languageexperiencepack",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix))
+}
+
+fn xml_inner_text<'a>(doc: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = doc.find(&open)? + open.len();
+    let end = doc[start..].find(&close)? + start;
+    let text = doc[start..end].trim();
+    (!text.is_empty()).then_some(text)
+}
+
+fn appx_has_gaming_signal(doc: &str, root: &Path) -> bool {
+    let lower = doc.to_ascii_lowercase();
+    let root_lower = root.to_string_lossy().to_ascii_lowercase();
+    if root_lower.contains("xboxgames") {
+        return true;
+    }
+    [
+        "microsoft.gamingservices",
+        "microsoft.xboxlive",
+        "xboxlive",
+        "gamingservices",
+        "gameconfig",
+        "category=\"game\"",
+        "windows.game",
+        "uap:category=\"game\"",
+    ]
+    .iter()
+    .any(|signal| lower.contains(signal))
+}
+
+fn xbox_from_appx_manifest(
+    root: &Path,
+    manifest: &Path,
+    package_family_name: &str,
+    reg_display_name: Option<&str>,
+) -> Option<Value> {
+    let bytes = crate::files::read_regular_bounded(manifest, 128 * 1024).ok()?;
+    let doc = std::str::from_utf8(&bytes).ok()?;
+    if !appx_has_gaming_signal(doc, root) {
+        return None;
+    }
+    let tags = appx_xml_tags(doc)?;
+    let identity = tags.get("Identity")?;
+    let id = identity.get("Name")?;
+    let publisher = identity.get("Publisher")?;
+    if !valid_app_id(id) || !safe_text(publisher, 256) || is_non_game_appx_package(id) {
+        return None;
+    }
+    let application = tags.get("Application")?;
+    let app_id = application.get("Id").filter(|v| valid_xbox_app_id(v))?;
+    let pfn = if !package_family_name.is_empty() {
+        package_family_name.to_string()
+    } else {
+        format!("{id}_{}", compute_xbox_publisher_id(publisher))
+    };
+    let launch_uri = format!("shell:AppsFolder\\{pfn}!{app_id}");
+    if !validate_shell_apps_folder_uri(&launch_uri) {
+        return None;
+    }
+    let visuals = tags
+        .get("uap:VisualElements")
+        .or_else(|| tags.get("VisualElements"));
+    let usable_name = |candidate: &str| {
+        let trimmed = candidate.trim();
+        valid_title(trimmed) && !trimmed.starts_with("ms-resource:") && !trimmed.starts_with("@{")
+    };
+    let title = visuals
+        .and_then(|v| v.get("DisplayName"))
+        .map(String::as_str)
+        .filter(|s| usable_name(s))
+        .or_else(|| xml_inner_text(doc, "DisplayName").filter(|s| usable_name(s)))
+        .or_else(|| reg_display_name.filter(|s| usable_name(s)))
+        .map(str::to_owned)
+        .unwrap_or_else(|| clean_name(&filename(root)));
+    if !valid_title(&title) {
+        return None;
+    }
+    let executable = application
+        .get("Executable")
+        .and_then(|name| contained_file(root, name))
+        .filter(|file| extension(file) == "exe" && !ignored_executable(file))
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    Some(json!({
+        "name": title,
+        "source": "xbox",
+        "source_id": id,
+        "install_path": root,
+        "executable": executable,
+        "launch_uri": launch_uri,
+        "tags": []
+    }))
+}
+
+#[cfg(windows)]
+fn enumerate_windows_appx_packages() -> Vec<(String, PathBuf, Option<String>)> {
+    use std::ffi::c_void;
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn RegOpenKeyExW(
+            hkey: isize,
+            subkey: *const u16,
+            options: u32,
+            sam_desired: u32,
+            phk_result: *mut isize,
+        ) -> i32;
+        fn RegEnumKeyExW(
+            hkey: isize,
+            index: u32,
+            name: *mut u16,
+            lpcch_name: *mut u32,
+            reserved: *mut u32,
+            class: *mut u16,
+            lpcch_class: *mut u32,
+            last_write_time: *mut c_void,
+        ) -> i32;
+        fn RegGetValueW(
+            hkey: isize,
+            subkey: *const u16,
+            value: *const u16,
+            flags: u32,
+            pdw_type: *mut u32,
+            pv_data: *mut c_void,
+            pcb_data: *mut u32,
+        ) -> i32;
+        fn RegCloseKey(hkey: isize) -> i32;
+    }
+    const HKEY_CURRENT_USER: isize = 0x8000_0001_u32 as i32 as isize;
+    const KEY_READ: u32 = 0x20019;
+    const RRF_RT_REG_SZ: u32 = 0x0000_0002;
+    const PACKAGES_PATH: &str = r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages";
+
+    let mut hkey: isize = 0;
+    let subkey = wide(std::ffi::OsStr::new(PACKAGES_PATH));
+    if unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut hkey) } != 0
+        || hkey == 0
+    {
+        return Vec::new();
+    }
+    let read_reg_sz = |parent: isize, child: &[u16], value_name: &str| -> Option<String> {
+        let val = wide(std::ffi::OsStr::new(value_name));
+        let mut buf = [0u16; 1024];
+        let mut bytes = (buf.len() * 2) as u32;
+        let status = unsafe {
+            RegGetValueW(
+                parent,
+                child.as_ptr(),
+                val.as_ptr(),
+                RRF_RT_REG_SZ,
+                std::ptr::null_mut(),
+                buf.as_mut_ptr().cast(),
+                &mut bytes,
+            )
+        };
+        if status == 0 && bytes >= 2 {
+            let len = (bytes as usize / 2).min(buf.len());
+            String::from_utf16(&buf[..len])
+                .ok()
+                .map(|s| s.trim_end_matches('\0').trim().to_string())
+                .filter(|s| !s.is_empty())
+        } else {
+            None
+        }
+    };
+    let mut results = Vec::new();
+    let mut name_buf = [0u16; 512];
+    for index in 0..1024_u32 {
+        let mut len = name_buf.len() as u32;
+        let status = unsafe {
+            RegEnumKeyExW(
+                hkey,
+                index,
+                name_buf.as_mut_ptr(),
+                &mut len,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        if status != 0 {
+            break;
+        }
+        let Ok(pkg_full) = String::from_utf16(&name_buf[..len as usize]) else {
+            continue;
+        };
+        let Some(pfn) = appx_family_name(&pkg_full) else {
+            continue;
+        };
+        let child_wide = wide(std::ffi::OsStr::new(&pkg_full));
+        let Some(root_str) = read_reg_sz(hkey, &child_wide, "PackageRootFolder") else {
+            continue;
+        };
+        let lower_root = root_str.to_ascii_lowercase();
+        if lower_root.contains(r"\windows\systemapps\")
+            || lower_root.contains(r"\windows\immersivecontrolpanel")
+            || lower_root.contains(r"\windows\system32")
+        {
+            continue;
+        }
+        let root = PathBuf::from(&root_str);
+        if safe_text(&root_str, 4_000) && root.is_absolute() && root.is_dir() {
+            let display = read_reg_sz(hkey, &child_wide, "DisplayName");
+            results.push((pfn, root, display));
+        }
+    }
+    unsafe {
+        RegCloseKey(hkey);
+    }
+    results
+}
+
+#[cfg(not(windows))]
+fn enumerate_windows_appx_packages() -> Vec<(String, PathBuf, Option<String>)> {
+    Vec::new()
+}
+
+fn discover_xbox_appx(seen: &mut HashSet<String>) -> Vec<Value> {
+    let mut games = Vec::new();
+    for (pfn, root, display_name) in enumerate_windows_appx_packages() {
+        let mut found = None;
+        for dir in [root.clone(), root.join("Content")] {
+            let gdk = dir.join("MicrosoftGame.config");
+            if fs::symlink_metadata(&gdk).is_ok_and(|m| m.is_file()) {
+                if let Some(game) = xbox_from_manifest(&dir, &gdk) {
+                    found = Some(game);
+                    break;
+                }
+            }
+        }
+        if found.is_none() {
+            let appx = root.join("AppxManifest.xml");
+            if fs::symlink_metadata(&appx).is_ok_and(|m| m.is_file()) {
+                found = xbox_from_appx_manifest(&root, &appx, &pfn, display_name.as_deref());
+            }
+        }
+        if let Some(game) = found {
+            let id = field(&game, "source_id").to_ascii_lowercase();
+            if !id.is_empty() && seen.insert(id) {
+                games.push(game);
+            }
+        }
+    }
+    games
 }
 
 fn discover_xbox_roots(roots: &[PathBuf]) -> (Vec<Value>, Vec<String>) {
@@ -2374,7 +2774,114 @@ fn discover_xbox(settings: &Value) -> (Vec<Value>, Vec<String>) {
             add_root(&mut roots, root.join("XboxGames"));
         }
     }
-    discover_xbox_roots(&roots)
+    let (mut games, warnings) = discover_xbox_roots(&roots);
+    let mut seen: HashSet<String> = games
+        .iter()
+        .map(|g| field(g, "source_id").to_ascii_lowercase())
+        .collect();
+    games.extend(discover_xbox_appx(&mut seen));
+    (games, warnings)
+}
+
+fn valid_artwork_token(name: &str) -> bool {
+    let Some((stem, ext)) = name.rsplit_once('.') else {
+        return false;
+    };
+    stem.len() == 36
+        && stem.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-')
+        && matches!(
+            ext.to_ascii_lowercase().as_str(),
+            "png" | "jpg" | "jpeg" | "webp"
+        )
+}
+
+/// On-demand read-only scan flagging missing executables, moved install paths,
+/// and missing or broken cover files without mutating files or database rows.
+pub fn check_library_health(games: &[Value], artwork_dir: &Path) -> Value {
+    let mut checked = 0_usize;
+    let mut healthy = 0_usize;
+    let mut missing_executable = 0_usize;
+    let mut missing_install_path = 0_usize;
+    let mut broken_cover = 0_usize;
+    let mut missing_cover = 0_usize;
+    let mut issues = Vec::new();
+    for game in games.iter().take(100_000) {
+        let Some(id) = game.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        checked += 1;
+        let exe = field(game, "executable");
+        let install_path = field(game, "install_path");
+        let cover = field(game, "cover");
+        let mut problems = Vec::new();
+        if !exe.is_empty() && !fs::metadata(Path::new(exe)).is_ok_and(|m| m.is_file()) {
+            missing_executable += 1;
+            problems.push("missing_executable");
+        }
+        if !install_path.is_empty()
+            && !fs::metadata(Path::new(install_path)).is_ok_and(|m| m.is_dir())
+        {
+            missing_install_path += 1;
+            problems.push("missing_install_path");
+        }
+        if cover.is_empty() {
+            missing_cover += 1;
+            problems.push("missing_cover");
+        } else if !valid_artwork_token(cover)
+            || !fs::symlink_metadata(artwork_dir.join(cover))
+                .is_ok_and(|m| m.is_file() && m.len() >= 8)
+        {
+            broken_cover += 1;
+            problems.push("broken_cover");
+        }
+        if problems.is_empty() {
+            healthy += 1;
+        } else {
+            let severity: u8 = if problems.contains(&"missing_executable")
+                || problems.contains(&"missing_install_path")
+            {
+                0
+            } else if problems.contains(&"broken_cover") {
+                1
+            } else {
+                2
+            };
+            issues.push((
+                severity,
+                field(game, "name").to_ascii_lowercase(),
+                json!({
+                    "id": id,
+                    "name": field(game, "name"),
+                    "source": field(game, "source"),
+                    "play_status": field(game, "play_status"),
+                    "hidden": game["hidden"] == true,
+                    "executable": exe,
+                    "install_path": install_path,
+                    "cover": cover,
+                    "problems": problems,
+                }),
+            ));
+        }
+    }
+    issues.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let truncated = issues.len() > 500;
+    let items: Vec<Value> = issues
+        .into_iter()
+        .take(500)
+        .map(|(_, _, item)| item)
+        .collect();
+    json!({
+        "checked": checked,
+        "healthy": healthy,
+        "summary": {
+            "missingExecutable": missing_executable,
+            "missingInstallPath": missing_install_path,
+            "brokenCover": broken_cover,
+            "missingCover": missing_cover
+        },
+        "issues": items,
+        "truncated": truncated
+    })
 }
 
 /// Storefront IDs are the identity of separately launchable products, even
@@ -4478,5 +4985,130 @@ mod tests {
         png[16..20].copy_from_slice(&600_u32.to_be_bytes());
         png[20..24].copy_from_slice(&900_u32.to_be_bytes());
         assert!(!is_landscape_banner(&png));
+    }
+
+    #[test]
+    fn appx_manifest_discovers_verified_games_and_rejects_store_apps() {
+        let root = std::env::temp_dir().join(format!("orbit-appx-test-{}", uuid::Uuid::new_v4()));
+        let game_dir = root.join("XboxGames").join("Starfield");
+        std::fs::create_dir_all(game_dir.join("Assets")).unwrap();
+        std::fs::write(game_dir.join("Starfield.exe"), b"stub").unwrap();
+        std::fs::write(
+            game_dir.join("Assets").join("Tile.png"),
+            b"\x89PNG\r\n\x1a\n",
+        )
+        .unwrap();
+        let game_manifest = r#"<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10" xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10">
+  <Identity Name="BethesdaSoftworks.ProjectGold" Publisher="CN=Bethesda, O=ZeniMax, C=US" Version="1.14.0.0" />
+  <Properties><DisplayName>Starfield</DisplayName></Properties>
+  <Dependencies><PackageDependency Name="Microsoft.GamingServices" MinVersion="1.0.0.0" /></Dependencies>
+  <Applications>
+    <Application Id="Game" Executable="Starfield.exe">
+      <uap:VisualElements DisplayName="Starfield" Square150x150Logo="Assets\Tile.png" />
+    </Application>
+  </Applications>
+</Package>"#;
+        let manifest_path = game_dir.join("AppxManifest.xml");
+        std::fs::write(&manifest_path, game_manifest).unwrap();
+
+        let pfn =
+            appx_family_name("BethesdaSoftworks.ProjectGold_1.14.0.0_x64__3275kfvn8vcwc").unwrap();
+        assert_eq!(pfn, "BethesdaSoftworks.ProjectGold_3275kfvn8vcwc");
+        let found = xbox_from_appx_manifest(&game_dir, &manifest_path, &pfn, None).unwrap();
+        assert_eq!(found["name"], "Starfield");
+        assert_eq!(found["source"], "xbox");
+        assert_eq!(
+            found["launch_uri"],
+            r"shell:AppsFolder\BethesdaSoftworks.ProjectGold_3275kfvn8vcwc!Game"
+        );
+        assert!(found["executable"]
+            .as_str()
+            .unwrap()
+            .ends_with("Starfield.exe"));
+
+        // Logo discovery falls back to AppxManifest.xml VisualElements
+        let logos = xbox_logo_paths(&found);
+        assert_eq!(logos.len(), 1);
+        assert!(logos[0].ends_with("Tile.png"));
+
+        // Non-game Store app without gaming signal is rejected
+        let app_dir = root.join("WindowsApps").join("Netflix");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        let netflix_manifest = r#"<?xml version="1.0" encoding="utf-8"?>
+<Package>
+  <Identity Name="4DF9E0F8.Netflix" Publisher="CN=Netflix" Version="1.0.0.0" />
+  <Applications>
+    <Application Id="App" Executable="Netflix.exe">
+      <uap:VisualElements DisplayName="Netflix" />
+    </Application>
+  </Applications>
+</Package>"#;
+        let netflix_path = app_dir.join("AppxManifest.xml");
+        std::fs::write(&netflix_path, netflix_manifest).unwrap();
+        assert!(xbox_from_appx_manifest(
+            &app_dir,
+            &netflix_path,
+            "4DF9E0F8.Netflix_mcm4njqhnhss8",
+            None
+        )
+        .is_none());
+
+        // Blocklisted system/Xbox companion apps are rejected even with gaming references
+        assert!(is_non_game_appx_package("Microsoft.XboxApp"));
+        assert!(is_non_game_appx_package("Microsoft.GamingServices"));
+        assert!(is_non_game_appx_package("Microsoft.WindowsCalculator"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn library_health_check_flags_missing_paths_and_broken_covers_read_only() {
+        let root = std::env::temp_dir().join(format!("orbit-health-test-{}", uuid::Uuid::new_v4()));
+        let art_dir = root.join("artwork");
+        let game_dir = root.join("ValidGame");
+        std::fs::create_dir_all(&art_dir).unwrap();
+        std::fs::create_dir_all(&game_dir).unwrap();
+        let exe = game_dir.join("Game.exe");
+        std::fs::write(&exe, b"stub").unwrap();
+        let good_cover = format!("{}.png", uuid::Uuid::new_v4());
+        std::fs::write(art_dir.join(&good_cover), b"\x89PNG\r\n\x1a\n").unwrap();
+        let missing_cover = format!("{}.jpg", uuid::Uuid::new_v4());
+
+        let games = vec![
+            json!({
+                "id": "g-ok", "name": "Healthy Game", "source": "manual",
+                "executable": exe, "install_path": game_dir, "cover": good_cover
+            }),
+            json!({
+                "id": "g-missing-exe", "name": "Moved Game", "source": "manual",
+                "executable": root.join("Gone/Moved.exe"),
+                "install_path": root.join("Gone"),
+                "cover": missing_cover
+            }),
+            json!({
+                "id": "g-no-cover", "name": "Coverless Steam", "source": "steam",
+                "executable": "", "install_path": "", "launch_uri": "steam://rungameid/123",
+                "cover": ""
+            }),
+        ];
+        let report = check_library_health(&games, &art_dir);
+        assert_eq!(report["checked"], 3);
+        assert_eq!(report["healthy"], 1);
+        assert_eq!(report["summary"]["missingExecutable"], 1);
+        assert_eq!(report["summary"]["missingInstallPath"], 1);
+        assert_eq!(report["summary"]["brokenCover"], 1);
+        assert_eq!(report["summary"]["missingCover"], 1);
+        let issues = report["issues"].as_array().unwrap();
+        assert_eq!(issues.len(), 2);
+        assert_eq!(issues[0]["id"], "g-missing-exe");
+        assert_eq!(
+            issues[0]["problems"],
+            json!(["missing_executable", "missing_install_path", "broken_cover"])
+        );
+        assert_eq!(issues[1]["id"], "g-no-cover");
+        assert_eq!(issues[1]["problems"], json!(["missing_cover"]));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

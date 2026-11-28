@@ -11,7 +11,7 @@ use std::path::Path;
 use std::time::Duration;
 use uuid::Uuid;
 
-const GAME_COLUMNS: &str = "id,name,source,source_id,executable,launch_uri,install_path,cover,banner,icon,genre,tags,favorite,total_play_seconds,last_played_at,created_at,updated_at,launch_args,working_dir,cover_fit,cover_position,play_status,hidden,launch_env,launch_profiles";
+const GAME_COLUMNS: &str = "id,name,source,source_id,executable,launch_uri,install_path,cover,banner,icon,genre,tags,favorite,total_play_seconds,last_played_at,created_at,updated_at,launch_args,working_dir,cover_fit,cover_position,play_status,hidden,launch_env,launch_profiles,notes,rating";
 const GAME_FIELDS: [&str; 9] = [
     "source_id",
     "executable",
@@ -38,7 +38,7 @@ const MAX_COLLECTIONS: usize = 100;
 const MAX_LAUNCH_ENV: usize = 40;
 const MAX_LAUNCH_PROFILES: usize = 12;
 const MAX_BULK_IDS: usize = 5_000;
-const SETTING_KEYS: [&str; 17] = [
+const SETTING_KEYS: [&str; 18] = [
     "theme",
     "accent",
     "reduceMotion",
@@ -56,6 +56,7 @@ const SETTING_KEYS: [&str; 17] = [
     "controllerAutoEnter",
     "controllerAudio",
     "controllerHaptics",
+    "steamGridDbApiKey",
 ];
 const SOURCES: [&str; 9] = [
     "manual",
@@ -427,6 +428,8 @@ struct StatisticsRow {
     source: String,
     cover: String,
     icon: String,
+    genre: String,
+    play_status: String,
 }
 
 #[derive(Clone, Copy)]
@@ -467,32 +470,63 @@ struct StatisticsGame {
     source: String,
     cover: String,
     icon: String,
+    genre: String,
+    play_status: String,
     last_played_at: String,
     last_time: i64,
     seconds: f64,
     events: Vec<StatisticsEvent>,
 }
 
-fn statistics_midnight_after(timestamp: i64) -> DbResult<i64> {
-    let current = Local
-        .timestamp_millis_opt(timestamp)
-        .single()
-        .ok_or("Invalid statistics timestamp.")?;
-    let date = current
-        .date_naive()
-        .succ_opt()
-        .ok_or("Statistics date out of range.")?;
-    // Some time zones change UTC offset at midnight. Find the first real
-    // local hour instead of assuming every local day lasts 24 hours.
-    for hour in 0..24 {
-        let naive = date
-            .and_hms_opt(hour, 0, 0)
-            .ok_or("Invalid calendar hour.")?;
-        if let Some(next) = Local.from_local_datetime(&naive).earliest() {
-            return Ok(next.timestamp_millis());
+#[derive(Clone, Copy, Default)]
+struct LocalDayCache {
+    start_ms: i64,
+    end_ms: i64,
+    date: Option<NaiveDate>,
+}
+
+impl LocalDayCache {
+    fn day_bounds(&mut self, timestamp: i64) -> DbResult<(NaiveDate, i64)> {
+        if let Some(date) = self.date {
+            if timestamp >= self.start_ms && timestamp < self.end_ms {
+                return Ok((date, self.end_ms));
+            }
         }
+        let current = Local
+            .timestamp_millis_opt(timestamp)
+            .single()
+            .ok_or("Invalid statistics timestamp.")?;
+        let date = current.date_naive();
+        let next_date = date.succ_opt().ok_or("Statistics date out of range.")?;
+        // Some time zones change UTC offset at midnight. Find the first real
+        // local hour instead of assuming every local day lasts 24 hours.
+        let mut day_start = None;
+        for hour in 0..24 {
+            let naive = date
+                .and_hms_opt(hour, 0, 0)
+                .ok_or("Invalid calendar hour.")?;
+            if let Some(ts) = Local.from_local_datetime(&naive).earliest() {
+                day_start = Some(ts.timestamp_millis());
+                break;
+            }
+        }
+        let mut next_midnight = None;
+        for hour in 0..24 {
+            let naive = next_date
+                .and_hms_opt(hour, 0, 0)
+                .ok_or("Invalid calendar hour.")?;
+            if let Some(ts) = Local.from_local_datetime(&naive).earliest() {
+                next_midnight = Some(ts.timestamp_millis());
+                break;
+            }
+        }
+        let end_ms = next_midnight.ok_or("No valid local calendar boundary.")?;
+        let start_ms = day_start.unwrap_or(timestamp).min(timestamp);
+        self.start_ms = start_ms;
+        self.end_ms = end_ms;
+        self.date = Some(date);
+        Ok((date, end_ms))
     }
-    Err("No valid local calendar boundary.".into())
 }
 
 fn statistics_allocate(
@@ -500,27 +534,59 @@ fn statistics_allocate(
     to: i64,
     rate: f64,
     game: &mut StatisticsGame,
-    days: &mut BTreeMap<String, f64>,
+    days: &mut BTreeMap<NaiveDate, f64>,
     total: &mut f64,
+    cache: &mut LocalDayCache,
 ) -> DbResult<()> {
     while from < to {
-        let day = Local
-            .timestamp_millis_opt(from)
-            .single()
-            .ok_or("Invalid statistics timestamp.")?
-            .format("%Y-%m-%d")
-            .to_string();
-        let until = to.min(statistics_midnight_after(from)?);
+        let (date, next_midnight) = cache.day_bounds(from)?;
+        let until = to.min(next_midnight);
         if until <= from {
             return Err("Statistics calendar cannot advance.".into());
         }
         let seconds = (until - from) as f64 * rate / 1000.0;
-        *days.entry(day).or_default() += seconds;
+        *days.entry(date).or_default() += seconds;
         game.seconds += seconds;
         *total += seconds;
         from = until;
     }
     Ok(())
+}
+
+fn breakdown_entries(
+    totals: HashMap<String, (f64, i64)>,
+    total_seconds: f64,
+    max_items: Option<usize>,
+) -> Vec<Value> {
+    let mut rows: Vec<(String, f64, i64)> = totals
+        .into_iter()
+        .filter(|(_, (secs, _))| *secs > 0.0)
+        .map(|(k, (s, c))| (k, s, c))
+        .collect();
+    rows.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    if let Some(limit) = max_items {
+        if rows.len() > limit {
+            let tail = rows.split_off(limit - 1);
+            let other_secs: f64 = tail.iter().map(|(_, s, _)| *s).sum();
+            let other_games: i64 = tail.iter().map(|(_, _, c)| *c).sum();
+            rows.push(("__other__".to_string(), other_secs, other_games));
+        }
+    }
+    rows.into_iter()
+        .map(|(key, secs, games)| {
+            let share = if total_seconds > 0.0 {
+                ((secs / total_seconds) * 1000.0).round() / 1000.0
+            } else {
+                0.0
+            };
+            json!({
+                "key": key,
+                "seconds": secs.round() as i64,
+                "games": games,
+                "share": share
+            })
+        })
+        .collect()
 }
 
 fn statistics_from_rows(
@@ -530,8 +596,12 @@ fn statistics_from_rows(
     as_of: DateTime<Local>,
 ) -> DbResult<Value> {
     let mut games: HashMap<String, StatisticsGame> = HashMap::new();
-    let mut day_seconds: BTreeMap<String, f64> = BTreeMap::new();
+    let mut day_seconds: BTreeMap<NaiveDate, f64> = BTreeMap::new();
+    let mut day_sessions: HashMap<NaiveDate, i64> = HashMap::new();
+    let mut cache = LocalDayCache::default();
     let mut invalid_sessions = 0_i64;
+    let mut valid_session_count = 0_i64;
+    let mut longest_session_seconds = 0_f64;
     let mut raw_seconds = 0_f64;
     let mut eligible_seconds = 0_f64;
     let mut credited = 0_f64;
@@ -571,6 +641,8 @@ fn statistics_from_rows(
                 source: row.source,
                 cover: row.cover,
                 icon: row.icon,
+                genre: row.genre,
+                play_status: row.play_status,
                 last_played_at: row.finish.clone(),
                 last_time: i64::MIN,
                 seconds: 0.0,
@@ -585,6 +657,13 @@ fn statistics_from_rows(
         eligible_seconds += credit;
         if credit <= 0.0 {
             continue;
+        }
+        valid_session_count += 1;
+        if credit > longest_session_seconds {
+            longest_session_seconds = credit;
+        }
+        if let Ok((start_date, _)) = cache.day_bounds(start) {
+            *day_sessions.entry(start_date).or_default() += 1;
         }
         let rate = credit * 1000.0 / (end - start) as f64;
         let index = game.events.len() / 2;
@@ -624,6 +703,7 @@ fn statistics_from_rows(
                             game,
                             &mut day_seconds,
                             &mut credited,
+                            &mut cache,
                         )?;
                     }
                 }
@@ -645,25 +725,149 @@ fn statistics_from_rows(
         }
     }
     let today = as_of.date_naive();
-    let day_key = |back: i64| -> DbResult<String> {
-        Ok(today
+    let date_back = |back: i64| -> DbResult<NaiveDate> {
+        today
             .checked_sub_signed(chrono::Duration::days(back))
-            .ok_or("Statistics calendar out of range.")?
-            .format("%Y-%m-%d")
-            .to_string())
+            .ok_or_else(|| "Statistics calendar out of range.".to_string())
     };
     let total_days = |count: i64| -> DbResult<i64> {
         let mut sum = 0_f64;
         for back in 0..count {
-            sum += day_seconds.get(&day_key(back)?).copied().unwrap_or(0.0);
+            let date = date_back(back)?;
+            sum += day_seconds.get(&date).copied().unwrap_or(0.0);
         }
         Ok(sum.round() as i64)
     };
     let mut daily = Vec::with_capacity(days as usize);
     for back in (0..days).rev() {
-        let date = day_key(back)?;
-        daily.push(json!({"date":date,"seconds":day_seconds.get(&date).copied().unwrap_or(0.0).round() as i64}));
+        let date = date_back(back)?;
+        daily.push(json!({
+            "date": date.format("%Y-%m-%d").to_string(),
+            "seconds": day_seconds.get(&date).copied().unwrap_or(0.0).round() as i64
+        }));
     }
+
+    // 12-month (365-day) calendar heatmap with dynamic intensity quartiles (0..=4).
+    const HEATMAP_DAYS: i64 = 365;
+    let mut heatmap_raw: Vec<(NaiveDate, i64, i64)> = Vec::with_capacity(HEATMAP_DAYS as usize);
+    let mut nonzero_values: Vec<i64> = Vec::new();
+    for back in (0..HEATMAP_DAYS).rev() {
+        let date = date_back(back)?;
+        let secs = day_seconds.get(&date).copied().unwrap_or(0.0).round() as i64;
+        let sess = day_sessions.get(&date).copied().unwrap_or(0);
+        if secs > 0 {
+            nonzero_values.push(secs);
+        }
+        heatmap_raw.push((date, secs, sess));
+    }
+    nonzero_values.sort_unstable();
+    let active_days_year = nonzero_values.len() as i64;
+    let quantile = |num: usize, den: usize| -> i64 {
+        if nonzero_values.is_empty() {
+            return 0;
+        }
+        let idx = ((nonzero_values.len() - 1) * num) / den;
+        nonzero_values[idx]
+    };
+    let q1 = quantile(1, 4).max(1);
+    let q2 = quantile(2, 4).max(q1);
+    let q3 = quantile(3, 4).max(q2);
+    let min_nonzero = nonzero_values.first().copied().unwrap_or(0);
+    let max_nonzero = nonzero_values.last().copied().unwrap_or(0);
+    let uniform_nonzero = max_nonzero > 0 && min_nonzero == max_nonzero;
+    let heatmap: Vec<Value> = heatmap_raw
+        .into_iter()
+        .map(|(date, secs, sess)| {
+            let level = if secs <= 0 {
+                0
+            } else if uniform_nonzero {
+                4
+            } else if secs <= q1 {
+                1
+            } else if secs <= q2 {
+                2
+            } else if secs <= q3 {
+                3
+            } else {
+                4
+            };
+            json!({
+                "date": date.format("%Y-%m-%d").to_string(),
+                "seconds": secs,
+                "sessions": sess,
+                "level": level
+            })
+        })
+        .collect();
+
+    // Play streaks across all active calendar days.
+    let active_dates: Vec<NaiveDate> = day_seconds
+        .iter()
+        .filter(|(_, secs)| secs.round() as i64 > 0)
+        .map(|(date, _)| *date)
+        .collect();
+    let total_active_days = active_dates.len() as i64;
+    let mut longest_streak = 0_i64;
+    let mut run = 0_i64;
+    let mut prev_date: Option<NaiveDate> = None;
+    for date in &active_dates {
+        if prev_date.is_some_and(|p| p.succ_opt() == Some(*date)) {
+            run += 1;
+        } else {
+            run = 1;
+        }
+        if run > longest_streak {
+            longest_streak = run;
+        }
+        prev_date = Some(*date);
+    }
+    let active_set: HashSet<NaiveDate> = active_dates.into_iter().collect();
+    let mut current_streak = 0_i64;
+    let mut cursor = if active_set.contains(&today) {
+        Some(today)
+    } else {
+        today.pred_opt().filter(|y| active_set.contains(y))
+    };
+    while let Some(d) = cursor {
+        if active_set.contains(&d) {
+            current_streak += 1;
+            cursor = d.pred_opt();
+        } else {
+            break;
+        }
+    }
+
+    // Playtime breakdowns by storefront, genre, and play status.
+    let mut by_source: HashMap<String, (f64, i64)> = HashMap::new();
+    let mut by_genre: HashMap<String, (f64, i64)> = HashMap::new();
+    let mut by_status: HashMap<String, (f64, i64)> = HashMap::new();
+    for game in games.values() {
+        if game.seconds <= 0.0 {
+            continue;
+        }
+        let s = by_source.entry(game.source.clone()).or_default();
+        s.0 += game.seconds;
+        s.1 += 1;
+        let genre_key = game.genre.trim().to_string();
+        let g = by_genre.entry(genre_key).or_default();
+        g.0 += game.seconds;
+        g.1 += 1;
+        let st = by_status.entry(game.play_status.clone()).or_default();
+        st.0 += game.seconds;
+        st.1 += 1;
+    }
+    let breakdowns = json!({
+        "bySource": breakdown_entries(by_source, credited, None),
+        "byGenre": breakdown_entries(by_genre, credited, Some(8)),
+        "byStatus": breakdown_entries(by_status, credited, None),
+    });
+
+    let average_session_seconds = if valid_session_count > 0 {
+        (credited / valid_session_count as f64).round() as i64
+    } else {
+        0
+    };
+
     let mut recent = games.into_values().collect::<Vec<_>>();
     recent.sort_unstable_by(|a, b| b.last_time.cmp(&a.last_time).then_with(|| a.id.cmp(&b.id)));
     let recent_games = recent
@@ -679,6 +883,19 @@ fn statistics_from_rows(
         .collect::<Vec<_>>();
     Ok(json!({
         "days":days,"daily":daily,
+        "heatmap": heatmap,
+        "streaks": {
+            "current": current_streak,
+            "longest": longest_streak,
+            "activeDaysYear": active_days_year,
+            "totalActiveDays": total_active_days
+        },
+        "sessions": {
+            "count": valid_session_count,
+            "averageSeconds": average_session_seconds,
+            "longestSeconds": longest_session_seconds.round() as i64
+        },
+        "breakdowns": breakdowns,
         "totals":{"week":total_days(7)?,"month":total_days(30)?,"allTime":credited.round() as i64},
         "recentGames":recent_games,
         "meta":{"openSessions":open_sessions,"invalidSessions":invalid_sessions,
@@ -686,6 +903,124 @@ fn statistics_from_rows(
                 "adjustedSeconds":(raw_seconds - eligible_seconds).max(0.0).round() as i64,
                 "truncated":false}
     }))
+}
+
+fn csv_escape_cell(raw: &str) -> String {
+    let safe = match raw.bytes().next() {
+        Some(b'=' | b'+' | b'-' | b'@' | b'\t' | b'\r') => format!("'{raw}"),
+        _ => raw.to_string(),
+    };
+    if safe.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", safe.replace('"', "\"\""))
+    } else {
+        safe
+    }
+}
+
+pub fn format_statistics_csv(stats: &Value) -> String {
+    let mut lines = Vec::new();
+    lines.push("section,key,label,seconds,count,share".to_string());
+    let totals = &stats["totals"];
+    let streaks = &stats["streaks"];
+    let sessions = &stats["sessions"];
+    for (key, label, val) in [
+        ("week", "Last 7 days", totals["week"].as_i64().unwrap_or(0)),
+        (
+            "month",
+            "Last 30 days",
+            totals["month"].as_i64().unwrap_or(0),
+        ),
+        (
+            "all_time",
+            "All recorded time",
+            totals["allTime"].as_i64().unwrap_or(0),
+        ),
+        (
+            "average_session",
+            "Average session",
+            sessions["averageSeconds"].as_i64().unwrap_or(0),
+        ),
+        (
+            "longest_session",
+            "Longest session",
+            sessions["longestSeconds"].as_i64().unwrap_or(0),
+        ),
+    ] {
+        lines.push(format!(
+            "summary,{},{},{},{},",
+            csv_escape_cell(key),
+            csv_escape_cell(label),
+            val,
+            if key == "all_time" {
+                sessions["count"].as_i64().unwrap_or(0).to_string()
+            } else {
+                String::new()
+            }
+        ));
+    }
+    lines.push(format!(
+        "streak,current,Current streak (days),,{},",
+        streaks["current"].as_i64().unwrap_or(0)
+    ));
+    lines.push(format!(
+        "streak,longest,Longest streak (days),,{},",
+        streaks["longest"].as_i64().unwrap_or(0)
+    ));
+    lines.push(format!(
+        "streak,active_days_year,Active days (last 12 months),,{},",
+        streaks["activeDaysYear"].as_i64().unwrap_or(0)
+    ));
+    for (section, field_name) in [
+        ("storefront", "bySource"),
+        ("genre", "byGenre"),
+        ("status", "byStatus"),
+    ] {
+        if let Some(items) = stats["breakdowns"][field_name].as_array() {
+            for item in items {
+                let key = item["key"].as_str().unwrap_or("");
+                let secs = item["seconds"].as_i64().unwrap_or(0);
+                let count = item["games"].as_i64().unwrap_or(0);
+                let share = item["share"].as_f64().unwrap_or(0.0);
+                lines.push(format!(
+                    "{},{},{},{},{},{:.3}",
+                    section,
+                    csv_escape_cell(key),
+                    csv_escape_cell(if key.is_empty() { "Unassigned" } else { key }),
+                    secs,
+                    count,
+                    share
+                ));
+            }
+        }
+    }
+    if let Some(recent) = stats["recentGames"].as_array() {
+        for game in recent {
+            let id = game["id"].as_str().unwrap_or("");
+            let name = game["name"].as_str().unwrap_or("");
+            let secs = game["seconds"].as_i64().unwrap_or(0);
+            lines.push(format!(
+                "recent_game,{},{},{},,",
+                csv_escape_cell(id),
+                csv_escape_cell(name),
+                secs
+            ));
+        }
+    }
+    if let Some(heatmap) = stats["heatmap"].as_array() {
+        for day in heatmap {
+            let date = day["date"].as_str().unwrap_or("");
+            let secs = day["seconds"].as_i64().unwrap_or(0);
+            let sess = day["sessions"].as_i64().unwrap_or(0);
+            lines.push(format!(
+                "daily,{},{},{},{},",
+                csv_escape_cell(date),
+                csv_escape_cell(date),
+                secs,
+                sess
+            ));
+        }
+    }
+    lines.join("\n") + "\n"
 }
 
 fn error(err: impl std::fmt::Display) -> String {
@@ -703,7 +1038,8 @@ fn default_settings() -> Value {
         "libraryFolders": [], "discoveryIgnored": [], "view": "grid", "sort": "name",
         "onboardingDone": false, "performanceGuard": true,
         "autoUpdates": true, "libraryDensity": "comfortable", "language": "system",
-        "controllerAutoEnter": false, "controllerAudio": false, "controllerHaptics": false
+        "controllerAutoEnter": false, "controllerAudio": false, "controllerHaptics": false,
+        "steamGridDbApiKey": ""
     })
 }
 
@@ -888,6 +1224,40 @@ pub fn clean_game(raw: &Value, previous: Option<&Value>) -> DbResult<Value> {
     {
         return Err("Invalid cover presentation.".into());
     }
+    let notes_raw = string_field(raw, previous, "notes")?;
+    let notes = notes_raw.replace("\r\n", "\n").replace('\r', "\n");
+    if notes
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\n' | '\t'))
+    {
+        return Err("Game notes contain invalid control characters.".into());
+    }
+    let rating = match raw.get("rating").or_else(|| previous.get("rating")) {
+        None | Some(Value::Null) => 0_i64,
+        Some(Value::Number(n)) => {
+            if let Some(i) = n.as_i64() {
+                if (0..=5).contains(&i) {
+                    i
+                } else {
+                    return Err("Game rating must be between 0 and 5.".into());
+                }
+            } else if let Some(f) = n.as_f64() {
+                if f.is_finite() && f.fract() == 0.0 && (0.0..=5.0).contains(&f) {
+                    f as i64
+                } else {
+                    return Err("Game rating must be between 0 and 5.".into());
+                }
+            } else {
+                return Err("Game rating must be between 0 and 5.".into());
+            }
+        }
+        Some(Value::String(s)) if s.trim().is_empty() => 0_i64,
+        Some(Value::String(s)) => match s.trim().parse::<i64>() {
+            Ok(i) if (0..=5).contains(&i) => i,
+            _ => return Err("Game rating must be between 0 and 5.".into()),
+        },
+        _ => return Err("Game rating must be between 0 and 5.".into()),
+    };
     result.insert("name".into(), json!(name));
     result.insert("source".into(), json!(source));
     result.insert("tags".into(), Value::Array(clean_tags));
@@ -897,6 +1267,8 @@ pub fn clean_game(raw: &Value, previous: Option<&Value>) -> DbResult<Value> {
     result.insert("play_status".into(), json!(play_status));
     result.insert("launch_env".into(), launch_env);
     result.insert("launch_profiles".into(), launch_profiles);
+    result.insert("notes".into(), json!(notes));
+    result.insert("rating".into(), json!(rating));
     result.insert(
         "favorite".into(),
         json!(js_truthy(raw.get("favorite").unwrap_or_else(|| {
@@ -1071,9 +1443,14 @@ fn game_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "cover_fit",
         "cover_position",
         "play_status",
+        "notes",
     ] {
         game.insert(field.into(), json!(row.get::<_, String>(field)?));
     }
+    game.insert(
+        "rating".into(),
+        json!(row.get::<_, i64>("rating")?.clamp(0, 5)),
+    );
     game.insert(
         "favorite".into(),
         json!(row.get::<_, i64>("favorite")? != 0),
@@ -1129,6 +1506,7 @@ fn migrate(conn: &mut Connection) -> DbResult<()> {
             cover_fit TEXT NOT NULL DEFAULT 'cover', cover_position TEXT NOT NULL DEFAULT 'center',
             play_status TEXT NOT NULL DEFAULT '', hidden INTEGER NOT NULL DEFAULT 0,
             launch_env TEXT NOT NULL DEFAULT '{}', launch_profiles TEXT NOT NULL DEFAULT '[]',
+            notes TEXT NOT NULL DEFAULT '', rating INTEGER NOT NULL DEFAULT 0,
             duplicate_key TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -1150,6 +1528,7 @@ fn migrate(conn: &mut Connection) -> DbResult<()> {
             PRIMARY KEY (collection_id, game_id)
         );
         CREATE INDEX IF NOT EXISTS idx_sessions_game ON sessions(game_id);
+        CREATE INDEX IF NOT EXISTS idx_sessions_finished ON sessions(finished_at, game_id);
         CREATE INDEX IF NOT EXISTS idx_collection_games_game ON collection_games(game_id);",
     )
     .map_err(error)?;
@@ -1189,6 +1568,8 @@ fn migrate(conn: &mut Connection) -> DbResult<()> {
             "launch_profiles",
             "launch_profiles TEXT NOT NULL DEFAULT '[]'",
         ),
+        ("notes", "notes TEXT NOT NULL DEFAULT ''"),
+        ("rating", "rating INTEGER NOT NULL DEFAULT 0"),
         ("duplicate_key", "duplicate_key TEXT NOT NULL DEFAULT ''"),
     ] {
         if !columns.contains(name) {
@@ -1377,6 +1758,12 @@ impl LibraryDatabase {
         if !valid_discovery_ignored(&next["discoveryIgnored"]) {
             return Err("Invalid ignored discovery entries.".into());
         }
+        if !valid_api_key(&next["steamGridDbApiKey"]) {
+            return Err("Invalid SteamGridDB API key.".into());
+        }
+        if let Some(trimmed) = next["steamGridDbApiKey"].as_str().map(str::trim) {
+            next["steamGridDbApiKey"] = json!(trimmed);
+        }
         for key in [
             "reduceMotion",
             "autoScan",
@@ -1440,7 +1827,7 @@ impl LibraryDatabase {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT s.game_id,s.started_at,s.finished_at,s.seconds,g.name,g.source,g.cover,g.icon
+                "SELECT s.game_id,s.started_at,s.finished_at,s.seconds,g.name,g.source,g.cover,g.icon,g.genre,g.play_status
                  FROM sessions s INNER JOIN games g ON g.id=s.game_id
                  WHERE s.finished_at IS NOT NULL
                  ORDER BY s.game_id,s.started_at,s.id LIMIT ?1",
@@ -1457,6 +1844,8 @@ impl LibraryDatabase {
                     source: row.get(5)?,
                     cover: row.get(6)?,
                     icon: row.get(7)?,
+                    genre: row.get::<_, String>(8).unwrap_or_default(),
+                    play_status: row.get::<_, String>(9).unwrap_or_default(),
                 })
             })
             .map_err(error)?
@@ -1581,9 +1970,16 @@ fn valid_folders(value: &Value) -> bool {
     })
 }
 
+fn valid_api_key(value: &Value) -> bool {
+    value.as_str().is_some_and(|raw| {
+        let s = raw.trim();
+        s.len() <= 128 && s.bytes().all(|b| b.is_ascii_graphic())
+    })
+}
+
 fn valid_preferences(v: &Value) -> bool {
     ["grid", "list"].contains(&v["view"].as_str().unwrap_or(""))
-        && ["name", "recent", "added", "time"].contains(&v["sort"].as_str().unwrap_or(""))
+        && ["name", "recent", "added", "time", "rating"].contains(&v["sort"].as_str().unwrap_or(""))
         && ["comfortable", "compact"].contains(&v["libraryDensity"].as_str().unwrap_or(""))
 }
 
@@ -1607,10 +2003,13 @@ fn valid_setting(key: &str, value: &Value) -> bool {
         "language" => valid_language(value),
         "accent" => valid_accent(value),
         "view" => ["grid", "list"].contains(&value.as_str().unwrap_or("")),
-        "sort" => ["name", "recent", "added", "time"].contains(&value.as_str().unwrap_or("")),
+        "sort" => {
+            ["name", "recent", "added", "time", "rating"].contains(&value.as_str().unwrap_or(""))
+        }
         "libraryDensity" => ["comfortable", "compact"].contains(&value.as_str().unwrap_or("")),
         "libraryFolders" => valid_folders(value),
         "discoveryIgnored" => valid_discovery_ignored(value),
+        "steamGridDbApiKey" => valid_api_key(value),
         "reduceMotion"
         | "autoScan"
         | "useSteamArtwork"
@@ -1630,6 +2029,7 @@ fn sort_order(sort: &str) -> &'static str {
         "recent" => "last_played_at DESC, name COLLATE NOCASE ASC",
         "added" => "created_at DESC",
         "time" => "total_play_seconds DESC, name COLLATE NOCASE ASC",
+        "rating" => "rating DESC, total_play_seconds DESC, name COLLATE NOCASE ASC",
         _ => "name COLLATE NOCASE ASC",
     }
 }
@@ -1739,15 +2139,16 @@ fn insert_on(
     let hidden = i64::from(js_truthy(&game["hidden"]));
     let launch_env = game["launch_env"].to_string();
     let launch_profiles = game["launch_profiles"].to_string();
+    let rating = game["rating"].as_i64().unwrap_or(0).clamp(0, 5);
     conn.execute(
         "INSERT INTO games (
             id,name,source,source_id,executable,launch_uri,install_path,cover,banner,icon,
             genre,tags,favorite,total_play_seconds,last_played_at,created_at,updated_at,
             launch_args,working_dir,cover_fit,cover_position,play_status,hidden,
-            launch_env,launch_profiles,duplicate_key
+            launch_env,launch_profiles,notes,rating,duplicate_key
         ) VALUES (
             ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0,NULL,?14,?15,
-            ?16,?17,?18,?19,?20,?21,?22,?23,?24
+            ?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26
         )",
         params![
             id,
@@ -1773,6 +2174,8 @@ fn insert_on(
             hidden,
             launch_env,
             launch_profiles,
+            field(game, "notes"),
+            rating,
             key
         ],
     )
@@ -1831,13 +2234,14 @@ fn update_on(conn: &Connection, id: &str, patch: &Value) -> DbResult<Value> {
     let args = game["launch_args"].to_string();
     let launch_env = game["launch_env"].to_string();
     let launch_profiles = game["launch_profiles"].to_string();
+    let rating = game["rating"].as_i64().unwrap_or(0).clamp(0, 5);
     conn.execute(
         "UPDATE games SET
             name=?1,source=?2,source_id=?3,executable=?4,launch_uri=?5,install_path=?6,
             cover=?7,banner=?8,icon=?9,genre=?10,tags=?11,favorite=?12,
             launch_args=?13,working_dir=?14,cover_fit=?15,cover_position=?16,
             play_status=?17,hidden=?18,launch_env=?19,launch_profiles=?20,
-            duplicate_key=?21,updated_at=?22 WHERE id=?23",
+            notes=?21,rating=?22,duplicate_key=?23,updated_at=?24 WHERE id=?25",
         params![
             field(&game, "name"),
             field(&game, "source"),
@@ -1859,6 +2263,8 @@ fn update_on(conn: &Connection, id: &str, patch: &Value) -> DbResult<Value> {
             i64::from(js_truthy(&game["hidden"])),
             launch_env,
             launch_profiles,
+            field(&game, "notes"),
+            rating,
             key,
             date,
             id
@@ -2815,10 +3221,15 @@ impl LibraryDatabase {
             return Err("Session history contains a missing game reference.".into());
         }
         let collections = Self::list_collections_on(&tx)?;
+        let mut settings = self.get_settings()?;
+        // Never export user API keys in portable or JSON library backups.
+        if let Some(obj) = settings.as_object_mut() {
+            obj.remove("steamGridDbApiKey");
+        }
         let result = json!({
             "format": "orbit.library.v1",
             "exported_at": stamp(),
-            "settings": self.get_settings()?,
+            "settings": settings,
             "games": games,
             "sessions": sessions,
             "collections": collections
@@ -4444,6 +4855,204 @@ mod tests {
             assert_eq!(reloaded["controllerAutoEnter"], json!(true));
             assert_eq!(reloaded["controllerAudio"], json!(true));
             assert_eq!(reloaded["controllerHaptics"], json!(true));
+        });
+    }
+
+    #[test]
+    fn notes_and_rating_crud_validation_and_rating_sort() {
+        with_database(|db, _| {
+            let a = db
+                .upsert(&json!({
+                    "name": "Alpha",
+                    "source": "manual",
+                    "executable": r"C:\Games\Alpha.exe",
+                    "notes": "Line 1\r\nLine 2\tBuild A",
+                    "rating": 3
+                }))
+                .unwrap()["game"]
+                .clone();
+            assert_eq!(a["notes"], "Line 1\nLine 2\tBuild A");
+            assert_eq!(a["rating"], 3);
+
+            let b = db
+                .upsert(&json!({
+                    "name": "Beta",
+                    "source": "steam",
+                    "source_id": "2002",
+                    "launch_uri": "steam://rungameid/2002",
+                    "rating": 5,
+                    "notes": "Masterpiece co-op campaign"
+                }))
+                .unwrap()["game"]
+                .clone();
+            let c = db
+                .upsert(&json!({
+                    "name": "Gamma",
+                    "source": "epic",
+                    "source_id": "3003",
+                    "launch_uri": "com.epicgames.launcher://apps/gamma?action=launch&silent=true"
+                }))
+                .unwrap()["game"]
+                .clone();
+            assert_eq!(c["rating"], 0);
+            assert_eq!(c["notes"], "");
+
+            // Validation guards
+            assert!(db.update(field(&a, "id"), &json!({"rating": 6})).is_err());
+            assert!(db.update(field(&a, "id"), &json!({"rating": -1})).is_err());
+            assert!(db
+                .update(field(&a, "id"), &json!({"notes": "bad\u{0007}bell"}))
+                .is_err());
+            assert!(db
+                .update(field(&a, "id"), &json!({"notes": "x".repeat(4001)}))
+                .is_err());
+
+            let updated = db
+                .update(
+                    field(&a, "id"),
+                    &json!({"rating": 4, "notes": "Updated note"}),
+                )
+                .unwrap();
+            assert_eq!(updated["rating"], 4);
+            assert_eq!(updated["notes"], "Updated note");
+
+            let sorted = db.list("rating").unwrap();
+            let ids: Vec<&str> = sorted
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|g| field(g, "id"))
+                .collect();
+            assert_eq!(ids, vec![field(&b, "id"), field(&a, "id"), field(&c, "id")]);
+        });
+    }
+
+    #[test]
+    fn steamgriddb_api_key_settings_roundtrip_and_excluded_from_export() {
+        with_database(|db, _| {
+            assert_eq!(db.get_settings().unwrap()["steamGridDbApiKey"], json!(""));
+            let saved = db
+                .save_settings(&json!({"steamGridDbApiKey": "  sgdb_live_token_12345  "}))
+                .unwrap();
+            assert_eq!(saved["steamGridDbApiKey"], json!("sgdb_live_token_12345"));
+            assert!(db
+                .save_settings(&json!({"steamGridDbApiKey": "bad\nkey"}))
+                .is_err());
+            assert!(db
+                .save_settings(&json!({"steamGridDbApiKey": "a".repeat(129)}))
+                .is_err());
+
+            let exported = db.export_json().unwrap();
+            assert!(
+                exported["settings"].get("steamGridDbApiKey").is_none(),
+                "API key must never be exported into backups"
+            );
+        });
+    }
+
+    #[test]
+    fn statistics_10000_sessions_performance_heatmap_streaks_and_breakdowns() {
+        with_database(|db, _| {
+            let specs = [
+                ("=HYPERLINK(\"evil\")", "steam", "RPG", "playing"),
+                ("Apex Racer", "epic", "Racing", "completed"),
+                ("Starship Command", "xbox", "Strategy", "backlog"),
+                ("Indie Gem", "manual", "", "on_hold"),
+            ];
+            let mut game_ids = Vec::new();
+            for (i, (name, source, genre, status)) in specs.iter().enumerate() {
+                let g = db
+                    .upsert(&json!({
+                        "name": name,
+                        "source": source,
+                        "source_id": format!("g-{i}"),
+                        "executable": format!(r"C:\Games\g{i}.exe"),
+                        "genre": genre,
+                        "play_status": status
+                    }))
+                    .unwrap()["game"]
+                    .clone();
+                game_ids.push(field(&g, "id").to_owned());
+            }
+
+            let now = Local::now();
+            let base_utc = now.with_timezone(&Utc);
+            {
+                let tx = db.conn.transaction().unwrap();
+                let mut stmt = tx
+                    .prepare(
+                        "INSERT INTO sessions(id,game_id,started_at,finished_at,seconds)
+                         VALUES(?1,?2,?3,?4,?5)",
+                    )
+                    .unwrap();
+                // Insert 10,200 non-overlapping sessions spread over 340 local days
+                // (30 per day across the 4 games), leaving a deterministic 10-day streak ending today.
+                for idx in 0..10_200usize {
+                    let day_offset = (idx / 30) as i64;
+                    let slot = (idx % 30) as i64;
+                    let gid = &game_ids[idx % game_ids.len()];
+                    let dur = 120 + (slot % 5) * 60; // 2m..6m
+                    let finish = base_utc
+                        - chrono::Duration::days(day_offset)
+                        - chrono::Duration::minutes(slot * 12);
+                    let start = finish - chrono::Duration::seconds(dur);
+                    stmt.execute(params![
+                        format!("sess-{idx:05}"),
+                        gid,
+                        start.to_rfc3339_opts(SecondsFormat::Millis, true),
+                        finish.to_rfc3339_opts(SecondsFormat::Millis, true),
+                        dur
+                    ])
+                    .unwrap();
+                }
+                drop(stmt);
+                tx.commit().unwrap();
+            }
+
+            let started = std::time::Instant::now();
+            let stats = db.get_statistics_at(30, now).unwrap();
+            let elapsed_ms = started.elapsed().as_millis();
+            println!("10,200-session statistics query elapsed: {elapsed_ms} ms");
+            #[cfg(not(debug_assertions))]
+            assert!(
+                elapsed_ms < 50,
+                "10,200-session statistics query took {elapsed_ms}ms (must be < 50ms)"
+            );
+            assert!(
+                elapsed_ms < 1500,
+                "10,200-session statistics query unexpectedly slow: {elapsed_ms}ms"
+            );
+
+            assert_eq!(stats["heatmap"].as_array().unwrap().len(), 365);
+            assert!(stats["heatmap"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["level"].as_u64().unwrap() == 4));
+            assert!(stats["streaks"]["current"].as_u64().unwrap() >= 300);
+            assert!(stats["streaks"]["longest"].as_u64().unwrap() >= 300);
+            assert!(stats["streaks"]["activeDaysYear"].as_u64().unwrap() >= 335);
+            assert_eq!(stats["sessions"]["count"].as_u64().unwrap(), 10_200);
+            assert!(stats["sessions"]["averageSeconds"].as_u64().unwrap() > 0);
+            assert_eq!(stats["sessions"]["longestSeconds"].as_u64().unwrap(), 360);
+
+            let by_source = stats["breakdowns"]["bySource"].as_array().unwrap();
+            assert_eq!(by_source.len(), 4);
+            let by_genre = stats["breakdowns"]["byGenre"].as_array().unwrap();
+            assert_eq!(by_genre.len(), 4);
+            let by_status = stats["breakdowns"]["byStatus"].as_array().unwrap();
+            assert_eq!(by_status.len(), 4);
+
+            let csv = format_statistics_csv(&stats);
+            assert!(csv.starts_with("section,key,label,seconds,count,share\n"));
+            assert!(csv.contains("daily,"));
+            assert!(csv.contains("storefront,steam,"));
+            assert!(csv.contains("recent_game,"));
+            assert!(
+                csv.contains("'=HYPERLINK"),
+                "CSV export must neutralize spreadsheet formula prefixes"
+            );
+            assert!(!csv.contains(",=HYPERLINK"));
         });
     }
 }

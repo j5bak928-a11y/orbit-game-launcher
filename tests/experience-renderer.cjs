@@ -277,6 +277,63 @@ const settle=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
    assert(!Object.hasOwn(game,'cover-search-title'));
    await fixture.close();
   }
+  // v0.6.0: personal notes & ratings (editor, details, search/sort), Library Health Check, and SteamGridDB key setting.
+  {
+   const fixture=await fixturePage(4);
+   await fixture.evaluate(()=>{
+    window.healthChecks=0;
+    window.orbit.checkLibraryHealth=async()=>{
+     window.healthChecks++;
+     const all=await window.orbit.listGames();
+     const target=all[0];
+     return {
+      checked:all.length,healthy:all.length-1,
+      summary:{missingExecutable:1,missingInstallPath:0,brokenCover:0,missingCover:1},
+      issues:[{id:target.id,name:target.name,source:target.source,play_status:target.play_status,hidden:target.hidden,executable:'C:/Missing/Game.exe',install_path:'C:/Missing',cover:'',problems:['missing_executable','missing_cover']}],
+      truncated:false
+     };
+    };
+   });
+   // Rate & add notes from Game Details showcase
+   await fixture.locator('.home-games .game-card').first().click();
+   await fixture.locator('.detail-showcase .showcase-personal').waitFor();
+   await fixture.locator('.detail-showcase [data-action="set-rating"][data-rating="5"]').click();
+   await fixture.waitForFunction(()=>document.querySelector('.detail-showcase .rating-value-label')?.textContent.includes('5 / 5'));
+   await fixture.locator('.detail-showcase [data-action="edit-note"]').click();
+   await fixture.locator('#detail-notes-input').fill('Custom Ultra HD texture pack installed');
+   await fixture.locator('#detail-notes-form [type=submit]').click();
+   await fixture.locator('.showcase-notes-text').waitFor();
+   assert.match(await fixture.locator('.showcase-notes-text').textContent(),/Ultra HD texture pack/);
+   await fixture.keyboard.press('Escape');
+   // Search by notes text & rating: operator and sort by Highest rated
+   await fixture.locator('nav [data-route=library]').click();
+   await fixture.locator('#global-search').fill('texture pack');
+   await fixture.waitForFunction(()=>document.querySelectorAll('.game-card').length===1);
+   await fixture.locator('#global-search').fill('rating:>=4');
+   await fixture.waitForFunction(()=>document.querySelectorAll('.game-card').length===1);
+   await fixture.locator('#global-search').fill('');
+   await fixture.waitForFunction(()=>document.querySelectorAll('.game-card').length===4);
+   await fixture.locator('#sort-by').selectOption('rating');
+   await settle(fixture);
+   assert.equal(await fixture.locator('.game-card').first().getAttribute('data-id'),await fixture.evaluate(()=>window.fixture.id(1)));
+   await fixture.locator('[data-action=view][data-view=list]').click();
+   assert.equal(await fixture.locator('.game-row').first().locator('.row-rating').count(),1,'list row displays rating badge for rated games');
+   // Settings: SteamGridDB key & Library Health Check modal
+   await fixture.locator('nav [data-route=settings]').click();
+   await fixture.locator('#sgdb-api-key').fill('sgdb_fixture_token');
+   await fixture.locator('[data-action="save-sgdb-key"]').click();
+   await fixture.waitForFunction(()=>document.querySelector('[data-action="clear-sgdb-key"]')!==null);
+   await fixture.locator('[data-action="health-check"]').click();
+   await fixture.locator('.health-summary').waitFor();
+   assert.equal(await fixture.evaluate(()=>window.healthChecks),1);
+   assert.equal(await fixture.locator('.health-issue-row').count(),1);
+   assert.equal(await fixture.locator('[data-action="health-relocate"]').count(),1);
+   assert.equal(await fixture.locator('[data-action="health-find-cover"]').count(),1);
+   await fixture.locator('[data-action="health-complete"]').click();
+   await fixture.waitForFunction(()=>window.healthChecks===2);
+   await fixture.keyboard.press('Escape');
+   await fixture.close();
+  }
   assert.deepEqual(reviewFailures,[],'interface review regressions');
   assert.deepEqual(errors,[]);
   const report={browser:browser.version(),libraryGames:5000,gridPositions:measurements.length,listBottoms:7,errors,measurements};

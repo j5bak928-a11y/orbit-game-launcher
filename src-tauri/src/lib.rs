@@ -1397,8 +1397,43 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
                     info["cover_source"] = json!("local");
                 }
             }
+            if let Some(path) = info["local_banner"].as_str() {
+                if let Ok(token) = save_artwork(Path::new(path), &state.artwork_dir) {
+                    info["banner"] = json!(token);
+                }
+            }
             if let Some(obj) = info.as_object_mut() {
                 obj.remove("local_artwork");
+                obj.remove("local_banner");
+            }
+            let detected_name = info["name"].as_str().unwrap_or("").trim().to_string();
+            let name_source = info["name_source"].as_str().unwrap_or("");
+            if info["cover"].as_str().unwrap_or("").is_empty()
+                && !detected_name.is_empty()
+                && detected_name != "Untitled game"
+                && name_source != "folder-unverified"
+                && online_artwork_allowed(&state)
+            {
+                if let Ok(found) =
+                    artwork::find_online_cover_guarded(&detected_name, &state.artwork_dir, &|| {
+                        online_artwork_allowed(&state)
+                    })
+                {
+                    if let Some(cover) = found["cover"].as_str().filter(|s| !s.is_empty()) {
+                        info["cover"] = json!(cover);
+                        let src = found["source"].as_str().unwrap_or("steam");
+                        info["cover_source"] = json!(src);
+                    }
+                    if info["banner"].as_str().unwrap_or("").is_empty() {
+                        if let Some(banner) = found["banner"].as_str().filter(|s| !s.is_empty()) {
+                            info["banner"] = json!(banner);
+                            if info["cover_source"].as_str().unwrap_or("").is_empty() {
+                                let src = found["source"].as_str().unwrap_or("steam");
+                                info["cover_source"] = json!(src);
+                            }
+                        }
+                    }
+                }
             }
             Ok(info)
         }
@@ -1547,7 +1582,7 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
                         continue;
                     }
                     let mut allowed = serde_json::Map::new();
-                    for key in ["cover", "icon"] {
+                    for key in ["cover", "banner", "icon"] {
                         if patch.get(key).is_some() && current[key] == original[key] {
                             allowed.insert(key.into(), patch[key].clone());
                         }

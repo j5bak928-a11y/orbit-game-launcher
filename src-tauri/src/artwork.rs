@@ -708,6 +708,18 @@ fn approved_url(raw: &str) -> bool {
         ) && u.path().starts_with('/')
             && u.path().len() <= 1024
             && u.query().is_none_or(|q| q.len() <= 256))
+        || (u.host_str() == Some("www.steamgriddb.com")
+            && (u.path().starts_with("/api/v2/search/autocomplete/")
+                || u.path().starts_with("/api/v2/grids/game/")
+                || u.path().starts_with("/api/v2/heroes/game/"))
+            && u.path().len() <= 512
+            && u.query().is_none_or(|q| q.len() <= 256))
+        || (matches!(
+            u.host_str(),
+            Some("cdn2.steamgriddb.com" | "cdn.steamgriddb.com")
+        ) && u.path().starts_with('/')
+            && u.path().len() <= 1024
+            && u.query().is_none_or(|q| q.len() <= 256))
 }
 fn read_response(response: Response, limit: usize, image: bool) -> Result<Option<Vec<u8>>, String> {
     if response.status().as_u16() == 404 {
@@ -1978,13 +1990,256 @@ fn online_artwork_response(
     })))
 }
 
-/// Lookup a manually entered title through Steam and Epic store matches
-/// (handling Roman/Arabic numerals and official store editions without fuzzy
-/// wrong-game guessing). Rechecks opt-in and Performance Guard before each call.
+fn valid_sgdb_api_key(key: Option<&str>) -> Option<&str> {
+    let trimmed = key?.trim();
+    if trimmed.is_empty() || trimmed.len() > 128 || !trimmed.bytes().all(|b| b.is_ascii_graphic()) {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn select_steamgriddb_match(data: &Value, targets: &[String]) -> Option<(String, u64)> {
+    let items: Vec<(&str, u64)> = data
+        .get("data")
+        .and_then(Value::as_array)?
+        .iter()
+        .take(20)
+        .filter_map(|item| Some((item.get("name")?.as_str()?, item.get("id")?.as_u64()?)))
+        .collect();
+    for target in targets {
+        let target_key = key(target);
+        if target_key.len() < 3 {
+            continue;
+        }
+        if let Some((found, id)) = items.iter().find(|(found, _)| key(found) == target_key) {
+            return Some(((*found).to_owned(), *id));
+        }
+    }
+    for target in targets {
+        let target_canonical = canonical_key(target);
+        if target_canonical.len() < 3 {
+            continue;
+        }
+        let query_tokens = tokenize_title(target);
+        if let Some((found, id)) = items.iter().find(|(found, _)| {
+            canonical_key(found) == target_canonical
+                && !is_non_base_item(&tokenize_title(found), &query_tokens)
+        }) {
+            return Some(((*found).to_owned(), *id));
+        }
+    }
+    for target in targets {
+        let target_base = base_edition_key(target);
+        if target_base.len() < 3 {
+            continue;
+        }
+        let query_tokens = tokenize_title(target);
+        let mut matched: Vec<(&str, u64)> = items
+            .iter()
+            .filter(|(found, _)| {
+                !is_non_base_item(&tokenize_title(found), &query_tokens)
+                    && base_edition_key(found) == target_base
+            })
+            .copied()
+            .collect();
+        if !matched.is_empty() {
+            matched.sort_by_key(|(found, _)| found.len());
+            let (found, id) = matched[0];
+            return Some((found.to_owned(), id));
+        }
+    }
+    None
+}
+
+fn steamgriddb_json(
+    http: &Client,
+    url: &str,
+    api_key: &str,
+    allowed: &dyn Fn() -> bool,
+) -> Result<Option<Value>, String> {
+    require_online(allowed)?;
+    if !approved_url(url) || !url.starts_with("https://www.steamgriddb.com/api/v2/") {
+        return Err("Blocked unapproved SteamGridDB endpoint".into());
+    }
+    let response = http
+        .get(url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .map_err(|e| format!("SteamGridDB request failed: {e}"))?;
+    let Some(bytes) = read_response(response, JSON_LIMIT, false)? else {
+        return Ok(None);
+    };
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|_| "SteamGridDB returned invalid JSON".into())
+}
+
+fn steamgriddb_image(
+    http: &Client,
+    url: &str,
+    allowed: &dyn Fn() -> bool,
+    validate: fn(&[u8]) -> bool,
+) -> Result<Option<StoredArtCandidate>, String> {
+    require_online(allowed)?;
+    if !approved_url(url) {
+        return Ok(None);
+    }
+    let Ok(parsed) = Url::parse(url) else {
+        return Ok(None);
+    };
+    if !matches!(
+        parsed.host_str(),
+        Some("cdn2.steamgriddb.com" | "cdn.steamgriddb.com")
+    ) {
+        return Ok(None);
+    }
+    let response = http.get(url).send().map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Ok(None);
+    }
+    let media = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let expected = if media.starts_with("image/png") {
+        "png"
+    } else if media.starts_with("image/jpeg") || media.starts_with("image/pjpeg") {
+        "jpg"
+    } else if media.starts_with("image/webp") {
+        "webp"
+    } else {
+        return Ok(None);
+    };
+    if response
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok())
+        .is_some_and(|len| len > IMAGE_LIMIT)
+    {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    response
+        .take((IMAGE_LIMIT + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() <= IMAGE_LIMIT && image_ext(&bytes) == Some(expected) && validate(&bytes) {
+        Ok(Some((bytes, expected)))
+    } else {
+        Ok(None)
+    }
+}
+
+fn steamgriddb_artwork(
+    http: &Client,
+    title: &str,
+    api_key: &str,
+    want_cover: bool,
+    want_banner: bool,
+    deadline: Option<Instant>,
+    allowed: &dyn Fn() -> bool,
+) -> Result<
+    (
+        Option<String>,
+        Option<StoredArtCandidate>,
+        Option<StoredArtCandidate>,
+    ),
+    String,
+> {
+    if !valid_title(title) || deadline.is_some_and(|end| Instant::now() >= end) {
+        return Ok((None, None, None));
+    }
+    let variants = search_variants(title);
+    let mut matched = None;
+    for query in variants.iter().take(2) {
+        if deadline.is_some_and(|end| Instant::now() >= end) {
+            return Ok((None, None, None));
+        }
+        let mut url = Url::parse("https://www.steamgriddb.com/api/v2/search/autocomplete/")
+            .map_err(|e| e.to_string())?;
+        if let Ok(mut segs) = url.path_segments_mut() {
+            segs.pop_if_empty().push(query);
+        }
+        if let Ok(Some(data)) = steamgriddb_json(http, url.as_str(), api_key, allowed) {
+            if let Some(hit) = select_steamgriddb_match(&data, &variants) {
+                matched = Some(hit);
+                break;
+            }
+        }
+    }
+    let Some((matched_name, game_id)) = matched else {
+        return Ok((None, None, None));
+    };
+    let mut cover = None;
+    if want_cover && !deadline.is_some_and(|end| Instant::now() >= end) {
+        let grid_url = format!(
+            "https://www.steamgriddb.com/api/v2/grids/game/{game_id}?dimensions=600x900&types=static&nsfw=false&humor=false"
+        );
+        if let Ok(Some(data)) = steamgriddb_json(http, &grid_url, api_key, allowed) {
+            if let Some(items) = data.get("data").and_then(Value::as_array) {
+                for item in items.iter().take(4) {
+                    if deadline.is_some_and(|end| Instant::now() >= end) {
+                        break;
+                    }
+                    if let Some(img_url) = item.get("url").and_then(Value::as_str) {
+                        if let Ok(Some(img)) =
+                            steamgriddb_image(http, img_url, allowed, portrait_image)
+                        {
+                            cover = Some(img);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut banner = None;
+    if want_banner && !deadline.is_some_and(|end| Instant::now() >= end) {
+        let hero_url = format!(
+            "https://www.steamgriddb.com/api/v2/heroes/game/{game_id}?types=static&nsfw=false&humor=false"
+        );
+        if let Ok(Some(data)) = steamgriddb_json(http, &hero_url, api_key, allowed) {
+            if let Some(items) = data.get("data").and_then(Value::as_array) {
+                for item in items.iter().take(4) {
+                    if deadline.is_some_and(|end| Instant::now() >= end) {
+                        break;
+                    }
+                    if let Some(img_url) = item.get("url").and_then(Value::as_str) {
+                        if let Ok(Some(img)) =
+                            steamgriddb_image(http, img_url, allowed, landscape_banner)
+                        {
+                            banner = Some(img);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok((Some(matched_name), cover, banner))
+}
+
+/// Lookup a manually entered title through Steam, Epic Games, and optional
+/// user-supplied SteamGridDB matches. Rechecks opt-in and Performance Guard
+/// before each network call.
 /// Returns {cover, banner, matchedName?, source?, message}; failures return Err.
+#[cfg(test)]
 pub fn find_online_cover_guarded(
     title: &str,
     artwork_dir: &Path,
+    allowed: &dyn Fn() -> bool,
+) -> Result<Value, String> {
+    find_online_cover_guarded_with_key(title, artwork_dir, None, allowed)
+}
+
+pub fn find_online_cover_guarded_with_key(
+    title: &str,
+    artwork_dir: &Path,
+    steamgriddb_key: Option<&str>,
     allowed: &dyn Fn() -> bool,
 ) -> Result<Value, String> {
     require_online(allowed)?;
@@ -2042,6 +2297,26 @@ pub fn find_online_cover_guarded(
                 artwork_dir,
             )? {
                 return Ok(found);
+            }
+        }
+    }
+    if let Some(api_key) = valid_sgdb_api_key(steamgriddb_key) {
+        require_online(allowed)?;
+        if let Ok((matched_name, sgdb_cover, sgdb_banner)) =
+            steamgriddb_artwork(&http, title, api_key, true, true, None, allowed)
+        {
+            if sgdb_cover.is_some() || sgdb_banner.is_some() {
+                require_online(allowed)?;
+                if let Some(found) = online_artwork_response(
+                    sgdb_cover.as_ref().map(|(b, e)| (b.as_slice(), *e)),
+                    sgdb_banner.as_ref().map(|(b, e)| (b.as_slice(), *e)),
+                    matched_name.as_deref().unwrap_or(title),
+                    "steamgriddb",
+                    "SteamGridDB",
+                    artwork_dir,
+                )? {
+                    return Ok(found);
+                }
             }
         }
     }
@@ -2110,6 +2385,7 @@ pub fn repair_artwork_with_options(
 
 /// Supports opt-out while repair is running. Offline Steam cache inspection
 /// remains available, but each new network fetch checks the live permissions.
+#[cfg(test)]
 pub fn repair_artwork_guarded(
     games: &[Value],
     artwork_dir: &Path,
@@ -2117,7 +2393,34 @@ pub fn repair_artwork_guarded(
     paused: bool,
     allowed: &dyn Fn() -> bool,
 ) -> Result<Value, String> {
-    repair_artwork_impl(games, artwork_dir, online_enabled, paused, allowed, false)
+    repair_artwork_impl(
+        games,
+        artwork_dir,
+        online_enabled,
+        paused,
+        None,
+        allowed,
+        false,
+    )
+}
+
+pub fn repair_artwork_guarded_with_key(
+    games: &[Value],
+    artwork_dir: &Path,
+    online_enabled: bool,
+    paused: bool,
+    steamgriddb_key: Option<&str>,
+    allowed: &dyn Fn() -> bool,
+) -> Result<Value, String> {
+    repair_artwork_impl(
+        games,
+        artwork_dir,
+        online_enabled,
+        paused,
+        steamgriddb_key,
+        allowed,
+        false,
+    )
 }
 
 /// Conservative background scan. Never replaces an existing readable cover,
@@ -2126,6 +2429,7 @@ pub fn repair_artwork_guarded(
 ///
 /// Use this instead of repair_artwork_guarded for automatic startup/import
 /// scans. Keep repair_artwork_guarded for explicit user-triggered repair.
+#[cfg(test)]
 pub fn repair_artwork_auto_guarded(
     games: &[Value],
     artwork_dir: &Path,
@@ -2133,7 +2437,34 @@ pub fn repair_artwork_auto_guarded(
     paused: bool,
     allowed: &dyn Fn() -> bool,
 ) -> Result<Value, String> {
-    repair_artwork_impl(games, artwork_dir, online_enabled, paused, allowed, true)
+    repair_artwork_impl(
+        games,
+        artwork_dir,
+        online_enabled,
+        paused,
+        None,
+        allowed,
+        true,
+    )
+}
+
+pub fn repair_artwork_auto_guarded_with_key(
+    games: &[Value],
+    artwork_dir: &Path,
+    online_enabled: bool,
+    paused: bool,
+    steamgriddb_key: Option<&str>,
+    allowed: &dyn Fn() -> bool,
+) -> Result<Value, String> {
+    repair_artwork_impl(
+        games,
+        artwork_dir,
+        online_enabled,
+        paused,
+        steamgriddb_key,
+        allowed,
+        true,
+    )
 }
 
 fn repair_artwork_impl(
@@ -2141,9 +2472,11 @@ fn repair_artwork_impl(
     artwork_dir: &Path,
     online_enabled: bool,
     paused: bool,
+    steamgriddb_key: Option<&str>,
     allowed: &dyn Fn() -> bool,
     automatic: bool,
 ) -> Result<Value, String> {
+    let sgdb_key = valid_sgdb_api_key(steamgriddb_key);
     let started = Instant::now();
     let mut found = 0usize;
     let mut icons = 0usize;
@@ -2221,9 +2554,9 @@ fn repair_artwork_impl(
                 None
             };
             if selected.is_none()
-                // Xbox lacks a verified Steam ID. Never consume the shared
-                // eight-request online budget on a deliberate no-op.
-                && game["source"] != "xbox"
+                // Without an optional user SteamGridDB API key, Xbox lacks a
+                // verified Steam ID and must not consume the shared budget.
+                && (game["source"] != "xbox" || sgdb_key.is_some())
                 && http.is_some()
                 && online_count < ONLINE_LIMIT
                 && started.elapsed() < REPAIR_TIME
@@ -2242,10 +2575,25 @@ fn repair_artwork_impl(
                 let http = http.as_ref().unwrap();
                 let deadline = Some(started + REPAIR_TIME);
                 let want_banner = need_banner && selected_banner.is_none();
-                let result: Result<
+                let mut result: Result<
                     (Option<StoredArtCandidate>, Option<StoredArtCandidate>),
                     String,
-                > = if let Some(steam_id) = steam_id {
+                > = if game["source"] == "xbox" {
+                    if let Some(api_key) = sgdb_key {
+                        steamgriddb_artwork(
+                            http,
+                            field(game, "name").trim(),
+                            api_key,
+                            true,
+                            want_banner,
+                            deadline,
+                            allowed,
+                        )
+                        .map(|(_, c, b)| (c, b))
+                    } else {
+                        Ok((None, None))
+                    }
+                } else if let Some(steam_id) = steam_id {
                     online_artwork_with_deadline(
                         http,
                         steam_id,
@@ -2304,6 +2652,24 @@ fn repair_artwork_impl(
                         Err(e) => Err(e),
                     }
                 };
+                if let (Ok((None, existing_banner)), Some(api_key)) = (&result, sgdb_key) {
+                    if game["source"] != "xbox" && valid_title(field(game, "name").trim()) {
+                        if let Ok((_, sgdb_cover, sgdb_banner)) = steamgriddb_artwork(
+                            http,
+                            field(game, "name").trim(),
+                            api_key,
+                            true,
+                            want_banner && existing_banner.is_none(),
+                            deadline,
+                            allowed,
+                        ) {
+                            if sgdb_cover.is_some() || sgdb_banner.is_some() {
+                                let kept_banner = existing_banner.clone();
+                                result = Ok((sgdb_cover, kept_banner.or(sgdb_banner)));
+                            }
+                        }
+                    }
+                }
                 match result {
                     Ok((cover_res, banner_res)) if allowed() => {
                         selected = cover_res;
@@ -3148,5 +3514,48 @@ mod tests {
         let miss = find_online_cover_guarded("Minecraft", &dir, &|| true).unwrap();
         assert_eq!(miss["cover"], "");
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn steamgriddb_url_allowlist_and_strict_title_matching() {
+        assert!(approved_url(
+            "https://www.steamgriddb.com/api/v2/search/autocomplete/Schedule%201"
+        ));
+        assert!(approved_url(
+            "https://www.steamgriddb.com/api/v2/grids/game/5398123?dimensions=600x900&nsfw=false"
+        ));
+        assert!(approved_url(
+            "https://www.steamgriddb.com/api/v2/heroes/game/5398123?nsfw=false"
+        ));
+        assert!(approved_url(
+            "https://cdn2.steamgriddb.com/grid/abcdef123456.png"
+        ));
+        assert!(!approved_url(
+            "http://www.steamgriddb.com/api/v2/grids/game/1"
+        ));
+        assert!(!approved_url("https://www.steamgriddb.com/api/v2/users/me"));
+        assert!(!approved_url("https://evil.steamgriddb.com/grid/x.png"));
+
+        assert_eq!(
+            valid_sgdb_api_key(Some("  valid_token_99 ")),
+            Some("valid_token_99")
+        );
+        assert_eq!(valid_sgdb_api_key(Some("")), None);
+        assert_eq!(valid_sgdb_api_key(Some("bad\r\nheader")), None);
+
+        let items = json!({"data": [
+            {"id": 1001, "name": "Schedule I: Free Sample"},
+            {"id": 1002, "name": "Schedule I"},
+            {"id": 1003, "name": "Schedule I Soundtrack"}
+        ]});
+        assert_eq!(
+            select_steamgriddb_match(&items, &search_variants("schedule 1")),
+            Some(("Schedule I".into(), 1002))
+        );
+        let demo_only = json!({"data": [{"id": 2001, "name": "Schedule I Demo"}]});
+        assert_eq!(
+            select_steamgriddb_match(&demo_only, &search_variants("schedule 1")),
+            None
+        );
     }
 }

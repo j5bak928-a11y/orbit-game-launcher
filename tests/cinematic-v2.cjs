@@ -49,12 +49,22 @@ test('cinematic hero and recorded-session statistics stay truthful, bounded and 
   window.statisticsFixture={
    days:30,
    daily:Array.from({length:30},(_,i)=>({date:day(29-i),seconds:29-i===0?7200:29-i===5?3600:29-i===10?1800:0})),
+   heatmap:Array.from({length:365},(_,i)=>({date:day(364-i),seconds:i%15===0?3600:0,sessions:i%15===0?1:0,level:i%15===0?(i%4)+1:0})),
+   streaks:{current:3,longest:7,activeDaysYear:25,totalActiveDays:25},
+   sessions:{count:25,averageSeconds:2880,longestSeconds:7200},
+   breakdowns:{
+    bySource:[{key:'steam',seconds:50000,games:4,share:0.7},{key:'xbox',seconds:22000,games:2,share:0.3}],
+    byGenre:[{key:'RPG',seconds:45000,games:3,share:0.625},{key:'Action',seconds:27000,games:3,share:0.375}],
+    byStatus:[{key:'playing',seconds:40000,games:2,share:0.556},{key:'completed',seconds:32000,games:4,share:0.444}]
+   },
    totals:{week:10800,month:12600,allTime:72000},
    recentGames:[{id:window.fixture.id(1),name:'Aether & <The Ascendant>',source:'xbox',cover:'22222222-2222-4222-8222-222222222222.jpg',icon:null,seconds:7200,lastPlayedAt:'2026-11-04T18:00:00Z'}],
    meta:{openSessions:1,invalidSessions:2,overlapSeconds:1800,adjustedSeconds:300,truncated:false}
   };
   window.statisticsCalls=0;
+  window.statisticsExports=[];
   window.orbit.getStatistics=async options=>{window.statisticsCalls++;window.statisticsOptions=options;return window.statisticsFixture;};
+  window.orbit.exportStatistics=async format=>{window.statisticsExports.push(format);return {path:`orbit-statistics.${format}`,format};};
  });
  for(const file of ['library-updates.js','app.js'])await page.addScriptTag({content:fs.readFileSync(path.join(root,'src/ui',file),'utf8')});
  await page.locator('.hero.cinematic-hero').waitFor();
@@ -105,6 +115,12 @@ test('cinematic hero and recorded-session statistics stay truthful, bounded and 
  assert.match(await page.locator('.statistics-insight').first().textContent(),/Best day/);
  assert.match(await page.locator('.statistics-insight').last().textContent(),/more than the previous 7 days/);
  assert.equal(await page.locator('.statistics-bar-slot').count(),30,'chart has a strict 30-bar bound');
+ assert.equal(await page.locator('.statistics-highlights .statistics-highlight-card').count(),2,'streak and average session cards render');
+ assert.equal(await page.locator('.heatmap-grid .heatmap-cell:not(.is-pad)').count(),365,'12-month heatmap renders 365 day cells');
+ assert.equal(await page.locator('.statistics-breakdowns-grid .breakdown-group').count(),3,'storefront, genre, and status breakdowns render');
+ await page.locator('.statistics-export-summary').click();
+ await page.locator('[data-action="export-statistics"][data-format="csv"]').click();
+ await page.waitForFunction(()=>window.statisticsExports.includes('csv'));
  assert.equal(await page.locator('.statistics-recent-row').count(),1);
  assert.match(await page.locator('.statistics-recent-row').textContent(),/Aether & <The Ascendant>/);
  assert.match(await page.locator('.statistics-recent-row').textContent(),/Xbox \/ PC Game Pass/);

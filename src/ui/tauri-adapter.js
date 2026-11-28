@@ -20,7 +20,7 @@
     'removeGame', 'favoriteGame', 'listCollections', 'createCollection', 'updateCollection', 'deleteCollection',
     'setGameCollections', 'bulkUpdateGames', 'saveSettings', 'chooseExecutable',
     'inspectGameFile', 'findOnlineCover', 'chooseArtwork', 'chooseFolder',
-    'discoverGames', 'repairSteamArtwork', 'importGames', 'launchGame',
+    'discoverGames', 'repairSteamArtwork', 'checkLibraryHealth', 'exportStatistics', 'importGames', 'launchGame',
     'openGameFolder', 'openAppData', 'getAppInfo', 'exportLibrary',
     'restoreLibrary', 'getUpdateStatus', 'checkForUpdates', 'installUpdate'
   ];

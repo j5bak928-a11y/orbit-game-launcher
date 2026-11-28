@@ -2,6 +2,27 @@
 
 This changelog covers the changes users receive with Orbit's Windows desktop releases. **Starting with 0.3.4, native Rust/Tauri 2 is the sole Orbit Launcher application** (Electron has been retired and removed). Starting with **0.3.6**, in-app updates verify Ed25519 signatures via GitHub Releases (`latest.json`), while manual installers remain Authenticode-unsigned. Release files appear on [GitHub Releases](https://github.com/j5bak928-a11y/orbit-game-launcher/releases); check the version and `SHA256SUMS.txt` before installing.
 
+## 0.6.0 — Orbit Intelligence (Local Insights & Smarter Discovery)
+
+- **Rich Playtime Analytics:** Upgraded **Statistics** with a 12-month (365-day) calendar activity heatmap, current and longest play streaks, average and longest session length, playtime breakdowns by storefront, genre, and play status, and one-click CSV/JSON export with spreadsheet formula-injection protection. Backed by an indexed SQLite query executing in `< 50 ms` on 10,000+ session rows.
+- **Per-Game Notes & 1–5 Star Ratings:** Add personal notes (up to 4,000 characters) and 1–5 star personal ratings directly in **Game Details** or the **Edit Game** dialog. Notes and ratings are searchable from the top search bar (including `rating:>=4`, `rating:5`, `rating:unrated` operators and **Highest rated** sorting), displayed cleanly in List View, and round-trip intact through portable `.orbit` and JSON backups.
+- **Library Health Check:** Added an on-demand, strictly read-only **Library health check** in **Settings → Library discovery** that identifies missing executables, moved install folders, broken cached covers, and missing covers, with one-click **Relocate .exe**, **Find cover**, **Mark Completed**, **Hide**, and **Remove** actions.
+- **Xbox / Packaged Store Discovery 2.0 & Optional SteamGridDB Fallback:** Expanded Xbox / Microsoft Store scanning with native Windows Registry `Appx` package lookup (`AppxManifest.xml` gaming-signal verification + `Square150x150Logo` fallback without spawning subprocesses), plus an optional user-supplied **SteamGridDB API key** in Settings for high-resolution portrait covers and hero banners (stored locally and excluded from backups).
+
+## 0.5.3 — Smarter manual artwork lookup & automatic hero banners
+
+- Manual title lookups now normalize Roman and Arabic numerals (e.g., `Schedule 1` → `Schedule I`), camelCase executable filenames, folder version tags, and official store editions while still rejecting demos, soundtracks, and DLCs.
+- Online artwork search, executable inspection, and cover repair fetch wide hero banners alongside portrait covers, and selecting an executable in Add Game automatically checks Steam and Epic Games when online artwork is enabled.
+
+## 0.5.2 — UI polish, streamlined Library & Game Details, and Controller Mode upgrades
+
+- Streamlined the Library toolbar into two rows with focus-preserving filter disclosure, scrollable custom collections, List View action menus, and bulk Favorite/Remove controls; tightened Game Details into two action tiers with inline status selection and unsaved-changes/destructive confirmation guards.
+- Synced Controller Mode accent and status colors, added Xbox/PlayStation button prompts, A–Z quick jumping, and polished card action menus.
+
+## 0.5.1 — Faster updates, sharper controller artwork & polished favorites
+
+- Accelerated automatic update checks (startup, reopen, focus, 15-minute cadence) with cache-bypass headers, upgraded Controller Mode covers to true 2:3 poster framing with ambient backdrops, and refined favorite buttons across desktop and Controller Mode.
+
 ## 0.5.0 — Console Experience (Controller Mode 2.0)
 
 - **Full 0.4.x library parity in Controller Mode:** Browse **Custom Collections**, **Play Status** shelves (**Currently Playing**, **Backlog**, **Completed**, **On Hold**), **Hidden games**, and multiple sort orders (`A–Z`, `Recently played`, `Most played`, `Recently added`) directly from a couch or handheld.

@@ -1414,11 +1414,16 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
                 && name_source != "folder-unverified"
                 && online_artwork_allowed(&state)
             {
-                if let Ok(found) =
-                    artwork::find_online_cover_guarded(&detected_name, &state.artwork_dir, &|| {
-                        online_artwork_allowed(&state)
-                    })
-                {
+                let sgdb_key = lock_or_err(&state.db, "database")
+                    .ok()
+                    .and_then(|db| db.get_settings().ok())
+                    .and_then(|s| s["steamGridDbApiKey"].as_str().map(str::to_owned));
+                if let Ok(found) = artwork::find_online_cover_guarded_with_key(
+                    &detected_name,
+                    &state.artwork_dir,
+                    sgdb_key.as_deref(),
+                    &|| online_artwork_allowed(&state),
+                ) {
                     if let Some(cover) = found["cover"].as_str().filter(|s| !s.is_empty()) {
                         info["cover"] = json!(cover);
                         let src = found["source"].as_str().unwrap_or("steam");
@@ -1517,9 +1522,13 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
                     "Online artwork is paused by Performance Guard while a game is running.".into(),
                 );
             }
-            artwork::find_online_cover_guarded(str_argument(args, 0)?, &state.artwork_dir, &|| {
-                online_artwork_allowed(&state)
-            })
+            let sgdb_key = settings["steamGridDbApiKey"].as_str();
+            artwork::find_online_cover_guarded_with_key(
+                str_argument(args, 0)?,
+                &state.artwork_dir,
+                sgdb_key,
+                &|| online_artwork_allowed(&state),
+            )
         }
         "repairSteamArtwork" => {
             let _repair_guard = lock_or_err(&state.repair_lock, "artwork repair")?;
@@ -1528,6 +1537,7 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
                 (db.get_settings()?, db.list("name")?)
             };
             let enabled = settings["useSteamArtwork"] == true;
+            let sgdb_key = settings["steamGridDbApiKey"].as_str();
             let paused = settings["performanceGuard"] == true && !running_ids(&state).is_empty();
             let originals_raw = games.as_array().ok_or("Invalid game list")?;
             let originals = {
@@ -1539,19 +1549,21 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
             let automatic = args.first().and_then(Value::as_str) == Some("automatic");
             let allowed = || online_artwork_allowed(&state);
             let mut result = if automatic {
-                artwork::repair_artwork_auto_guarded(
+                artwork::repair_artwork_auto_guarded_with_key(
                     &originals,
                     &state.artwork_dir,
                     enabled,
                     paused,
+                    sgdb_key,
                     &allowed,
                 )?
             } else {
-                artwork::repair_artwork_guarded(
+                artwork::repair_artwork_guarded_with_key(
                     &originals,
                     &state.artwork_dir,
                     enabled,
                     paused,
+                    sgdb_key,
                     &allowed,
                 )?
             };
@@ -1631,6 +1643,59 @@ fn handle_command(app: &tauri::AppHandle, method: &str, args: &[Value]) -> Resul
                 obj.remove("onlineAttempted");
             }
             Ok(result)
+        }
+        "checkLibraryHealth" => {
+            let games = lock_or_err(&state.db, "database")?.list("name")?;
+            let list = games.as_array().map(Vec::as_slice).unwrap_or(&[]);
+            Ok(native::check_library_health(list, &state.artwork_dir))
+        }
+        "exportStatistics" => {
+            let Some(path) = app
+                .dialog()
+                .file()
+                .add_filter("Orbit statistics", &["csv", "json"])
+                .blocking_save_file()
+                .map(|v| v.into_path().map_err(|e| e.to_string()))
+                .transpose()?
+            else {
+                return Ok(Value::Null);
+            };
+            let stats = lock_or_err(&state.db, "database")?.get_statistics(30)?;
+            let is_json = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .eq_ignore_ascii_case("json");
+            let text = if is_json {
+                serde_json::to_string_pretty(&stats).map_err(|e| e.to_string())?
+            } else {
+                database::format_statistics_csv(&stats)
+            };
+            let parent = path
+                .parent()
+                .ok_or_else(|| "Export destination folder is unavailable.".to_string())?;
+            let temp = parent.join(format!(".orbit-stats-{}.tmp", uuid::Uuid::new_v4()));
+            {
+                let mut file = std::fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&temp)
+                    .map_err(|e| e.to_string())?;
+                if let Err(err) = std::io::Write::write_all(&mut file, text.as_bytes())
+                    .and_then(|()| file.sync_all())
+                {
+                    let _ = std::fs::remove_file(&temp);
+                    return Err(err.to_string());
+                }
+            }
+            if let Err(err) = std::fs::rename(&temp, &path) {
+                let _ = std::fs::remove_file(&temp);
+                return Err(err.to_string());
+            }
+            Ok(json!({
+                "path": path,
+                "format": if is_json { "json" } else { "csv" }
+            }))
         }
         "exportLibrary" => {
             let Some(path) = app

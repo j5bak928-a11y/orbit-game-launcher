@@ -90,7 +90,7 @@ fn normalized_name(value: &str) -> String {
         .collect()
 }
 
-fn known_game(value: &str) -> Option<&'static str> {
+pub(crate) fn known_game(value: &str) -> Option<&'static str> {
     let needle = normalized_name(value);
     const CATALOG: &[(&str, &[&str])] = &[
         (
@@ -126,6 +126,10 @@ fn known_game(value: &str) -> Option<&'static str> {
         (
             "Grand Theft Auto V",
             &["gta5", "gtav", "grandtheftauto5", "grandtheftautov"],
+        ),
+        (
+            "Grand Theft Auto IV",
+            &["gta4", "gtaiv", "grandtheftauto4", "grandtheftautoiv"],
         ),
         ("Red Dead Redemption 2", &["rdr2", "reddeadredemption2"]),
         ("Cyberpunk 2077", &["cyberpunk2077"]),
@@ -307,9 +311,108 @@ fn clean_product_folder(value: &str) -> Option<String> {
             label = label[..index].trim_end_matches(|c: char| matches!(c, '-' | '_' | '.' | ' '));
         }
     }
-    let cleaned = clean_name(label);
+    // Strip trailing packaging/version tags (e.g. "v0.3.4f8", "Build 12345",
+    // "[Portable]", "(Early Access)") without altering game numbers like "Schedule 1".
+    let mut trimmed = label.to_string();
+    loop {
+        let next = strip_trailing_release_tag(&trimmed);
+        if next.len() == trimmed.len() {
+            break;
+        }
+        trimmed = next;
+    }
+    let cleaned = clean_name(&trimmed);
     (!generic_game_label(&cleaned) && valid_title(&cleaned) && cleaned.chars().count() >= 3)
         .then_some(cleaned)
+}
+
+fn is_version_token(value: &str) -> bool {
+    let lower = value.trim().to_ascii_lowercase();
+    let Some(rest) = lower.strip_prefix('v') else {
+        return false;
+    };
+    let rest = rest.strip_prefix('.').unwrap_or(rest);
+    rest.as_bytes().first().is_some_and(u8::is_ascii_digit)
+        && rest.contains('.')
+        && rest
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+}
+
+fn is_packaging_tag(value: &str) -> bool {
+    let lower = value.trim().to_ascii_lowercase();
+    if is_version_token(&lower) {
+        return true;
+    }
+    if let Some(rest) = lower.strip_prefix("build") {
+        let rest = rest.trim_start_matches([' ', '.', '-', '_']);
+        if !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()) {
+            return true;
+        }
+    }
+    matches!(
+        lower.as_str(),
+        "pc" | "portable"
+            | "repack"
+            | "early access"
+            | "early-access"
+            | "early_access"
+            | "win64"
+            | "win32"
+            | "x64"
+            | "x86"
+            | "64-bit"
+            | "64bit"
+            | "32-bit"
+            | "32bit"
+            | "gog"
+            | "steam"
+            | "fitgirl"
+            | "dodi"
+            | "steamrip"
+            | "online-fix"
+            | "online fix"
+            | "multiplayer"
+    )
+}
+
+fn strip_trailing_release_tag(value: &str) -> String {
+    let trimmed = value.trim_end_matches([' ', '-', '_', '.']);
+    for (open, close) in [('(', ')'), ('[', ']')] {
+        if let Some(inner_end) = trimmed.strip_suffix(close) {
+            if let Some(open_idx) = inner_end.rfind(open) {
+                let inner = &inner_end[open_idx + 1..];
+                if is_packaging_tag(inner) {
+                    let prefix = inner_end[..open_idx].trim_end_matches([' ', '-', '_', '.']);
+                    if prefix.chars().count() >= 3 {
+                        return prefix.to_string();
+                    }
+                }
+            }
+        }
+    }
+    let sep_idx = trimmed.rfind([' ', '-', '_']);
+    if let Some(idx) = sep_idx {
+        let tail = &trimmed[idx + 1..];
+        let prefix = trimmed[..idx].trim_end_matches([' ', '-', '_', '.']);
+        if prefix.chars().count() >= 3 && is_version_token(tail) {
+            return prefix.to_string();
+        }
+        if prefix.chars().count() >= 3
+            && tail.bytes().all(|b| b.is_ascii_digit())
+            && !tail.is_empty()
+        {
+            if let Some(build_sep) = prefix.rfind([' ', '-', '_']) {
+                if prefix[build_sep + 1..].eq_ignore_ascii_case("build") {
+                    let before = prefix[..build_sep].trim_end_matches([' ', '-', '_', '.']);
+                    if before.chars().count() >= 3 {
+                        return before.to_string();
+                    }
+                }
+            }
+        }
+    }
+    trimmed.to_string()
 }
 
 fn title_contains_stem(title: &str, stem: &str) -> bool {
@@ -2794,11 +2897,17 @@ fn inspect_game_file_internal(executable: &str, scan_artwork: bool) -> Result<Va
     } else {
         None
     };
+    let local_banner = if scan_artwork {
+        find_nearby_banner(&file, &name)
+    } else {
+        None
+    };
     Ok(
         json!({"executable":file,"name":name,"suggested_name":fallback,
         "recognized":matches!(kind, "executable" | "metadata" | "folder"),
         "name_source":kind,"working_dir":parent,
-        "cover":"","icon":"","cover_source":"","local_artwork":local_artwork}),
+        "cover":"","banner":"","icon":"","cover_source":"",
+        "local_artwork":local_artwork,"local_banner":local_banner}),
     )
 }
 
@@ -2861,6 +2970,78 @@ fn find_nearby_artwork(executable: &Path, game_name: &str) -> Option<PathBuf> {
             None
         }
     })
+}
+
+fn find_nearby_banner(executable: &Path, game_name: &str) -> Option<PathBuf> {
+    let root = executable.parent()?;
+    let norm = |s: &str| {
+        s.chars()
+            .filter(char::is_ascii_alphanumeric)
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+    };
+    let key = norm(game_name);
+    let mut candidates = Vec::new();
+    for (dir, penalty) in [("", 0), ("artwork", 2), ("art", 3), ("images", 4)] {
+        let location = root.join(dir);
+        let Ok((items, excess)) = entries_at(&location, 5_001) else {
+            continue;
+        };
+        if excess || items.len() > 5_000 {
+            continue;
+        }
+        for item in items {
+            let path = item.path();
+            if !item.file_type().is_ok_and(|t| t.is_file())
+                || !["png", "jpg", "jpeg", "webp"].contains(&extension(&path).as_str())
+            {
+                continue;
+            }
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let normalized = norm(stem);
+            let mut score = match normalized.as_str() {
+                "banner" => 100,
+                "hero" => 99,
+                "libraryhero" => 98,
+                "backdrop" => 96,
+                "background" => 94,
+                "header" => 92,
+                "keyartwide" => 90,
+                _ => 0,
+            };
+            if !key.is_empty()
+                && (normalized == format!("{key}banner")
+                    || normalized == format!("{key}hero")
+                    || normalized == format!("{key}header"))
+            {
+                score = score.max(85);
+            }
+            if score > penalty {
+                candidates.push((path, score - penalty));
+            }
+        }
+    }
+    candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    candidates.into_iter().take(16).find_map(|(path, _)| {
+        let bytes = crate::files::read_regular_bounded(&path, 15 * 1024 * 1024).ok()?;
+        if is_landscape_banner(&bytes) {
+            Some(path)
+        } else {
+            None
+        }
+    })
+}
+
+fn is_landscape_banner(bytes: &[u8]) -> bool {
+    let Some((width, height)) = image_dimensions(bytes) else {
+        return false;
+    };
+    width >= 320
+        && height >= 120
+        && width <= 4096
+        && height <= 4096
+        && (width as f64) / (height as f64) >= 1.25
+        && (width as f64) / (height as f64) <= 4.5
 }
 
 fn is_portrait_image(bytes: &[u8]) -> bool {
@@ -4268,5 +4449,34 @@ mod tests {
             ]
         );
         assert!(collect_launch_env(Some(&json!({"1BAD": "x"})), None).is_err());
+    }
+
+    #[test]
+    fn clean_product_folder_strips_version_and_packaging_tags_and_detects_local_banner() {
+        assert_eq!(
+            clean_product_folder("Schedule I v0.3.4f8"),
+            Some("Schedule I".into())
+        );
+        assert_eq!(
+            clean_product_folder("Schedule 1 (v0.3.4) [Portable]"),
+            Some("Schedule 1".into())
+        );
+        assert_eq!(
+            clean_product_folder("Schedule_I_Build_17892345"),
+            Some("Schedule I".into())
+        );
+        assert_eq!(
+            clean_product_folder("Cyberpunk 2077"),
+            Some("Cyberpunk 2077".into())
+        );
+        let mut png = vec![
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        png[16..20].copy_from_slice(&1280_u32.to_be_bytes());
+        png[20..24].copy_from_slice(&720_u32.to_be_bytes());
+        assert!(is_landscape_banner(&png));
+        png[16..20].copy_from_slice(&600_u32.to_be_bytes());
+        png[20..24].copy_from_slice(&900_u32.to_be_bytes());
+        assert!(!is_landscape_banner(&png));
     }
 }

@@ -819,7 +819,7 @@ function openGameActions(trigger,point=null){
  menu.querySelector('[role=menuitem],[role=menuitemradio]')?.focus({preventScroll:true});
 }
 function openModal(type,meta={}){pauseDesktopPadEntry();closeGameActions();if(!state.modal){modalReturnFocus=document.activeElement;modalReturnFocusAction=modalReturnFocus?.dataset.action?{action:modalReturnFocus.dataset.action,id:modalReturnFocus.dataset.id,kind:['card-open-trigger','row-open-trigger','continue-open-trigger','game-menu','hero-detail'].find(name=>modalReturnFocus.classList.contains(name))}:null;}state.modal={type,...meta};renderModal()}
-const WHATS_NEW_VERSION='0.5.2';
+const WHATS_NEW_VERSION='0.5.3';
 const WHATS_NEW_KEY='orbit.whatsNew.lastAcknowledgedVersion';
 let whatsNewPending=false;
 function markWhatsNewSeen(){
@@ -843,9 +843,11 @@ function whatsNewDialog(){
  const points=(items)=>items.map(item=>`<li>${tr(item)}</li>`).join('');
  return `<div class="dialog-scrim" data-action="scrim"><section class="dialog wide whats-new-dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="whats-new-intro">
  <div class="whats-new-header"><span class="whats-new-eyebrow">${ic('sparkles',15)} ORBIT · v${WHATS_NEW_VERSION}</span><button class="ghost-btn whats-new-close" data-action="close-modal" aria-label="${tr('Close release notes')}">${ic('close',20)}</button>
- <h2 id="dialog-title">${tr("What's new in Orbit")}</h2><p id="whats-new-intro">${tr('Highlights from 0.2.7 through 0.5.2')}</p></div>
+ <h2 id="dialog-title">${tr("What's new in Orbit")}</h2><p id="whats-new-intro">${tr('Highlights from 0.2.7 through 0.5.3')}</p></div>
  <div class="whats-new-content">
- <section class="whats-new-version"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.5.2 — New')}</span><h3>${tr('Refined UI polish, streamlined Library & Game Details, and Controller Mode upgrades')}</h3></div>
+ <section class="whats-new-version"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.5.3 — New')}</span><h3>${tr('Smarter manual artwork lookup and automatic hero banners')}</h3></div>
+ <ul>${points(['Manual game lookups now match Roman and Arabic numerals (such as Schedule 1 to Schedule I), camelCase filenames, folder version tags, and official store editions while still rejecting demos, soundtracks, and DLCs.','Online artwork search, executable detection, and cover repair now fetch wide hero banners alongside portrait covers so manually added games look sharp in Game Details and Controller Mode.','Selecting an executable in Add Game now automatically checks Steam and Epic Games for cover and banner artwork when online artwork is enabled, alongside local game-folder covers and banners.'])}</ul></section>
+ <section class="whats-new-version whats-new-history"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.5.2 — New')}</span><h3>${tr('Refined UI polish, streamlined Library & Game Details, and Controller Mode upgrades')}</h3></div>
  <ul>${points(['Collapsed the Library toolbar into two clean rows with focus-preserving filters, unified select controls, a scrollable custom-collections sidebar, List View menus, and Bulk Favorite/Remove actions.','Streamlined Game Details into two action tiers with an inline play-status picker and More menu, added inline accessible form validation with unsaved-changes protection, and guarded destructive actions.','Synced Controller Mode with your accent color and desktop status badge colors, added Xbox/PlayStation button prompts, A–Z quick jumping, auto-dismissing notices, and polished card action menus.'])}</ul></section>
  <section class="whats-new-version whats-new-history"><div class="whats-new-section-head"><span class="whats-new-chip">${tr('0.5.1 — New')}</span><h3>${tr('Faster updates, sharper controller artwork and polished favorites')}</h3></div>
  <ul>${points(['Automatic updates now check much faster on startup, reopen, window focus, and every 15 minutes with cache-bypass headers and smoother progress updates.','Controller Mode now displays library covers in true 2:3 poster proportions with adaptive portrait/landscape framing and soft ambient backdrops for custom artwork.','Upgraded favorite buttons across desktop cards, list rows, game details, and Controller Mode with frosted glass styling, crisp SVG hearts, and a dedicated controller card badge.'])}</ul></section>
@@ -1002,7 +1004,7 @@ function editor(g){const isEdit=!!g;const title=t(isEdit?'Edit game':'Add a game
   <div class="field"><label for="game-tags">${tr('Tags')}</label><input id="game-tags" name="tags" value="${esc((g?.tags||[]).join(', '))}" type="text" placeholder="${tr('Co-op, Story, Competitive')}" aria-invalid="false" /><small>${tr('Separate multiple tags with commas.')}</small></div>
   <details class="editor-section" open><summary>${tr('Artwork & cover appearance')}</summary><div class="editor-section-body">
    <div class="image-fields">${imgSection('cover','Cover artwork')}${imgSection('banner','Banner artwork')}${imgSection('icon','Game icon')}</div>
-   <div class="field cover-search"><label for="cover-search-title">${tr('Find a cover online')}</label><div class="file-field"><input id="cover-search-title" type="text" maxlength="140" placeholder="${tr('Use game title, or enter a different title')}" autocomplete="off" aria-invalid="false" /><button type="button" class="secondary-btn" data-action="find-online-art">${ic('search',14)} ${tr('Search')}</button></div><small>${tr('Search Steam and Epic Games. The preview changes only when a cover is found; save to apply it.')}</small><span id="cover-search-status" role="status" aria-live="polite"></span></div>
+   <div class="field cover-search"><label for="cover-search-title">${tr('Find artwork online')}</label><div class="file-field"><input id="cover-search-title" type="text" maxlength="140" placeholder="${tr('Use game title, or enter a different title')}" autocomplete="off" aria-invalid="false" /><button type="button" class="secondary-btn" data-action="find-online-art">${ic('search',14)} ${tr('Search')}</button></div><small>${tr('Search Steam and Epic Games for cover and banner artwork. Save to apply.')}</small><span id="cover-search-status" role="status" aria-live="polite"></span></div>
    <div class="field-grid"><div class="field"><label for="game-cover-fit">${tr('Cover presentation')}</label><div class="select-wrap"><select id="game-cover-fit" name="cover_fit" aria-invalid="false"><option value="cover" ${g?.cover_fit!=='contain'?'selected':''}>${tr('Fill frame')}</option><option value="contain" ${g?.cover_fit==='contain'?'selected':''}>${tr('Fit entire artwork')}</option></select></div></div><div class="field"><label for="game-cover-position">${tr('Cover position')}</label><div class="select-wrap"><select id="game-cover-position" name="cover_position" aria-invalid="false"><option value="center" ${!['top','bottom'].includes(g?.cover_position)?'selected':''}>${tr('Center')}</option><option value="top" ${g?.cover_position==='top'?'selected':''}>${tr('Top')}</option><option value="bottom" ${g?.cover_position==='bottom'?'selected':''}>${tr('Bottom')}</option></select></div></div></div>
   </div></details>
   <details class="editor-section" ${hasAdvanced?'open':''}><summary>${tr('Advanced launch options')}</summary><div class="editor-section-body">
@@ -1449,7 +1451,7 @@ async function detectGameFile(file){
  const modal=state.modal;
  const status=el('game-detection-status');
  if(!status || modal?.type!=='game')return;
- status.textContent=t('Looking for local artwork and executable icon…');
+ status.textContent=state.settings?.useSteamArtwork?t('Looking for artwork and game details…'):t('Looking for local artwork and executable icon…');
  try{
   const found=await window.orbit.inspectGameFile(file);
   if(state.modal!==modal || !el('game-form') || el('game-executable')?.value!==file)return;
@@ -1462,7 +1464,7 @@ async function detectGameFile(file){
   const workdir=el('game-workdir');
   if(workdir&&!workdir.value.trim())workdir.value=found.working_dir;
   let artworkFound=false;
-  for(const kind of ['cover','icon']){
+  for(const kind of ['cover','banner','icon']){
    const token=found[kind];
    const input=el(`game-${kind}`);
    if(!artwork(token)||!input||input.value)continue;
@@ -1472,7 +1474,15 @@ async function detectGameFile(file){
    artworkFound=true;
   }
   const nameMessage=found.recognized?t('Recognized as {name}. ',{name:found.name}):'';
-  const artMessage=t(found.cover_source==='steam'?'Cover downloaded from Steam.':found.cover?'Cover found in game folder.':found.icon?'Game icon detected.':'No artwork found; you can add your own.');
+  const hasCover=!!artwork(found.cover),hasBanner=!!artwork(found.banner);
+  let artMessage;
+  if(found.cover_source==='steam')artMessage=hasCover&&hasBanner?t('Cover and banner downloaded from Steam.'):hasCover?t('Cover downloaded from Steam.'):t('Banner downloaded from Steam.');
+  else if(found.cover_source==='epic')artMessage=hasCover&&hasBanner?t('Cover and banner downloaded from Epic Games.'):hasCover?t('Cover downloaded from Epic Games.'):t('Banner downloaded from Epic Games.');
+  else if(hasCover&&hasBanner)artMessage=t('Cover and banner found in game folder.');
+  else if(hasCover)artMessage=t('Cover found in game folder.');
+  else if(hasBanner)artMessage=t('Banner found in game folder.');
+  else if(found.icon)artMessage=t('Game icon detected.');
+  else artMessage=t('No artwork found; you can add your own.');
   status.textContent=nameMessage+artMessage;
   if(artworkFound&&!found.cover&&found.icon){
    const preview=el('preview-cover');
@@ -1627,19 +1637,28 @@ async function handleAction(button,event=null){const action=button.dataset.actio
    const entered=el('cover-search-title')?.value?.trim()||'',gameTitle=el('game-name')?.value?.trim()||'';
    const name=entered||gameTitle;
    if(!name){toast(t('Enter the complete game title to search for its cover.'),true);break;}
-   const modal=state.modal,status=el('cover-search-status'),oldCover=el('game-cover')?.value;
-   if(status)status.textContent=t('Searching for an exact game title…');
+   const modal=state.modal,status=el('cover-search-status'),oldCover=el('game-cover')?.value,oldBanner=el('game-banner')?.value;
+   if(status)status.textContent=t('Searching Steam and Epic Games for artwork…');
    button.disabled=true;
    try{
     const found=await window.orbit.findOnlineCover(name);
     if(state.modal!==modal)return;
     if((el('cover-search-title')?.value.trim()||'')!==entered||(!entered&&el('game-name')?.value.trim()!==gameTitle)){if(status)status.textContent=t('Title changed. Search again.');return;}
-    if(found.cover&&el('game-cover')?.value===oldCover){
-     el('game-cover').value=found.cover;
-     el('preview-cover').innerHTML=`<img src="${artwork(found.cover)}" alt="${tr('Cover found online')}"/>`;
+    let coverKept=false;
+    if(found.cover){
+     if(el('game-cover')?.value===oldCover){
+      el('game-cover').value=found.cover;
+      el('preview-cover').innerHTML=`<img src="${artwork(found.cover)}" alt="${tr('Cover found online')}"/>`;
+      const f=el('game-form');if(f)f.dataset.dirty='true';
+     }else coverKept=true;
+    }
+    if(found.banner&&el('game-banner')?.value===oldBanner){
+     el('game-banner').value=found.banner;
+     const bp=el('preview-banner');
+     if(bp)bp.innerHTML=`<img src="${artwork(found.banner)}" alt="${tr('Banner found online')}"/>`;
      const f=el('game-form');if(f)f.dataset.dirty='true';
     }
-    if(status)status.textContent=found.cover&&el('game-cover')?.value!==found.cover?t('Cover changed while searching; your selection was kept.'):found.message||t('No cover found.');
+    if(status)status.textContent=coverKept?t('Cover changed while searching; your selection was kept.'):found.message?t(found.message):t('No cover found.');
    }catch(e){if(status)status.textContent=e.message||t('Online artwork search unavailable.');toast(e.message,true)}
    finally{button.disabled=false}
    break;

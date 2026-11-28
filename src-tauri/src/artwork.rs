@@ -36,6 +36,12 @@ const ASSETS: [&str; 4] = [
     "library_600x900_2x.jpg",
     "library_600x900.jpg",
 ];
+const BANNER_ASSETS: [&str; 4] = [
+    "library_hero.jpg",
+    "library_hero_2x.jpg",
+    "header_2x.jpg",
+    "header.jpg",
+];
 
 fn field<'a>(value: &'a Value, name: &str) -> &'a str {
     value.get(name).and_then(Value::as_str).unwrap_or("")
@@ -56,7 +62,610 @@ fn key(s: &str) -> String {
         .collect()
 }
 fn valid_title(s: &str) -> bool {
-    (3..=140).contains(&s.chars().count()) && !s.chars().any(char::is_control) && key(s).len() >= 4
+    (3..=140).contains(&s.chars().count()) && !s.chars().any(char::is_control) && key(s).len() >= 3
+}
+
+fn is_version_token(value: &str) -> bool {
+    let lower = value.trim().to_ascii_lowercase();
+    let Some(rest) = lower.strip_prefix('v') else {
+        return false;
+    };
+    let rest = rest.strip_prefix('.').unwrap_or(rest);
+    rest.as_bytes().first().is_some_and(u8::is_ascii_digit)
+        && rest.contains('.')
+        && rest
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+}
+
+fn is_packaging_tag(value: &str) -> bool {
+    let lower = value.trim().to_ascii_lowercase();
+    if is_version_token(&lower) {
+        return true;
+    }
+    if let Some(rest) = lower.strip_prefix("build") {
+        let rest = rest.trim_start_matches([' ', '.', '-', '_']);
+        if !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()) {
+            return true;
+        }
+    }
+    matches!(
+        lower.as_str(),
+        "pc" | "portable"
+            | "repack"
+            | "early access"
+            | "early-access"
+            | "early_access"
+            | "win64"
+            | "win32"
+            | "x64"
+            | "x86"
+            | "64-bit"
+            | "64bit"
+            | "32-bit"
+            | "32bit"
+            | "online-fix"
+            | "online fix"
+    )
+}
+
+fn strip_title_noise(raw: &str) -> String {
+    let mut text = raw.trim().to_string();
+    loop {
+        let trimmed = text.trim_end_matches([' ', '-', '_']);
+        let mut next = None;
+        for (open, close) in [('(', ')'), ('[', ']')] {
+            if let Some(inner_end) = trimmed.strip_suffix(close) {
+                if let Some(open_idx) = inner_end.rfind(open) {
+                    let inner = &inner_end[open_idx + 1..];
+                    if is_packaging_tag(inner) {
+                        let prefix = inner_end[..open_idx].trim_end_matches([' ', '-', '_', '.']);
+                        if prefix.chars().count() >= 3 {
+                            next = Some(prefix.to_string());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if next.is_none() {
+            if let Some(idx) = trimmed.rfind([' ', '-', '_']) {
+                let tail = &trimmed[idx + 1..];
+                let prefix = trimmed[..idx].trim_end_matches([' ', '-', '_', '.']);
+                if prefix.chars().count() >= 3 && is_version_token(tail) {
+                    next = Some(prefix.to_string());
+                } else if prefix.chars().count() >= 3
+                    && !tail.is_empty()
+                    && tail.bytes().all(|b| b.is_ascii_digit())
+                {
+                    if let Some(build_sep) = prefix.rfind([' ', '-', '_']) {
+                        if prefix[build_sep + 1..].eq_ignore_ascii_case("build") {
+                            let before = prefix[..build_sep].trim_end_matches([' ', '-', '_', '.']);
+                            if before.chars().count() >= 3 {
+                                next = Some(before.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        match next {
+            Some(candidate) if candidate.len() < text.len() => text = candidate,
+            _ => break,
+        }
+    }
+    text
+}
+
+fn collapse_dotted_acronyms(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let prev_alnum = i > 0 && chars[i - 1].is_ascii_alphanumeric();
+        if !prev_alnum
+            && chars[i].is_ascii_alphabetic()
+            && i + 2 < chars.len()
+            && chars[i + 1] == '.'
+            && chars[i + 2].is_ascii_alphabetic()
+        {
+            let mut j = i;
+            let mut letters = Vec::new();
+            while j < chars.len() && chars[j].is_ascii_alphabetic() {
+                let next_is_dot = j + 1 < chars.len() && chars[j + 1] == '.';
+                let after_dot_is_letter = j + 2 < chars.len() && chars[j + 2].is_ascii_alphabetic();
+                let next_is_alnum = j + 1 < chars.len() && chars[j + 1].is_ascii_alphanumeric();
+                if next_is_alnum {
+                    letters.clear();
+                    break;
+                }
+                letters.push(chars[j]);
+                if next_is_dot {
+                    j += 2;
+                    if !after_dot_is_letter {
+                        break;
+                    }
+                } else {
+                    j += 1;
+                    break;
+                }
+            }
+            if letters.len() >= 2 {
+                for ch in letters {
+                    out.push(ch);
+                }
+                i = j;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+fn split_alnum_segment(segment: &str) -> Vec<String> {
+    let chars: Vec<char> = segment.chars().collect();
+    let mut parts = Vec::new();
+    let mut start = 0;
+    for i in 1..chars.len() {
+        if chars[i - 1].is_ascii_lowercase() && chars[i].is_ascii_uppercase() {
+            parts.push(chars[start..i].iter().collect::<String>());
+            start = i;
+        }
+    }
+    if start < chars.len() {
+        parts.push(chars[start..].iter().collect::<String>());
+    }
+    let mut out = Vec::new();
+    for part in parts {
+        let split_at = part.find(|c: char| c.is_ascii_digit());
+        if let Some(idx) = split_at {
+            let (prefix, suffix) = part.split_at(idx);
+            if prefix.len() >= 3
+                && prefix.bytes().all(|b| b.is_ascii_alphabetic())
+                && !suffix.is_empty()
+                && suffix.bytes().all(|b| b.is_ascii_digit())
+            {
+                if let Ok(num) = suffix.parse::<u32>() {
+                    if (1..=20).contains(&num) || (1970..=2099).contains(&num) {
+                        out.push(prefix.to_ascii_lowercase());
+                        out.push(suffix.to_string());
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push(part.to_ascii_lowercase());
+    }
+    out
+}
+
+fn tokenize_title(s: &str) -> Vec<String> {
+    let collapsed = collapse_dotted_acronyms(s);
+    let cleaned: String = collapsed
+        .chars()
+        .filter(|c| !matches!(c, '™' | '℠' | '®' | '©' | '\'' | '’' | '`'))
+        .collect();
+    let normalized: String = cleaned.nfkd().collect();
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for ch in normalized.chars() {
+        if ch.is_ascii_alphanumeric() {
+            current.push(ch);
+        } else {
+            if !current.is_empty() {
+                tokens.extend(split_alnum_segment(&current));
+                current.clear();
+            }
+            if ch == '&' {
+                tokens.push("and".to_string());
+            }
+        }
+    }
+    if !current.is_empty() {
+        tokens.extend(split_alnum_segment(&current));
+    }
+    tokens
+}
+
+fn roman_to_arabic(token: &str) -> Option<&'static str> {
+    match token {
+        "i" => Some("1"),
+        "ii" => Some("2"),
+        "iii" => Some("3"),
+        "iv" => Some("4"),
+        "v" => Some("5"),
+        "vi" => Some("6"),
+        "vii" => Some("7"),
+        "viii" => Some("8"),
+        "ix" => Some("9"),
+        "x" => Some("10"),
+        "xi" => Some("11"),
+        "xii" => Some("12"),
+        "xiii" => Some("13"),
+        "xiv" => Some("14"),
+        "xv" => Some("15"),
+        "xvi" => Some("16"),
+        "xvii" => Some("17"),
+        "xviii" => Some("18"),
+        "xix" => Some("19"),
+        "xx" => Some("20"),
+        _ => None,
+    }
+}
+
+fn arabic_to_roman(token: &str) -> Option<&'static str> {
+    match token {
+        "1" => Some("I"),
+        "2" => Some("II"),
+        "3" => Some("III"),
+        "4" => Some("IV"),
+        "5" => Some("V"),
+        "6" => Some("VI"),
+        "7" => Some("VII"),
+        "8" => Some("VIII"),
+        "9" => Some("IX"),
+        "10" => Some("X"),
+        "11" => Some("XI"),
+        "12" => Some("XII"),
+        "13" => Some("XIII"),
+        "14" => Some("XIV"),
+        "15" => Some("XV"),
+        "16" => Some("XVI"),
+        "17" => Some("XVII"),
+        "18" => Some("XVIII"),
+        "19" => Some("XIX"),
+        "20" => Some("XX"),
+        _ => None,
+    }
+}
+
+fn canonical_tokens(s: &str) -> Vec<String> {
+    let mut tokens = tokenize_title(s);
+    if tokens.len() > 1 && tokens[0] == "the" {
+        tokens.remove(0);
+    }
+    for (idx, tok) in tokens.iter_mut().enumerate() {
+        // Keep leading single-letter pronouns/brand prefixes ("I Am Bread",
+        // "V Rising", "X-COM") intact while normalizing sequel numerals.
+        if idx > 0 {
+            if let Some(num) = roman_to_arabic(tok) {
+                *tok = num.to_string();
+            }
+        }
+    }
+    tokens
+}
+
+fn canonical_key(s: &str) -> String {
+    canonical_tokens(s).concat()
+}
+
+fn is_non_base_item(candidate_tokens: &[String], query_tokens: &[String]) -> bool {
+    const SINGLE_BANNED: &[&str] = &[
+        "soundtrack",
+        "soundtracks",
+        "ost",
+        "artbook",
+        "demo",
+        "prologue",
+        "trial",
+        "playtest",
+        "beta",
+        "sdk",
+        "toolkit",
+        "dlc",
+        "addon",
+        "addons",
+        "upgrade",
+        "pack",
+        "bundle",
+        "vr",
+        "benchmark",
+        "wallpaper",
+        "cosmetic",
+        "cosmetics",
+        "skin",
+        "skins",
+        "pass",
+        "points",
+        "coins",
+        "credits",
+        "currency",
+        "expansion",
+        "server",
+        "dedicated",
+    ];
+    for banned in SINGLE_BANNED {
+        if candidate_tokens.iter().any(|t| t == banned) && !query_tokens.iter().any(|t| t == banned)
+        {
+            return true;
+        }
+    }
+    const PHRASE_BANNED: &[(&str, &str)] = &[
+        ("free", "sample"),
+        ("art", "book"),
+        ("mod", "tools"),
+        ("songs", "of"),
+        ("persona", "set"),
+        ("costume", "set"),
+        ("starter", "edition"),
+    ];
+    let has_pair =
+        |tokens: &[String], a: &str, b: &str| tokens.windows(2).any(|w| w[0] == a && w[1] == b);
+    for (a, b) in PHRASE_BANNED {
+        if has_pair(candidate_tokens, a, b) && !has_pair(query_tokens, a, b) {
+            return true;
+        }
+    }
+    false
+}
+
+fn strip_parenthesized_year(s: &str) -> String {
+    let trimmed = s.trim_end();
+    if let Some(inner_end) = trimmed.strip_suffix(')') {
+        if let Some(open_idx) = inner_end.rfind('(') {
+            let year = inner_end[open_idx + 1..].trim();
+            if year.len() == 4
+                && year.bytes().all(|b| b.is_ascii_digit())
+                && year
+                    .parse::<u32>()
+                    .is_ok_and(|y| (1970..=2035).contains(&y))
+            {
+                let prefix = inner_end[..open_idx].trim_end();
+                if prefix.chars().count() >= 3 {
+                    return prefix.to_string();
+                }
+            }
+        }
+    }
+    s.to_string()
+}
+
+fn base_edition_key(s: &str) -> String {
+    let without_year = strip_parenthesized_year(s);
+    let mut tokens = canonical_tokens(&without_year);
+    const CREATOR_PREFIXES: &[&[&str]] = &[
+        &["sid", "meiers"],
+        &["tom", "clancys"],
+        &["clive", "barkers"],
+        &["american", "mcgees"],
+    ];
+    for prefix in CREATOR_PREFIXES {
+        if tokens.len() > prefix.len()
+            && tokens
+                .iter()
+                .zip(prefix.iter())
+                .all(|(t, p)| t.as_str() == *p)
+        {
+            tokens.drain(..prefix.len());
+            break;
+        }
+    }
+    const EDITION_SUFFIXES: &[&[&str]] = &[
+        &["game", "of", "the", "year", "edition"],
+        &["game", "of", "the", "year"],
+        &["the", "complete", "edition"],
+        &["enhanced", "edition"],
+        &["special", "edition"],
+        &["definitive", "edition"],
+        &["complete", "edition"],
+        &["ultimate", "edition"],
+        &["deluxe", "edition"],
+        &["anniversary", "edition"],
+        &["standard", "edition"],
+        &["goty", "edition"],
+        &["directors", "cut"],
+        &["hd", "remastered"],
+        &["hd", "remaster"],
+        &["remastered", "edition"],
+        &["legacy", "edition"],
+        &["remastered"],
+        &["remaster"],
+        &["enhanced"],
+        &["definitive"],
+        &["goty"],
+        &["hd"],
+    ];
+    loop {
+        let mut stripped = false;
+        for suffix in EDITION_SUFFIXES {
+            if tokens.len() > suffix.len() {
+                let start = tokens.len() - suffix.len();
+                if tokens[start..]
+                    .iter()
+                    .zip(suffix.iter())
+                    .all(|(t, s)| t.as_str() == *s)
+                {
+                    tokens.truncate(start);
+                    stripped = true;
+                    break;
+                }
+            }
+        }
+        if !stripped {
+            break;
+        }
+    }
+    tokens.concat()
+}
+
+fn spaced_title(s: &str) -> String {
+    let raw = s.replace('_', " ");
+    let mut words = Vec::new();
+    for word in raw.split_whitespace() {
+        let chars: Vec<char> = word.chars().collect();
+        let mut parts = Vec::new();
+        let mut start = 0;
+        for i in 1..chars.len() {
+            if chars[i - 1].is_ascii_lowercase() && chars[i].is_ascii_uppercase() {
+                parts.push(chars[start..i].iter().collect::<String>());
+                start = i;
+            }
+        }
+        if start < chars.len() {
+            parts.push(chars[start..].iter().collect::<String>());
+        }
+        for part in parts {
+            if let Some(idx) = part.find(|c: char| c.is_ascii_digit()) {
+                let (prefix, suffix) = part.split_at(idx);
+                if prefix.len() >= 3
+                    && prefix.bytes().all(|b| b.is_ascii_alphabetic())
+                    && !suffix.is_empty()
+                    && suffix.bytes().all(|b| b.is_ascii_digit())
+                    && suffix
+                        .parse::<u32>()
+                        .is_ok_and(|n| (1..=20).contains(&n) || (1970..=2099).contains(&n))
+                {
+                    words.push(prefix.to_string());
+                    words.push(suffix.to_string());
+                    continue;
+                }
+            }
+            words.push(part);
+        }
+    }
+    words.join(" ")
+}
+
+fn swap_numeral_query(s: &str) -> Option<String> {
+    let words: Vec<&str> = s.split_whitespace().collect();
+    if words.len() < 2 {
+        return None;
+    }
+    let mut to_roman = Vec::with_capacity(words.len());
+    let mut changed_roman = false;
+    for (idx, word) in words.iter().enumerate() {
+        if idx > 0 {
+            let trimmed = word.trim_end_matches([':', '-', ',']);
+            let punct = &word[trimmed.len()..];
+            if let Some(roman) = arabic_to_roman(trimmed) {
+                to_roman.push(format!("{roman}{punct}"));
+                changed_roman = true;
+                continue;
+            }
+        }
+        to_roman.push((*word).to_string());
+    }
+    if changed_roman {
+        return Some(to_roman.join(" "));
+    }
+    let mut to_arabic = Vec::with_capacity(words.len());
+    let mut changed_arabic = false;
+    for (idx, word) in words.iter().enumerate() {
+        if idx > 0 {
+            let trimmed = word.trim_end_matches([':', '-', ',']);
+            let punct = &word[trimmed.len()..];
+            if let Some(arabic) = roman_to_arabic(&trimmed.to_ascii_lowercase()) {
+                to_arabic.push(format!("{arabic}{punct}"));
+                changed_arabic = true;
+                continue;
+            }
+        }
+        to_arabic.push((*word).to_string());
+    }
+    changed_arabic.then(|| to_arabic.join(" "))
+}
+
+fn search_variants(title: &str) -> Vec<String> {
+    let cleaned = strip_title_noise(title);
+    let spaced = spaced_title(&cleaned);
+    let mut variants = Vec::new();
+    let mut seen = HashSet::new();
+    let mut push = |candidate: String| {
+        let trimmed = candidate.trim();
+        if valid_title(trimmed) && variants.len() < 3 && seen.insert(trimmed.to_ascii_lowercase()) {
+            variants.push(trimmed.to_string());
+        }
+    };
+    if let Some(known) = native::known_game(&cleaned).or_else(|| native::known_game(title)) {
+        push(known.to_string());
+    }
+    if !spaced.eq_ignore_ascii_case(&cleaned) {
+        push(spaced.clone());
+        if let Some(swapped) = swap_numeral_query(&spaced) {
+            push(swapped);
+        }
+        push(cleaned);
+    } else {
+        push(cleaned.clone());
+        if let Some(swapped) = swap_numeral_query(&cleaned) {
+            push(swapped);
+        }
+    }
+    variants
+}
+
+fn select_steam_match(items: &[Value], targets: &[String]) -> Option<(String, String)> {
+    let apps: Vec<(&str, String)> = items
+        .iter()
+        .take(20)
+        .filter_map(|item| {
+            if item["type"] != "app" {
+                return None;
+            }
+            let id = item["id"].as_u64()?.to_string();
+            if !valid_id(&id) {
+                return None;
+            }
+            let found = item["name"].as_str()?;
+            Some((found, id))
+        })
+        .collect();
+    // Pass 1: exact literal alphanumeric match (keeps e.g. "Mega Man 10" vs "Mega Man X").
+    for target in targets {
+        let target_key = key(target);
+        if target_key.len() < 3 {
+            continue;
+        }
+        if let Some((found, id)) = apps.iter().find(|(found, _)| key(found) == target_key) {
+            return Some(((*found).to_owned(), id.clone()));
+        }
+    }
+    // Pass 2: canonical Roman/Arabic, punctuation, "&"/"and", and leading-"The" match.
+    for target in targets {
+        let target_canonical = canonical_key(target);
+        if target_canonical.len() < 3 {
+            continue;
+        }
+        let query_tokens = tokenize_title(target);
+        if let Some((found, id)) = apps.iter().find(|(found, _)| {
+            canonical_key(found) == target_canonical
+                && !is_non_base_item(&tokenize_title(found), &query_tokens)
+        }) {
+            return Some(((*found).to_owned(), id.clone()));
+        }
+    }
+    // Pass 3: official edition/remaster suffix or creator-prefix fallback
+    // (e.g. GTA V -> GTA V Enhanced, Witcher 3: Wild Hunt -> Remastered, Civ 6 -> Sid Meier's).
+    for target in targets {
+        let target_base = base_edition_key(target);
+        if target_base.len() < 3 {
+            continue;
+        }
+        let query_tokens = tokenize_title(target);
+        let mut matched: Vec<(&str, &String)> = apps
+            .iter()
+            .filter(|(found, _)| {
+                !is_non_base_item(&tokenize_title(found), &query_tokens)
+                    && base_edition_key(found) == target_base
+            })
+            .map(|(found, id)| (*found, id))
+            .collect();
+        if !matched.is_empty() {
+            matched.sort_by_key(|(found, _)| {
+                let lower = found.to_ascii_lowercase();
+                let secondary = lower.contains("deluxe")
+                    || lower.contains("ultimate")
+                    || lower.contains("legacy");
+                (secondary, found.len())
+            });
+            let (found, id) = matched[0];
+            return Some((found.to_owned(), id.clone()));
+        }
+    }
+    None
 }
 fn client() -> Result<Client, String> {
     static HTTP_CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
@@ -182,52 +791,75 @@ fn exact_app(
     if !valid_title(name) {
         return Ok(None);
     }
-    let mut url =
-        Url::parse("https://store.steampowered.com/api/storesearch/").map_err(|e| e.to_string())?;
-    url.query_pairs_mut()
-        .append_pair("term", name)
-        .append_pair("l", "english")
-        .append_pair("cc", "US");
-    let Some(data) = json_request(http, url.as_str(), SEARCH_LIMIT, allowed)? else {
+    let variants = search_variants(name);
+    if variants.is_empty() {
         return Ok(None);
-    };
-    let items = data["items"]
-        .as_array()
-        .ok_or("Steam search returned no items list")?;
-    for item in items.iter().take(20) {
-        if item["type"] != "app" {
-            continue;
-        }
-        let Some(id) = item["id"].as_u64() else {
+    }
+    let mut last_error = None;
+    for query in &variants {
+        let mut url = Url::parse("https://store.steampowered.com/api/storesearch/")
+            .map_err(|e| e.to_string())?;
+        url.query_pairs_mut()
+            .append_pair("term", query)
+            .append_pair("l", "english")
+            .append_pair("cc", "US");
+        let data = match json_request(http, url.as_str(), SEARCH_LIMIT, allowed) {
+            Ok(Some(data)) => data,
+            Ok(None) => continue,
+            Err(e) => {
+                last_error = Some(e);
+                continue;
+            }
+        };
+        let Some(items) = data["items"].as_array() else {
             continue;
         };
-        let id = id.to_string();
-        if !valid_id(&id) {
-            continue;
+        if let Some(found) = select_steam_match(items, &variants) {
+            return Ok(Some(found));
         }
-        let Some(found) = item["name"].as_str() else {
-            continue;
-        };
-        if key(found) == key(name) {
-            return Ok(Some((found.to_owned(), id)));
-        }
+    }
+    if let Some(e) = last_error {
+        return Err(e);
     }
     Ok(None)
 }
 fn hash_part(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|c| c.is_ascii_hexdigit())
 }
-fn approved_asset(name: &str) -> bool {
+fn valid_steam_jpg_name(file: &str, prefixes: &[&str]) -> bool {
+    if file.len() > 96 {
+        return false;
+    }
+    let Some(stem) = file.strip_suffix(".jpg") else {
+        return false;
+    };
+    !stem.is_empty()
+        && stem
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        && prefixes.iter().any(|prefix| stem.starts_with(prefix))
+}
+fn approved_cover_asset(name: &str) -> bool {
     let parts: Vec<&str> = name.split('/').collect();
     match parts.as_slice() {
-        [file] => ASSETS.contains(file),
-        [hash, file] => hash_part(hash) && ASSETS.contains(file),
+        [file] => valid_steam_jpg_name(file, &["library_capsule", "library_600x900"]),
+        [hash, file] => {
+            hash_part(hash) && valid_steam_jpg_name(file, &["library_capsule", "library_600x900"])
+        }
         _ => false,
     }
 }
-fn official_urls(id: &str, assets: &Value) -> Vec<String> {
+fn approved_banner_asset(name: &str) -> bool {
+    let parts: Vec<&str> = name.split('/').collect();
+    match parts.as_slice() {
+        [file] => valid_steam_jpg_name(file, &["library_hero", "header"]),
+        [hash, file] => hash_part(hash) && valid_steam_jpg_name(file, &["library_hero", "header"]),
+        _ => false,
+    }
+}
+fn official_asset_urls(id: &str, assets: &Value) -> (Vec<String>, Vec<String>) {
     let Some(template) = assets["asset_url_format"].as_str() else {
-        return vec![];
+        return (vec![], vec![]);
     };
     let (path, query) = template
         .split_once('?')
@@ -235,34 +867,48 @@ fn official_urls(id: &str, assets: &Value) -> Vec<String> {
     if query.is_some_and(|q| {
         !q.starts_with("t=") || q.len() <= 2 || !q[2..].bytes().all(|b| b.is_ascii_digit())
     }) {
-        return vec![];
+        return (vec![], vec![]);
     }
     let Some(tail) = path.strip_prefix(&format!("steam/apps/{id}/")) else {
-        return vec![];
+        return (vec![], vec![]);
     };
     let Some(prefix) = tail.strip_suffix("${FILENAME}") else {
-        return vec![];
+        return (vec![], vec![]);
     };
     if !prefix.is_empty() && !(prefix.ends_with('/') && hash_part(&prefix[..prefix.len() - 1])) {
-        return vec![];
+        return (vec![], vec![]);
     }
-    ["library_capsule_2x", "library_capsule"]
-        .iter()
-        .filter_map(|key| {
-            let name = assets.get(*key)?.as_str()?;
-            if !approved_asset(name) {
-                return None;
-            }
-            let url = format!("{CDN}{}", template.replace("${FILENAME}", name));
-            approved_url(&url).then_some(url)
-        })
-        .collect()
+    let resolve = |keys: &[&str], validator: fn(&str) -> bool| -> Vec<String> {
+        keys.iter()
+            .filter_map(|key| {
+                let name = assets.get(*key)?.as_str()?;
+                if !validator(name) {
+                    return None;
+                }
+                let url = format!("{CDN}{}", template.replace("${FILENAME}", name));
+                approved_url(&url).then_some(url)
+            })
+            .collect()
+    };
+    let covers = resolve(
+        &["library_capsule_2x", "library_capsule"],
+        approved_cover_asset,
+    );
+    let banners = resolve(
+        &["library_hero", "library_hero_2x", "header_2x", "header"],
+        approved_banner_asset,
+    );
+    (covers, banners)
 }
-fn metadata_urls(
+#[cfg(test)]
+fn official_urls(id: &str, assets: &Value) -> Vec<String> {
+    official_asset_urls(id, assets).0
+}
+fn metadata_asset_urls(
     http: &Client,
     id: &str,
     allowed: &dyn Fn() -> bool,
-) -> Result<Vec<String>, String> {
+) -> Result<(Vec<String>, Vec<String>), String> {
     let input = json!({"ids":[{"appid":id.parse::<u64>().map_err(|e|e.to_string())?}],
         "context":{"country_code":"US","language":"english"},
         "data_request":{"include_assets":true}});
@@ -271,7 +917,7 @@ fn metadata_urls(
     url.query_pairs_mut()
         .append_pair("input_json", &input.to_string());
     let Some(data) = json_request(http, url.as_str(), JSON_LIMIT, allowed)? else {
-        return Ok(vec![]);
+        return Ok((vec![], vec![]));
     };
     if let Some(items) = data
         .pointer("/response/store_items")
@@ -279,11 +925,11 @@ fn metadata_urls(
     {
         for item in items.iter().take(20) {
             if item["appid"].as_u64().is_some_and(|n| n.to_string() == id) {
-                return Ok(official_urls(id, &item["assets"]));
+                return Ok(official_asset_urls(id, &item["assets"]));
             }
         }
     }
-    Ok(vec![])
+    Ok((vec![], vec![]))
 }
 
 // Inspect bounded JPEG SOF markers without allocating decoded pixels.
@@ -365,6 +1011,23 @@ fn portrait_image(bytes: &[u8]) -> bool {
         (80..=4096).contains(&w)
             && (120..=4096).contains(&h)
             && (0.5..=0.85).contains(&(w as f64 / h as f64))
+    })
+}
+
+fn landscape_banner(bytes: &[u8]) -> bool {
+    let dimensions = match image_ext(bytes) {
+        Some("jpg") => jpeg_dimensions(bytes),
+        Some("png") => Some((
+            u32::from_be_bytes(bytes[16..20].try_into().unwrap()),
+            u32::from_be_bytes(bytes[20..24].try_into().unwrap()),
+        )),
+        Some("webp") => webp_dimensions(bytes),
+        _ => None,
+    };
+    dimensions.is_some_and(|(w, h)| {
+        (320..=4096).contains(&w)
+            && (120..=4096).contains(&h)
+            && (1.25..=4.5).contains(&(w as f64 / h as f64))
     })
 }
 
@@ -509,6 +1172,114 @@ fn local_nonsteam_portrait(game: &Value) -> Option<(Vec<u8>, &'static str)> {
     None
 }
 
+fn local_nonsteam_banner(game: &Value) -> Option<(Vec<u8>, &'static str)> {
+    if game["source"] == "steam" {
+        return None;
+    }
+    let mut roots = Vec::new();
+    for root in [
+        game["install_path"].as_str().map(PathBuf::from),
+        game["executable"]
+            .as_str()
+            .and_then(|exe| Path::new(exe).parent().map(Path::to_path_buf)),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if root.is_absolute()
+            && root.as_os_str().len() <= 4096
+            && !roots.contains(&root)
+            && roots.len() < 2
+        {
+            roots.push(root);
+        }
+    }
+    let game_key = key(field(game, "name"));
+    let exe_key = game["executable"]
+        .as_str()
+        .and_then(|v| Path::new(v).file_stem())
+        .map(|v| key(&v.to_string_lossy()))
+        .unwrap_or_default();
+    let mut candidates = Vec::new();
+    for root in roots {
+        for (subdir, penalty) in [("", 0), ("artwork", 2), ("art", 3), ("images", 4)] {
+            let dir = root.join(subdir);
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
+            let mut count = 0;
+            let mut found = Vec::new();
+            for entry in entries {
+                count += 1;
+                if count > 500 {
+                    break;
+                }
+                let Ok(entry) = entry else { continue };
+                if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+                    continue;
+                }
+                let path = entry.path();
+                let ext = path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if !matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "webp") {
+                    continue;
+                }
+                let stem = key(path.file_stem().and_then(|s| s.to_str()).unwrap_or(""));
+                let score = match stem.as_str() {
+                    "banner" => 100,
+                    "hero" => 99,
+                    "libraryhero" => 98,
+                    "backdrop" => 96,
+                    "background" => 94,
+                    "header" => 92,
+                    "keyartwide" => 90,
+                    _ => {
+                        if [game_key.as_str(), exe_key.as_str()]
+                            .iter()
+                            .filter(|v| !v.is_empty())
+                            .any(|v| {
+                                stem == format!("{v}banner")
+                                    || stem == format!("{v}hero")
+                                    || stem == format!("{v}header")
+                            })
+                        {
+                            85
+                        } else {
+                            0
+                        }
+                    }
+                };
+                if score > penalty {
+                    found.push((path, score - penalty));
+                }
+            }
+            if count <= 500 {
+                candidates.extend(found);
+            }
+        }
+    }
+    candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    for (path, _) in candidates.into_iter().take(16) {
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !metadata.file_type().is_file() || !(24..=IMAGE_LIMIT as u64).contains(&metadata.len()) {
+            continue;
+        }
+        if let Ok(Some(bytes)) = read_capped(&path, IMAGE_LIMIT) {
+            if landscape_banner(&bytes) {
+                if let Some(ext) = image_ext(&bytes) {
+                    return Some((bytes, ext));
+                }
+            }
+        }
+    }
+    None
+}
+
 // Xbox GDK packages provide official square logos rather than portrait covers.
 // Use these as a visible icon fallback, never stretch a square logo into a
 // portrait cover or borrow art from a similarly named Steam product.
@@ -585,15 +1356,12 @@ fn epic_identity(game: &Value) -> Option<(String, String)> {
     Some((parts[0].to_string(), parts[1].to_string()))
 }
 
-fn epic_image_urls(images: &Value) -> Vec<String> {
+fn epic_filtered_urls(images: &Value, allowed_types: &[&str]) -> Vec<String> {
     let mut result = Vec::new();
     let mut seen = HashSet::new();
     if let Some(images) = images.as_array() {
         for item in images.iter().take(30) {
-            if !matches!(
-                field(item, "type"),
-                "DieselGameBoxTall" | "OfferImageTall" | "Thumbnail"
-            ) {
+            if !allowed_types.contains(&field(item, "type")) {
                 continue;
             }
             let url = field(item, "url");
@@ -611,19 +1379,86 @@ fn epic_image_urls(images: &Value) -> Vec<String> {
     result
 }
 
-fn epic_exact_search_images(response: &Value, title: &str) -> Vec<String> {
-    let matches = response
+fn epic_image_urls(images: &Value) -> Vec<String> {
+    epic_filtered_urls(
+        images,
+        &["DieselGameBoxTall", "OfferImageTall", "Thumbnail"],
+    )
+}
+
+fn epic_banner_urls(images: &Value) -> Vec<String> {
+    epic_filtered_urls(
+        images,
+        &["DieselGameBoxWide", "OfferImageWide", "FeaturedMedia"],
+    )
+}
+
+fn epic_exact_match_element<'a>(response: &'a Value, title: &str) -> Option<&'a Value> {
+    let elements: Vec<&Value> = response
         .pointer("/data/Catalog/searchStore/elements")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .take(20)
+        .collect();
+    let exact: Vec<&Value> = elements
+        .iter()
+        .copied()
         .filter(|item| key(field(item, "title")) == key(title))
-        .collect::<Vec<_>>();
-    if matches.len() != 1 {
-        return vec![];
+        .collect();
+    if exact.len() == 1 {
+        return Some(exact[0]);
     }
-    epic_image_urls(&matches[0]["keyImages"])
+    if exact.len() > 1 {
+        return None;
+    }
+    let query_tokens = tokenize_title(title);
+    let target_canonical = canonical_key(title);
+    let canonical: Vec<&Value> = elements
+        .iter()
+        .copied()
+        .filter(|item| {
+            let item_title = field(item, "title");
+            canonical_key(item_title) == target_canonical
+                && !is_non_base_item(&tokenize_title(item_title), &query_tokens)
+        })
+        .collect();
+    if canonical.len() == 1 {
+        return Some(canonical[0]);
+    }
+    if canonical.len() > 1 {
+        return None;
+    }
+    let target_base = base_edition_key(title);
+    if target_base.len() < 3 {
+        return None;
+    }
+    let edition: Vec<&Value> = elements
+        .iter()
+        .copied()
+        .filter(|item| {
+            let item_title = field(item, "title");
+            base_edition_key(item_title) == target_base
+                && !is_non_base_item(&tokenize_title(item_title), &query_tokens)
+        })
+        .collect();
+    if edition.len() == 1 {
+        Some(edition[0])
+    } else {
+        None
+    }
+}
+
+fn epic_exact_search_images(response: &Value, title: &str) -> Vec<String> {
+    epic_exact_match_element(response, title)
+        .map(|item| epic_image_urls(&item["keyImages"]))
+        .unwrap_or_default()
+}
+
+fn epic_exact_search_banners(response: &Value, title: &str) -> Vec<String> {
+    epic_exact_match_element(response, title)
+        .map(|item| epic_banner_urls(&item["keyImages"]))
+        .unwrap_or_default()
 }
 
 fn epic_graphql_url(host: &str, query: &str, variables: &Value) -> Result<String, String> {
@@ -660,12 +1495,13 @@ fn epic_json(
     json_request(http, url, JSON_LIMIT, allowed)
 }
 
-fn epic_image(
+fn epic_image_checked(
     http: &Client,
     url: &str,
     remaining: &mut usize,
     allowed: &dyn Fn() -> bool,
     deadline: Option<Instant>,
+    validate: fn(&[u8]) -> bool,
 ) -> Result<Option<(Vec<u8>, &'static str)>, String> {
     if !epic_request_budget(remaining, allowed, deadline)? || !approved_url(url) {
         return Ok(None);
@@ -702,22 +1538,26 @@ fn epic_image(
         .take((IMAGE_LIMIT + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
-    if bytes.len() <= IMAGE_LIMIT && image_ext(&bytes) == Some(expected) && portrait_image(&bytes) {
+    if bytes.len() <= IMAGE_LIMIT && image_ext(&bytes) == Some(expected) && validate(&bytes) {
         Ok(Some((bytes, expected)))
     } else {
         Ok(None)
     }
 }
 
-fn epic_portrait(
+type StoredArtCandidate = (Vec<u8>, &'static str);
+
+fn epic_artwork(
     http: &Client,
     game: &Value,
+    want_banner: bool,
     allowed: &dyn Fn() -> bool,
     deadline: Option<Instant>,
-) -> Result<Option<(Vec<u8>, &'static str)>, String> {
+) -> Result<(Option<StoredArtCandidate>, Option<StoredArtCandidate>), String> {
     let mut remaining = EPIC_REQUEST_LIMIT;
     let title = field(game, "name").trim();
     let mut image_urls = Vec::new();
+    let mut banner_urls = Vec::new();
     if let Some((namespace, id)) = epic_identity(game) {
         let query = r#"query OrbitItem($namespace:String!,$id:String!){Catalog{catalogItem(namespace:$namespace,id:$id,locale:"en-US"){id namespace keyImages{type url}}}}"#;
         let url = epic_graphql_url(
@@ -729,15 +1569,30 @@ fn epic_portrait(
             let item = &data["data"]["Catalog"]["catalogItem"];
             if field(item, "id") == id && field(item, "namespace") == namespace {
                 image_urls.extend(epic_image_urls(&item["keyImages"]));
+                if want_banner {
+                    banner_urls.extend(epic_banner_urls(&item["keyImages"]));
+                }
             }
         }
     }
-    // An exact title is required: no fuzzy search/first-result guessing.
-    if valid_title(title) {
+    // An exact/canonical title is required: no fuzzy search/first-result guessing.
+    if valid_title(title) && image_urls.is_empty() {
         let query = r#"query OrbitSearch($keywords:String!){Catalog{searchStore(keywords:$keywords,country:"US",locale:"en-US",count:20,start:0){elements{title id namespace keyImages{type url}}}}}"#;
-        let url = epic_graphql_url("store.epicgames.com", query, &json!({"keywords":title}))?;
-        if let Ok(Some(data)) = epic_json(http, &url, &mut remaining, allowed, deadline) {
-            image_urls.extend(epic_exact_search_images(&data, title));
+        for variant in search_variants(title).into_iter().take(2) {
+            let url = epic_graphql_url("store.epicgames.com", query, &json!({"keywords":variant}))?;
+            if let Ok(Some(data)) = epic_json(http, &url, &mut remaining, allowed, deadline) {
+                let covers = epic_exact_search_images(&data, &variant);
+                let banners = if want_banner {
+                    epic_exact_search_banners(&data, &variant)
+                } else {
+                    vec![]
+                };
+                if !covers.is_empty() || !banners.is_empty() {
+                    image_urls.extend(covers);
+                    banner_urls.extend(banners);
+                    break;
+                }
+            }
         }
     }
     // Official Epic asset for Fortnite when the keyless catalog is unavailable.
@@ -746,17 +1601,52 @@ fn epic_portrait(
         image_urls.push(FORTNITE_PORTRAIT.to_string());
     }
     let mut seen = HashSet::new();
+    let mut cover = None;
     for url in image_urls
         .into_iter()
         .filter(|url| seen.insert(url.clone()))
         .take(EPIC_IMAGES_LIMIT)
     {
-        match epic_image(http, &url, &mut remaining, allowed, deadline) {
-            Ok(Some(image)) if allowed() => return Ok(Some(image)),
+        match epic_image_checked(
+            http,
+            &url,
+            &mut remaining,
+            allowed,
+            deadline,
+            portrait_image,
+        ) {
+            Ok(Some(image)) if allowed() => {
+                cover = Some(image);
+                break;
+            }
             Ok(_) | Err(_) => {}
         }
     }
-    Ok(None)
+    let mut banner = None;
+    if want_banner {
+        let mut seen_banner = HashSet::new();
+        for url in banner_urls
+            .into_iter()
+            .filter(|url| seen_banner.insert(url.clone()))
+            .take(3)
+        {
+            match epic_image_checked(
+                http,
+                &url,
+                &mut remaining,
+                allowed,
+                deadline,
+                landscape_banner,
+            ) {
+                Ok(Some(image)) if allowed() => {
+                    banner = Some(image);
+                    break;
+                }
+                Ok(_) | Err(_) => {}
+            }
+        }
+    }
+    Ok((cover, banner))
 }
 fn read_capped(path: &Path, max: usize) -> Result<Option<Vec<u8>>, String> {
     let meta = match fs::metadata(path) {
@@ -908,6 +1798,35 @@ fn local_cover(id: &str, install: Option<&str>) -> Option<Vec<u8>> {
     }
     None
 }
+fn local_banner(id: &str, install: Option<&str>) -> Option<Vec<u8>> {
+    if !valid_id(id) {
+        return None;
+    }
+    for root in steam_roots(install) {
+        let cache = root.join("appcache/librarycache");
+        let app = cache.join(id);
+        let mut paths = vec![
+            cache.join(format!("{id}_library_hero.jpg")),
+            cache.join(format!("{id}_header.jpg")),
+        ];
+        for name in BANNER_ASSETS {
+            paths.push(app.join(name));
+        }
+        for dir in hashed_dirs(&app) {
+            for name in BANNER_ASSETS {
+                paths.push(dir.join(name));
+            }
+        }
+        for path in paths {
+            if let Ok(Some(bytes)) = read_capped(&path, IMAGE_LIMIT) {
+                if landscape_banner(&bytes) {
+                    return Some(bytes);
+                }
+            }
+        }
+    }
+    None
+}
 fn local_icon(id: &str, install: Option<&str>) -> Option<(Vec<u8>, &'static str)> {
     if !valid_id(id) {
         return None;
@@ -938,12 +1857,16 @@ fn local_icon(id: &str, install: Option<&str>) -> Option<(Vec<u8>, &'static str)
     None
 }
 
-fn online_cover_with_deadline(
+type OnlineArtworkPair = (Option<Vec<u8>>, Option<Vec<u8>>);
+
+fn online_artwork_with_deadline(
     http: &Client,
     id: &str,
     deadline: Option<Instant>,
+    want_cover: bool,
+    want_banner: bool,
     allowed: &dyn Fn() -> bool,
-) -> Result<Option<Vec<u8>>, String> {
+) -> Result<OnlineArtworkPair, String> {
     if !valid_id(id) {
         return Err("Invalid Steam app ID".into());
     }
@@ -951,48 +1874,114 @@ fn online_cover_with_deadline(
         return Err("Steam artwork repair time budget reached".into());
     }
     // Metadata can fail while official direct CDN paths remain available.
-    let (mut urls, mut error) = match metadata_urls(http, id, allowed) {
-        Ok(urls) => (urls, None),
-        Err(e) => (vec![], Some(e)),
-    };
-    let extra = match id {
-        "252950" => Some("cc030d5cf1de6d485d41685bf2aac8ae4ca8ab8e/library_capsule_2x.jpg"),
-        "4435490" => Some("c71bc2cb60e440d1a0d2435d0c06c4d4a4050edf/library_capsule_2x.jpg"),
-        _ => None,
-    };
-    if let Some(name) = extra {
-        urls.push(format!("{CDN}steam/apps/{id}/{name}"));
-    }
-    for name in ASSETS {
-        urls.push(format!("{CDN}steam/apps/{id}/{name}"));
-    }
-    let mut seen = HashSet::new();
-    for url in urls
-        .into_iter()
-        .filter(|url| seen.insert(url.clone()))
-        .take(6)
+    let (mut cover_urls, mut banner_urls, mut error) = match metadata_asset_urls(http, id, allowed)
     {
-        if deadline.is_some_and(|end| Instant::now() >= end) {
-            return Err("Steam artwork repair time budget reached".into());
+        Ok((covers, banners)) => (covers, banners, None),
+        Err(e) => (vec![], vec![], Some(e)),
+    };
+    let mut cover = None;
+    if want_cover {
+        let extra = match id {
+            "252950" => Some("cc030d5cf1de6d485d41685bf2aac8ae4ca8ab8e/library_capsule_2x.jpg"),
+            "4435490" => Some("c71bc2cb60e440d1a0d2435d0c06c4d4a4050edf/library_capsule_2x.jpg"),
+            _ => None,
+        };
+        if let Some(name) = extra {
+            cover_urls.push(format!("{CDN}steam/apps/{id}/{name}"));
         }
-        // Permission is evaluated before *every* HTTP request, including
-        // fallback CDN attempts following a failed metadata response.
-        match request(http, &url, IMAGE_LIMIT, true, allowed) {
-            Ok(Some(bytes)) if portrait(&bytes) => return Ok(Some(bytes)),
-            Ok(_) => (),
-            Err(e) => error = Some(e),
+        for name in ASSETS {
+            cover_urls.push(format!("{CDN}steam/apps/{id}/{name}"));
+        }
+        let mut seen = HashSet::new();
+        for url in cover_urls
+            .into_iter()
+            .filter(|url| seen.insert(url.clone()))
+            .take(6)
+        {
+            if deadline.is_some_and(|end| Instant::now() >= end) {
+                return Err("Steam artwork repair time budget reached".into());
+            }
+            // Permission is evaluated before *every* HTTP request, including
+            // fallback CDN attempts following a failed metadata response.
+            match request(http, &url, IMAGE_LIMIT, true, allowed) {
+                Ok(Some(bytes)) if portrait(&bytes) => {
+                    cover = Some(bytes);
+                    break;
+                }
+                Ok(_) => (),
+                Err(e) => error = Some(e),
+            }
         }
     }
-    if let Some(e) = error {
-        return Err(e);
+    let mut banner = None;
+    if want_banner && !deadline.is_some_and(|end| Instant::now() >= end) {
+        for name in BANNER_ASSETS {
+            banner_urls.push(format!("{CDN}steam/apps/{id}/{name}"));
+        }
+        let mut seen = HashSet::new();
+        for url in banner_urls
+            .into_iter()
+            .filter(|url| seen.insert(url.clone()))
+            .take(5)
+        {
+            if deadline.is_some_and(|end| Instant::now() >= end) {
+                break;
+            }
+            match request(http, &url, IMAGE_LIMIT, true, allowed) {
+                Ok(Some(bytes)) if landscape_banner(&bytes) => {
+                    banner = Some(bytes);
+                    break;
+                }
+                Ok(_) | Err(_) => (),
+            }
+        }
     }
-    Ok(None)
+    if cover.is_none() && banner.is_none() {
+        if let Some(e) = error {
+            return Err(e);
+        }
+    }
+    Ok((cover, banner))
 }
 
-/// Lookup a manually entered title through exact Steam and Epic store matches.
-/// Recheck opt-in and Performance Guard immediately before each network call.
-/// The caller must supply a fresh settings/running-session check.
-/// Returns {cover, matchedName?, message}; failures return Err.
+fn online_artwork_response(
+    cover_bytes: Option<(&[u8], &str)>,
+    banner_bytes: Option<(&[u8], &str)>,
+    matched_name: &str,
+    source: &str,
+    store_label: &str,
+    artwork_dir: &Path,
+) -> Result<Option<Value>, String> {
+    let cover = match cover_bytes {
+        Some((bytes, ext)) => store(bytes, ext, artwork_dir)?,
+        None => String::new(),
+    };
+    let banner = match banner_bytes {
+        Some((bytes, ext)) => store(bytes, ext, artwork_dir).unwrap_or_default(),
+        None => String::new(),
+    };
+    if cover.is_empty() && banner.is_empty() {
+        return Ok(None);
+    }
+    let message = match (!cover.is_empty(), !banner.is_empty()) {
+        (true, true) => format!("Cover and banner found on {store_label}."),
+        (true, false) => format!("Cover found on {store_label}."),
+        (false, true) => format!("Banner found on {store_label}."),
+        (false, false) => unreachable!(),
+    };
+    Ok(Some(json!({
+        "cover": cover,
+        "banner": banner,
+        "matchedName": matched_name,
+        "source": source,
+        "message": message,
+    })))
+}
+
+/// Lookup a manually entered title through Steam and Epic store matches
+/// (handling Roman/Arabic numerals and official store editions without fuzzy
+/// wrong-game guessing). Rechecks opt-in and Performance Guard before each call.
+/// Returns {cover, banner, matchedName?, source?, message}; failures return Err.
 pub fn find_online_cover_guarded(
     title: &str,
     artwork_dir: &Path,
@@ -1005,35 +1994,60 @@ pub fn find_online_cover_guarded(
     }
     let http = client()?;
     if let Ok(Some((name, id))) = exact_app(&http, title, allowed) {
-        if let Ok(Some(bytes)) = online_cover_with_deadline(&http, &id, None, allowed) {
+        if let Ok((cover_bytes, banner_bytes)) =
+            online_artwork_with_deadline(&http, &id, None, true, true, allowed)
+        {
             require_online(allowed)?;
-            let cover = store(&bytes, "jpg", artwork_dir)?;
-            return Ok(json!({"cover":cover,"matchedName":name,"message":"Cover found on Steam."}));
+            if let Some(found) = online_artwork_response(
+                cover_bytes.as_deref().map(|b| (b, "jpg")),
+                banner_bytes.as_deref().map(|b| (b, "jpg")),
+                &name,
+                "steam",
+                "Steam",
+                artwork_dir,
+            )? {
+                return Ok(found);
+            }
         }
     }
     require_online(allowed)?;
     let lookup = json!({"source":"epic","name":title});
-    if let Some((bytes, ext)) = epic_portrait(&http, &lookup, allowed, None)? {
+    let (epic_cover, epic_banner) = epic_artwork(&http, &lookup, true, allowed, None)?;
+    if epic_cover.is_some() || epic_banner.is_some() {
         require_online(allowed)?;
-        let cover = store(&bytes, ext, artwork_dir)?;
-        return Ok(
-            json!({"cover":cover,"matchedName":title,"message":"Cover found on Epic Games."}),
-        );
+        if let Some(found) = online_artwork_response(
+            epic_cover.as_ref().map(|(b, e)| (b.as_slice(), *e)),
+            epic_banner.as_ref().map(|(b, e)| (b.as_slice(), *e)),
+            title,
+            "epic",
+            "Epic Games",
+            artwork_dir,
+        )? {
+            return Ok(found);
+        }
     }
     // Rocket League was delisted from the Steam storefront, so its old app
     // ID is used only for this one exact, verified title as a final fallback.
-    if key(title) == "rocketleague" {
-        if let Ok(Some(bytes)) = online_cover_with_deadline(&http, "252950", None, allowed) {
+    if canonical_key(title) == "rocketleague" {
+        if let Ok((cover_bytes, banner_bytes)) =
+            online_artwork_with_deadline(&http, "252950", None, true, true, allowed)
+        {
             require_online(allowed)?;
-            let cover = store(&bytes, "jpg", artwork_dir)?;
-            return Ok(
-                json!({"cover":cover,"matchedName":"Rocket League","message":"Cover found on Steam."}),
-            );
+            if let Some(found) = online_artwork_response(
+                cover_bytes.as_deref().map(|b| (b, "jpg")),
+                banner_bytes.as_deref().map(|b| (b, "jpg")),
+                "Rocket League",
+                "steam",
+                "Steam",
+                artwork_dir,
+            )? {
+                return Ok(found);
+            }
         }
     }
     require_online(allowed)?;
-    Ok(json!({"cover":"",
-        "message":"No exact portrait cover found on Steam or Epic Games. Check the title or choose an image manually."}))
+    Ok(json!({"cover":"","banner":"",
+        "message":"No matching artwork found on Steam or Epic Games. Check the title or choose an image manually."}))
 }
 
 fn artwork_token(name: &str) -> bool {
@@ -1191,11 +2205,21 @@ fn repair_artwork_impl(
         let mut patch = serde_json::Map::new();
         patch.insert("id".into(), json!(id));
         if need_cover {
+            let need_banner = game["banner"].as_str().unwrap_or("").is_empty();
             let mut selected = local.or_else(|| {
                 steam_id
                     .and_then(|s| local_cover(s, install))
                     .map(|bytes| (bytes, "jpg"))
             });
+            let mut selected_banner = if need_banner {
+                local_nonsteam_banner(game).or_else(|| {
+                    steam_id
+                        .and_then(|s| local_banner(s, install))
+                        .map(|bytes| (bytes, "jpg"))
+                })
+            } else {
+                None
+            };
             if selected.is_none()
                 // Xbox lacks a verified Steam ID. Never consume the shared
                 // eight-request online budget on a deliberate no-op.
@@ -1209,7 +2233,7 @@ fn repair_artwork_impl(
                     || (game["source"] == "epic"
                         && (epic_identity(game).is_some()
                             || valid_title(field(game, "name").trim())
-                            || key(field(game, "name")) == "rocketleague"))
+                            || canonical_key(field(game, "name")) == "rocketleague"))
                     || valid_title(field(game, "name").trim());
                 if has_online_query {
                     online_count += 1;
@@ -1217,34 +2241,76 @@ fn repair_artwork_impl(
                 }
                 let http = http.as_ref().unwrap();
                 let deadline = Some(started + REPAIR_TIME);
-                let result: Result<Option<(Vec<u8>, &'static str)>, String> =
-                    if let Some(steam_id) = steam_id {
-                        online_cover_with_deadline(http, steam_id, deadline, allowed)
-                            .map(|bytes| bytes.map(|bytes| (bytes, "jpg")))
-                    } else if game["source"] == "epic" {
-                        // Manifest/catalog identity first, then unique exact-title
-                        // Epic search. A Rocket League Steam fallback is permitted
-                        // only with its precise title, never a vague substring.
-                        match epic_portrait(http, game, allowed, deadline) {
-                            Ok(Some(image)) => Ok(Some(image)),
-                            Ok(None) if key(field(game, "name")) == "rocketleague" => {
-                                online_cover_with_deadline(http, "252950", deadline, allowed)
-                                    .map(|bytes| bytes.map(|bytes| (bytes, "jpg")))
-                            }
-                            other => other,
+                let want_banner = need_banner && selected_banner.is_none();
+                let result: Result<
+                    (Option<StoredArtCandidate>, Option<StoredArtCandidate>),
+                    String,
+                > = if let Some(steam_id) = steam_id {
+                    online_artwork_with_deadline(
+                        http,
+                        steam_id,
+                        deadline,
+                        true,
+                        want_banner,
+                        allowed,
+                    )
+                    .map(|(c, b)| (c.map(|bytes| (bytes, "jpg")), b.map(|bytes| (bytes, "jpg"))))
+                } else if game["source"] == "epic" {
+                    // Manifest/catalog identity first, then unique canonical-title
+                    // Epic search. A Rocket League Steam fallback is permitted
+                    // only with its precise title, never a vague substring.
+                    match epic_artwork(http, game, want_banner, allowed, deadline) {
+                        Ok((Some(c), b)) => Ok((Some(c), b)),
+                        Ok((None, b)) if canonical_key(field(game, "name")) == "rocketleague" => {
+                            online_artwork_with_deadline(
+                                http,
+                                "252950",
+                                deadline,
+                                true,
+                                want_banner && b.is_none(),
+                                allowed,
+                            )
+                            .map(|(c, sb)| {
+                                (
+                                    c.map(|bytes| (bytes, "jpg")),
+                                    b.or_else(|| sb.map(|bytes| (bytes, "jpg"))),
+                                )
+                            })
                         }
-                    } else {
-                        match exact_app(http, game["name"].as_str().unwrap_or(""), allowed) {
-                            Ok(Some((_, steam_id))) => {
-                                online_cover_with_deadline(http, &steam_id, deadline, allowed)
-                                    .map(|bytes| bytes.map(|bytes| (bytes, "jpg")))
+                        other => other,
+                    }
+                } else {
+                    let title = game["name"].as_str().unwrap_or("");
+                    match exact_app(http, title, allowed) {
+                        Ok(Some((_, steam_id))) => online_artwork_with_deadline(
+                            http,
+                            &steam_id,
+                            deadline,
+                            true,
+                            want_banner,
+                            allowed,
+                        )
+                        .map(|(c, b)| {
+                            (c.map(|bytes| (bytes, "jpg")), b.map(|bytes| (bytes, "jpg")))
+                        }),
+                        Ok(None) => {
+                            if valid_title(title.trim()) {
+                                let lookup = json!({"source":"epic","name":title.trim()});
+                                epic_artwork(http, &lookup, want_banner, allowed, deadline)
+                            } else {
+                                Ok((None, None))
                             }
-                            Ok(None) => Ok(None),
-                            Err(e) => Err(e),
                         }
-                    };
+                        Err(e) => Err(e),
+                    }
+                };
                 match result {
-                    Ok(result) if allowed() => selected = result,
+                    Ok((cover_res, banner_res)) if allowed() => {
+                        selected = cover_res;
+                        if selected_banner.is_none() {
+                            selected_banner = banner_res;
+                        }
+                    }
                     Ok(_) => (),
                     Err(e) => {
                         if failures.len() < 10 {
@@ -1264,6 +2330,11 @@ fn repair_artwork_impl(
                             failures.push(format!("{id}: {e}"))
                         }
                     }
+                }
+            }
+            if let Some((bytes, ext)) = selected_banner {
+                if let Ok(banner) = store(&bytes, ext, artwork_dir) {
+                    patch.insert("banner".into(), json!(banner));
                 }
             }
         }
@@ -1776,5 +2847,306 @@ mod tests {
         let result = repair_artwork_guarded(&games, &dir, true, false, &|| true).unwrap();
         assert_eq!(result["onlineAttempted"], json!([]));
         assert!(!dir.exists());
+    }
+
+    #[test]
+    fn roman_and_arabic_title_matching_and_query_variants() {
+        let schedule_variants = search_variants("schedule 1");
+        assert!(schedule_variants
+            .iter()
+            .any(|v| v.eq_ignore_ascii_case("schedule 1")));
+        assert!(schedule_variants.iter().any(|v| v == "schedule I"));
+
+        let compact_variants = search_variants("Schedule1");
+        assert!(compact_variants.iter().any(|v| v == "Schedule 1"));
+        assert!(compact_variants.iter().any(|v| v == "Schedule I"));
+
+        let noisy_variants = search_variants("Schedule 1 v0.3.4f8 [Portable]");
+        assert_eq!(noisy_variants[0], "Schedule 1");
+        assert!(noisy_variants.iter().any(|v| v == "Schedule I"));
+        assert_eq!(strip_title_noise("Cyberpunk 2077"), "Cyberpunk 2077");
+
+        // Steam search results for "Schedule I" include base game + Free Sample demo.
+        let schedule_items = vec![
+            json!({"type":"app","id":3205720,"name":"Schedule I: Free Sample"}),
+            json!({"type":"app","id":3164500,"name":"Schedule I"}),
+        ];
+        assert_eq!(
+            select_steam_match(&schedule_items, &schedule_variants),
+            Some(("Schedule I".into(), "3164500".into()))
+        );
+        // Never match the Free Sample demo when the base game is absent.
+        let demo_only = vec![json!({"type":"app","id":3205720,"name":"Schedule I: Free Sample"})];
+        assert_eq!(select_steam_match(&demo_only, &schedule_variants), None);
+
+        // Roman <-> Arabic & punctuation / ampersand matching.
+        assert_eq!(
+            select_steam_match(
+                &[
+                    json!({"type":"app","id":2950840,"name":"Hades II Original Soundtrack"}),
+                    json!({"type":"app","id":1145350,"name":"Hades II"}),
+                ],
+                &search_variants("Hades 2"),
+            ),
+            Some(("Hades II".into(), "1145350".into()))
+        );
+        assert_eq!(
+            select_steam_match(
+                &[json!({"type":"app","id":374320,"name":"DARK SOULS™ III"})],
+                &search_variants("dark souls 3"),
+            ),
+            Some(("DARK SOULS™ III".into(), "374320".into()))
+        );
+        assert_eq!(
+            select_steam_match(
+                &[json!({"type":"app","id":3837340,"name":"FINAL FANTASY VII"})],
+                &search_variants("final fantasy 7"),
+            ),
+            Some(("FINAL FANTASY VII".into(), "3837340".into()))
+        );
+        assert_eq!(
+            select_steam_match(
+                &[json!({"type":"app","id":1086940,"name":"Baldur's Gate 3"})],
+                &search_variants("Baldur's Gate III"),
+            ),
+            Some(("Baldur's Gate 3".into(), "1086940".into()))
+        );
+        assert_eq!(
+            select_steam_match(
+                &[json!({"type":"app","id":1771300,"name":"Kingdom Come: Deliverance II"})],
+                &search_variants("Kingdom Come Deliverance 2"),
+            ),
+            Some(("Kingdom Come: Deliverance II".into(), "1771300".into()))
+        );
+        assert_eq!(
+            select_steam_match(
+                &[json!({"type":"app","id":261550,"name":"Mount & Blade II: Bannerlord"})],
+                &search_variants("Mount and Blade 2: Bannerlord"),
+            ),
+            Some(("Mount & Blade II: Bannerlord".into(), "261550".into()))
+        );
+        assert_eq!(
+            select_steam_match(
+                &[json!({"type":"app","id":3241660,"name":"R.E.P.O."})],
+                &search_variants("REPO"),
+            ),
+            Some(("R.E.P.O.".into(), "3241660".into()))
+        );
+
+        // Dotted acronyms and leading single-letter words must not turn into numerals.
+        assert_eq!(canonical_key("D.I.R.T."), "dirt");
+        assert_eq!(canonical_key("I Am Bread"), "iambread");
+        assert_eq!(canonical_key("V Rising"), "vrising");
+        assert_eq!(canonical_key("X-COM"), "xcom");
+
+        // Exact literal match beats Roman-normalized ambiguity (Mega Man 10 vs X).
+        let mega_items = vec![
+            json!({"type":"app","id":1,"name":"Mega Man X"}),
+            json!({"type":"app","id":2,"name":"Mega Man 10"}),
+        ];
+        assert_eq!(
+            select_steam_match(&mega_items, &search_variants("Mega Man 10")),
+            Some(("Mega Man 10".into(), "2".into()))
+        );
+
+        // Edition / remaster / creator-prefix fallbacks match real store listings
+        // while rejecting soundtracks, VR editions, upgrades, DLCs and spin-offs.
+        assert_eq!(
+            select_steam_match(
+                &[json!({"type":"app","id":3240220,"name":"Grand Theft Auto V Enhanced"})],
+                &search_variants("gta 5"),
+            ),
+            Some(("Grand Theft Auto V Enhanced".into(), "3240220".into()))
+        );
+        assert_eq!(
+            select_steam_match(
+                &[
+                    json!({"type":"app","id":12210,"name":"Grand Theft Auto IV: The Complete Edition"})
+                ],
+                &search_variants("gta 4"),
+            ),
+            Some((
+                "Grand Theft Auto IV: The Complete Edition".into(),
+                "12210".into()
+            ))
+        );
+        assert_eq!(
+            select_steam_match(
+                &[
+                    json!({"type":"app","id":1229320,"name":"The Witcher 3: Wild Hunt — Remastered Soundtrack"}),
+                    json!({"type":"app","id":292030,"name":"The Witcher 3: Wild Hunt — Remastered"}),
+                ],
+                &search_variants("The Witcher 3: Wild Hunt"),
+            ),
+            Some((
+                "The Witcher 3: Wild Hunt — Remastered".into(),
+                "292030".into()
+            ))
+        );
+        assert_eq!(
+            select_steam_match(
+                &[
+                    json!({"type":"app","id":611670,"name":"The Elder Scrolls V: Skyrim VR"}),
+                    json!({"type":"app","id":1746860,"name":"The Elder Scrolls V: Skyrim Anniversary Upgrade"}),
+                    json!({"type":"app","id":489830,"name":"The Elder Scrolls V: Skyrim Special Edition"}),
+                ],
+                &search_variants("Elder Scrolls V Skyrim"),
+            ),
+            Some((
+                "The Elder Scrolls V: Skyrim Special Edition".into(),
+                "489830".into()
+            ))
+        );
+        assert_eq!(
+            select_steam_match(
+                &[
+                    json!({"type":"app","id":947510,"name":"Sid Meier's Civilization® VI: Gathering Storm"}),
+                    json!({"type":"app","id":289070,"name":"Sid Meier’s Civilization® VI"}),
+                ],
+                &search_variants("Civilization 6"),
+            ),
+            Some(("Sid Meier’s Civilization® VI".into(), "289070".into()))
+        );
+        assert_eq!(
+            select_steam_match(
+                &[json!({"type":"app","id":359550,"name":"Tom Clancy's Rainbow Six Siege"})],
+                &search_variants("Rainbow Six Siege"),
+            ),
+            Some(("Tom Clancy's Rainbow Six Siege".into(), "359550".into()))
+        );
+        assert_eq!(
+            select_steam_match(
+                &[
+                    json!({"type":"app","id":435150,"name":"Divinity: Original Sin 2 - Definitive Edition"})
+                ],
+                &search_variants("Divinity Original Sin 2"),
+            ),
+            Some((
+                "Divinity: Original Sin 2 - Definitive Edition".into(),
+                "435150".into()
+            ))
+        );
+
+        // Sequels and spin-offs must NEVER false-match.
+        assert_eq!(
+            select_steam_match(
+                &[
+                    json!({"type":"app","id":1030300,"name":"Hollow Knight: Silksong"}),
+                    json!({"type":"app","id":999,"name":"Hollow Knight 2"}),
+                ],
+                &search_variants("Hollow Knight"),
+            ),
+            None
+        );
+        assert_eq!(
+            select_steam_match(
+                &[
+                    json!({"type":"app","id":1672970,"name":"Minecraft Dungeons"}),
+                    json!({"type":"app","id":1912410,"name":"Minecraft Dungeons II"}),
+                ],
+                &search_variants("Minecraft"),
+            ),
+            None
+        );
+        assert_eq!(
+            select_steam_match(
+                &[
+                    json!({"type":"app","id":2622380,"name":"ELDEN RING NIGHTREIGN"}),
+                    json!({"type":"app","id":2778580,"name":"ELDEN RING Shadow of the Erdtree"}),
+                ],
+                &search_variants("ELDEN RING"),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn steam_banner_and_alt_assets_are_validated_safely() {
+        let schedule_assets = json!({
+            "asset_url_format": "steam/apps/3164500/${FILENAME}?t=1785744977",
+            "library_capsule_2x": "83b75c1bc8ea91b7503d8816832188635ba75a72/library_600x900_2x.jpg",
+            "library_capsule": "83b75c1bc8ea91b7503d8816832188635ba75a72/library_600x900.jpg",
+            "library_hero": "library_hero.jpg",
+            "library_hero_2x": "library_hero_2x.jpg",
+            "header_2x": "48a93d6445a67520ea49833c93dae8f2e68fc540/header_alt_assets_9_2x.jpg",
+            "header": "../../evil.jpg"
+        });
+        let (covers, banners) = official_asset_urls("3164500", &schedule_assets);
+        assert_eq!(covers.len(), 2);
+        assert!(
+            covers[0].contains("83b75c1bc8ea91b7503d8816832188635ba75a72/library_600x900_2x.jpg")
+        );
+        assert_eq!(banners.len(), 3);
+        assert!(banners[0].contains("/library_hero.jpg?t=1785744977"));
+        assert!(banners[2].contains("header_alt_assets_9_2x.jpg"));
+        assert!(landscape_banner(&jpeg(1920, 620)));
+        assert!(landscape_banner(&jpeg(920, 430)));
+        assert!(!landscape_banner(&jpeg(600, 900)));
+        assert!(!landscape_banner(&jpeg(200, 100)));
+    }
+
+    #[test]
+    fn offline_repair_imports_local_banners_alongside_covers() {
+        let root =
+            std::env::temp_dir().join(format!("orbit-banner-local-{}", uuid::Uuid::new_v4()));
+        let install = root.join("Schedule I");
+        let artwork = root.join("artwork");
+        fs::create_dir_all(&install).unwrap();
+        fs::write(install.join("poster.png"), png(600, 900)).unwrap();
+        fs::write(install.join("banner.png"), png(1920, 620)).unwrap();
+        let game = json!({
+            "id": "manual-banner-1",
+            "source": "manual",
+            "name": "Schedule 1",
+            "install_path": install,
+            "cover": "",
+            "banner": "",
+            "icon": ""
+        });
+        let result = repair_artwork(&[game], &artwork).unwrap();
+        assert_eq!(result["found"], 1);
+        let patch = &result["updates"][0];
+        let cover_tok = patch["cover"].as_str().unwrap();
+        let banner_tok = patch["banner"].as_str().unwrap();
+        assert!(artwork_token(cover_tok));
+        assert!(artwork_token(banner_tok));
+        assert_eq!(fs::read(artwork.join(cover_tok)).unwrap(), png(600, 900));
+        assert_eq!(fs::read(artwork.join(banner_tok)).unwrap(), png(1920, 620));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "Live Steam API verification; run explicitly with -- --ignored"]
+    fn live_steam_lookup_finds_schedule_1_and_variant_covers_and_banners() {
+        let dir = std::env::temp_dir().join(format!("orbit-live-art-{}", uuid::Uuid::new_v4()));
+        for (query, expected_substr) in [
+            ("schedule 1", "Schedule I"),
+            ("Schedule1", "Schedule I"),
+            ("Hades 2", "Hades II"),
+            ("gta 5", "Grand Theft Auto V"),
+            ("Civilization 6", "Civilization"),
+            ("The Witcher 3: Wild Hunt", "Witcher 3"),
+        ] {
+            let found = find_online_cover_guarded(query, &dir, &|| true).unwrap();
+            let cover = found["cover"].as_str().unwrap_or("");
+            let banner = found["banner"].as_str().unwrap_or("");
+            let matched = found["matchedName"].as_str().unwrap_or("");
+            assert!(
+                artwork_token(cover),
+                "expected cover for '{query}', got {found}"
+            );
+            assert!(
+                artwork_token(banner),
+                "expected banner for '{query}', got {found}"
+            );
+            assert!(
+                matched.contains(expected_substr),
+                "expected matchedName containing '{expected_substr}' for '{query}', got '{matched}'"
+            );
+        }
+        // Negative check: Minecraft is not on Steam (only Minecraft Dungeons is).
+        let miss = find_online_cover_guarded("Minecraft", &dir, &|| true).unwrap();
+        assert_eq!(miss["cover"], "");
+        let _ = fs::remove_dir_all(dir);
     }
 }
